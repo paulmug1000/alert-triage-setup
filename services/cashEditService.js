@@ -126,181 +126,181 @@ export async function fetchCashData(clientName, clientSheetId, bypassCache = fal
       }
     }
 
-      const cashSheet = res.data?.sheets?.find((s) => s.properties?.title === "Cash") || res.data?.sheets?.[0];
-      const rowData = cashSheet?.data?.[0]?.rowData || [];
+    const cashSheet = res.data?.sheets?.find((s) => s.properties?.title === "Cash") || res.data?.sheets?.[0];
+    const rowData = cashSheet?.data?.[0]?.rowData || [];
 
-      if (!rowData.length) {
-        throw new Error("Cash sheet is empty or not found in client spreadsheet.");
-      }
+    if (!rowData.length) {
+      throw new Error("Cash sheet is empty or not found in client spreadsheet.");
+    }
 
-      const keyInfoSheet = res.data?.sheets?.find((s) => s.properties?.title === "KeyInfo");
-      const kiRows = keyInfoSheet?.data?.[0]?.rowData || [];
-      const currencyRaw = String(kiRows?.[16]?.values?.[1]?.formattedValue || "GBP").trim() || "GBP";
-      const currencyUpper = currencyRaw.toUpperCase();
-      const currencySymbol = currencyUpper === "USD" ? "$" : currencyUpper === "EUR" ? "€" : "£";
+    const keyInfoSheet = res.data?.sheets?.find((s) => s.properties?.title === "KeyInfo");
+    const kiRows = keyInfoSheet?.data?.[0]?.rowData || [];
+    const currencyRaw = String(kiRows?.[16]?.values?.[1]?.formattedValue || "GBP").trim() || "GBP";
+    const currencyUpper = currencyRaw.toUpperCase();
+    const currencySymbol = currencyUpper === "USD" ? "$" : currencyUpper === "EUR" ? "€" : "£";
 
-      const bankAccounts = [];
-      for (let rIdx = 11; rIdx <= 20; rIdx++) {
-        const vals = kiRows?.[rIdx]?.values || [];
-        const acctName = String(vals?.[7]?.formattedValue || "").trim();
-        const acctId = String(vals?.[8]?.formattedValue || "").trim();
-        if (!acctName || acctName.endsWith(":") || acctName.toLowerCase().includes("non-cash")) continue;
-        bankAccounts.push({ name: acctName, accountId: acctId });
-      }
+    const bankAccounts = [];
+    for (let rIdx = 11; rIdx <= 20; rIdx++) {
+      const vals = kiRows?.[rIdx]?.values || [];
+      const acctName = String(vals?.[7]?.formattedValue || "").trim();
+      const acctId = String(vals?.[8]?.formattedValue || "").trim();
+      if (!acctName || acctName.endsWith(":") || acctName.toLowerCase().includes("non-cash")) continue;
+      bankAccounts.push({ name: acctName, accountId: acctId });
+    }
 
-      const row0 = (rowData[0]?.values || []).map((c) => String(c?.formattedValue || "").trim());
+    const row0 = (rowData[0]?.values || []).map((c) => String(c?.formattedValue || "").trim());
 
-      // Determine current and previous month
-      const now = new Date();
-      const curMonth = now.getMonth();
-      const curYear = now.getFullYear();
-      let prevMonth = curMonth - 1;
-      let prevYear = curYear;
-      if (prevMonth < 0) {
-        prevMonth = 11;
-        prevYear -= 1;
-      }
+    // Determine current and previous month
+    const now = new Date();
+    const curMonth = now.getMonth();
+    const curYear = now.getFullYear();
+    let prevMonth = curMonth - 1;
+    let prevYear = curYear;
+    if (prevMonth < 0) {
+      prevMonth = 11;
+      prevYear -= 1;
+    }
 
-      // Parse up to 36 month columns (Col B [1] to Col AK [36])
-      const monthCols = [];
-      let previousMonthColIdx = 1;
-      let currentMonthColIdx = 1;
+    // Parse up to 36 month columns (Col B [1] to Col AK [36])
+    const monthCols = [];
+    let previousMonthColIdx = 1;
+    let currentMonthColIdx = 1;
 
-      for (let c = 1; c <= 36 && c < row0.length; c++) {
-        const rawLabel = row0[c] || `Month ${c}`;
-        const parsed = parseMonthHeader(rawLabel);
-        const colLetter = colIdxToLetter(c);
-        const monthKey = parsed ? `${parsed.year}-${String(parsed.monthIdx + 1).padStart(2, "0")}` : null;
+    for (let c = 1; c <= 36 && c < row0.length; c++) {
+      const rawLabel = row0[c] || `Month ${c}`;
+      const parsed = parseMonthHeader(rawLabel);
+      const colLetter = colIdxToLetter(c);
+      const monthKey = parsed ? `${parsed.year}-${String(parsed.monthIdx + 1).padStart(2, "0")}` : null;
 
-        let isPrevious = false;
-        let isCurrent = false;
+      let isPrevious = false;
+      let isCurrent = false;
 
-        if (parsed) {
-          if (parsed.year === prevYear && parsed.monthIdx === prevMonth) {
-            isPrevious = true;
-            previousMonthColIdx = c;
-          }
-          if (parsed.year === curYear && parsed.monthIdx === curMonth) {
-            isCurrent = true;
-            currentMonthColIdx = c;
-          }
+      if (parsed) {
+        if (parsed.year === prevYear && parsed.monthIdx === prevMonth) {
+          isPrevious = true;
+          previousMonthColIdx = c;
         }
+        if (parsed.year === curYear && parsed.monthIdx === curMonth) {
+          isCurrent = true;
+          currentMonthColIdx = c;
+        }
+      }
 
-        monthCols.push({
-          colIdx: c,
-          colLetter,
-          label: rawLabel,
-          parsed,
-          monthKey,
-          isPreviousMonth: isPrevious,
-          isCurrentMonth: isCurrent,
+      monthCols.push({
+        colIdx: c,
+        colLetter,
+        label: rawLabel,
+        parsed,
+        monthKey,
+        isPreviousMonth: isPrevious,
+        isCurrentMonth: isCurrent,
+      });
+    }
+
+    // Parse row definitions
+    const parseRowsForRange = (startRow, endRow) => {
+      const list = [];
+      for (let r = startRow; r <= endRow && r <= rowData.length; r++) {
+        const rowCells = rowData[r - 1]?.values || [];
+        const label = String(rowCells[0]?.formattedValue || "").trim();
+        const labelBg = colorToCss(rowCells[0]?.effectiveFormat?.backgroundColor);
+        const isBold = Boolean(rowCells[0]?.effectiveFormat?.textFormat?.bold);
+
+        const cells = monthCols.map((m) => {
+          const cellData = rowCells[m.colIdx];
+          let formattedValue = cellData?.formattedValue !== undefined && cellData?.formattedValue !== null
+            ? String(cellData.formattedValue).trim()
+            : "";
+          let formula = cellData?.userEnteredValue?.formulaValue || "";
+          let numericValue =
+            typeof cellData?.effectiveValue?.numberValue === "number"
+              ? cellData.effectiveValue.numberValue
+              : (typeof cellData?.userEnteredValue?.numberValue === "number" ? cellData.userEnteredValue.numberValue : null);
+          let note = cellData?.note || "";
+          const isEditable = isCashCellEditable(r, m.colIdx);
+          const bgColor = colorToCss(cellData?.effectiveFormat?.backgroundColor);
+          const cellBold = Boolean(cellData?.effectiveFormat?.textFormat?.bold);
+
+          if (usedRelReads) {
+            const adj = cashAdjByCoord.get(`${r}:${m.colIdx}`) || null;
+            if (isEditable) {
+              formula = adj?.formula || "";
+              const rawVal = adj && adj.raw_value !== undefined && adj.raw_value !== null ? adj.raw_value : "";
+              const strVal = rawVal === "" ? "" : String(rawVal);
+              formattedValue = strVal !== "" ? String(formatCellForDisplay("client", "Cash", r - 1, m.colIdx, rawVal) || "").trim() : "";
+              const numClean = typeof rawVal === "number" ? rawVal : parseFloat(strVal.replace(/[£$€,\s]/g, ""));
+              const isNum =
+                typeof rawVal === "number" ||
+                (strVal !== "" && !isNaN(numClean) && /^[-+]?[£$€]?\s*[\d,]+(\.\d+)?%?$/.test(strVal.trim()));
+              numericValue = isNum ? numClean : null;
+            }
+            note = adj?.cell_note || "";
+          }
+
+          const cellOut = {
+            sheetRow: r,
+            colIdx: m.colIdx,
+            colLetter: m.colLetter,
+            cellRef: `${m.colLetter}${r}`,
+            formattedValue,
+            numericValue,
+            formula,
+            note,
+            isEditable,
+            bgColor,
+            isBold: cellBold,
+          };
+
+          if (r === 36) {
+            const hasCellValue = Boolean(formattedValue !== "" || formula !== "" || numericValue !== null);
+            cellOut.bankBreakdown = resolveMonthlyBankBreakdown({
+              monthKey: m.monthKey,
+              cellNumericValue: numericValue,
+              hasCellValue,
+              formula,
+              storedEntry: m.monthKey ? storedBreakdowns.months?.[m.monthKey] || null : null,
+              configuredBankAccounts: bankAccounts,
+            });
+          }
+
+          return cellOut;
+        });
+
+        // Special check: is this an empty spacer row?
+        const isSpacer = !label && cells.every((c) => !c.formattedValue && !c.formula);
+
+        list.push({
+          sheetRow: r,
+          label,
+          labelBg,
+          isBold,
+          isSpacer,
+          cells,
         });
       }
+      return list;
+    };
 
-      // Parse row definitions
-      const parseRowsForRange = (startRow, endRow) => {
-        const list = [];
-        for (let r = startRow; r <= endRow && r <= rowData.length; r++) {
-          const rowCells = rowData[r - 1]?.values || [];
-          const label = String(rowCells[0]?.formattedValue || "").trim();
-          const labelBg = colorToCss(rowCells[0]?.effectiveFormat?.backgroundColor);
-          const isBold = Boolean(rowCells[0]?.effectiveFormat?.textFormat?.bold);
+    const table1Rows = parseRowsForRange(2, 38);
+    const table2Rows = parseRowsForRange(43, 76);
 
-          const cells = monthCols.map((m) => {
-            const cellData = rowCells[m.colIdx];
-            let formattedValue = cellData?.formattedValue !== undefined && cellData?.formattedValue !== null
-              ? String(cellData.formattedValue).trim()
-              : "";
-            let formula = cellData?.userEnteredValue?.formulaValue || "";
-            let numericValue =
-              typeof cellData?.effectiveValue?.numberValue === "number"
-                ? cellData.effectiveValue.numberValue
-                : (typeof cellData?.userEnteredValue?.numberValue === "number" ? cellData.userEnteredValue.numberValue : null);
-            let note = cellData?.note || "";
-            const isEditable = isCashCellEditable(r, m.colIdx);
-            const bgColor = colorToCss(cellData?.effectiveFormat?.backgroundColor);
-            const cellBold = Boolean(cellData?.effectiveFormat?.textFormat?.bold);
+    const result = {
+      success: true,
+      clientName: resolvedClientName || clientName,
+      clientSheetId: cleanId,
+      currency: currencyRaw,
+      currencySymbol,
+      bankAccounts,
+      monthCols,
+      previousMonthColIdx,
+      currentMonthColIdx,
+      table1Rows,
+      table2Rows,
+      inputsReadMode: usedRelReads ? "relational" : "grid",
+      lastUpdated: new Date().toISOString(),
+    };
 
-            if (usedRelReads) {
-              const adj = cashAdjByCoord.get(`${r}:${m.colIdx}`) || null;
-              if (isEditable) {
-                formula = adj?.formula || "";
-                const rawVal = adj && adj.raw_value !== undefined && adj.raw_value !== null ? adj.raw_value : "";
-                const strVal = rawVal === "" ? "" : String(rawVal);
-                formattedValue = strVal !== "" ? String(formatCellForDisplay("client", "Cash", r - 1, m.colIdx, rawVal) || "").trim() : "";
-                const numClean = typeof rawVal === "number" ? rawVal : parseFloat(strVal.replace(/[£$€,\s]/g, ""));
-                const isNum =
-                  typeof rawVal === "number" ||
-                  (strVal !== "" && !isNaN(numClean) && /^[-+]?[£$€]?\s*[\d,]+(\.\d+)?%?$/.test(strVal.trim()));
-                numericValue = isNum ? numClean : null;
-              }
-              note = adj?.cell_note || "";
-            }
-
-            const cellOut = {
-              sheetRow: r,
-              colIdx: m.colIdx,
-              colLetter: m.colLetter,
-              cellRef: `${m.colLetter}${r}`,
-              formattedValue,
-              numericValue,
-              formula,
-              note,
-              isEditable,
-              bgColor,
-              isBold: cellBold,
-            };
-
-            if (r === 36) {
-              const hasCellValue = Boolean(formattedValue !== "" || formula !== "" || numericValue !== null);
-              cellOut.bankBreakdown = resolveMonthlyBankBreakdown({
-                monthKey: m.monthKey,
-                cellNumericValue: numericValue,
-                hasCellValue,
-                formula,
-                storedEntry: m.monthKey ? storedBreakdowns.months?.[m.monthKey] || null : null,
-                configuredBankAccounts: bankAccounts,
-              });
-            }
-
-            return cellOut;
-          });
-
-          // Special check: is this an empty spacer row?
-          const isSpacer = !label && cells.every((c) => !c.formattedValue && !c.formula);
-
-          list.push({
-            sheetRow: r,
-            label,
-            labelBg,
-            isBold,
-            isSpacer,
-            cells,
-          });
-        }
-        return list;
-      };
-
-      const table1Rows = parseRowsForRange(2, 38);
-      const table2Rows = parseRowsForRange(43, 76);
-
-      const result = {
-        success: true,
-        clientName: resolvedClientName || clientName,
-        clientSheetId: cleanId,
-        currency: currencyRaw,
-        currencySymbol,
-        bankAccounts,
-        monthCols,
-        previousMonthColIdx,
-        currentMonthColIdx,
-        table1Rows,
-        table2Rows,
-        inputsReadMode: usedRelReads ? "relational" : "grid",
-        lastUpdated: new Date().toISOString(),
-      };
-
-      return result;
+    return result;
   };
 
   if (forceMode) {
@@ -456,7 +456,7 @@ export async function saveCashBatch({
             clientName: resolvedClientName,
             monthKey: mKey,
             updatedBy: userEmail || "System",
-          }).catch(() => {});
+          }).catch(() => { });
         }
       } catch { }
     }
@@ -464,7 +464,11 @@ export async function saveCashBatch({
 
   // Invalidate caches
   try {
-    await invalidatePmaClientCache(cleanId, resolvedClientName || clientName, ["cash"]);
+    const sbCacheCtx = await resolveSupabaseSheetContext({
+      spreadsheetId: cleanId,
+      clientName: resolvedClientName || "",
+    }).catch(() => null);
+    await invalidatePmaClientCache(cleanId, sbCacheCtx?.masterSheetId || null, ["cash"]);
   } catch { }
 
   // Log activity in background
@@ -577,7 +581,7 @@ export async function saveCashBankBreakdown({
     }
 
     try {
-      await invalidatePmaClientCache(cleanId, resolvedClientName || clientName, ["cash", "dashboard", "views"]);
+      await invalidatePmaClientCache(cleanId, sbCtx?.masterSheetId || null, ["cash", "dashboard", "views"]);
     } catch { }
 
     scheduleWaitUntil_(() =>
@@ -627,7 +631,7 @@ export async function saveCashBankBreakdown({
   });
 
   try {
-    await invalidatePmaClientCache(cleanId, resolvedClientName || clientName, ["cash", "dashboard", "views"]);
+    await invalidatePmaClientCache(cleanId, sbCtx?.masterSheetId || null, ["cash", "dashboard", "views"]);
   } catch { }
 
   scheduleWaitUntil_(() =>
@@ -718,7 +722,11 @@ export async function saveCashCellNote({
 
   // Invalidate caches
   try {
-    await invalidatePmaClientCache(cleanId, null, ["cash"]);
+    const sbNoteCtx = await resolveSupabaseSheetContext({
+      spreadsheetId: cleanId,
+      clientName: clientName && clientName !== "Client" ? clientName : "",
+    }).catch(() => null);
+    await invalidatePmaClientCache(cleanId, sbNoteCtx?.masterSheetId || null, ["cash"]);
   } catch { }
 
   scheduleWaitUntil_(() =>

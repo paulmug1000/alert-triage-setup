@@ -125,7 +125,8 @@ export async function exchangeCodeForTokens({ code, redirectUri, codeVerifier })
       "Authorization": `Basic ${basicAuth}`,
       "Content-Type": "application/x-www-form-urlencoded"
     },
-    body: bodyParams.toString()
+    body: bodyParams.toString(),
+    redirect: "manual",
   });
 
   const data = await res.json();
@@ -198,7 +199,8 @@ export async function refreshXeroTokens(refreshToken) {
       "Authorization": `Basic ${basicAuth}`,
       "Content-Type": "application/x-www-form-urlencoded"
     },
-    body: bodyParams.toString()
+    body: bodyParams.toString(),
+    redirect: "manual",
   });
 
   const data = await res.json();
@@ -237,7 +239,8 @@ export async function revokeXeroToken(token) {
         "Authorization": `Basic ${basicAuth}`,
         "Content-Type": "application/x-www-form-urlencoded"
       },
-      body: bodyParams.toString()
+      body: bodyParams.toString(),
+      redirect: "manual",
     });
 
     return res.ok || res.status === 200;

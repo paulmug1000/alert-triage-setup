@@ -121,7 +121,8 @@ export async function getCloseAccountInfo(accessTokenOrApiKey) {
       headers: {
         "Authorization": authHeader,
         "Accept": "application/json"
-      }
+      },
+      redirect: "manual",
     });
 
     if (!res.ok) return null;

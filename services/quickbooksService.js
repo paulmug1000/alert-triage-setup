@@ -86,7 +86,8 @@ export function exchangeQBCodeForTokens({ code, redirectUri, codeVerifier, custo
       "Content-Type": "application/x-www-form-urlencoded",
       "Accept": "application/json"
     },
-    body: bodyParams.toString()
+    body: bodyParams.toString(),
+    redirect: "manual",
   }).then(async (res) => {
     const data = await res.json();
     if (!res.ok) {
@@ -123,7 +124,8 @@ export function refreshQBTokens(refreshToken, customClientId, customClientSecret
       "Content-Type": "application/x-www-form-urlencoded",
       "Accept": "application/json"
     },
-    body: bodyParams.toString()
+    body: bodyParams.toString(),
+    redirect: "manual",
   }).then(async (res) => {
     const data = await res.json();
     if (!res.ok) {
@@ -194,7 +196,8 @@ export async function revokeQBToken(token, customClientId, customClientSecret) {
         "Authorization": `Basic ${basicAuth}`,
         "Content-Type": "application/x-www-form-urlencoded"
       },
-      body: bodyParams.toString()
+      body: bodyParams.toString(),
+      redirect: "manual",
     });
 
     return res.ok;

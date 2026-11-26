@@ -24,6 +24,7 @@ import { invalidatePmaClientCache } from "./cacheService.js";
 import {
   flushImmediateAndScheduleBackgroundClientRecomputes,
   resolveClientSheetIdFromMaster,
+  resolveSupabaseSheetContext,
 } from "./masterEngineService.js";
 import { logPmaActivity } from "./pmaLogger.js";
 import { sanitizeFormulaInput } from "./userPermissions.js";
@@ -775,8 +776,13 @@ export async function pullYear0PL({ clientName, masterSheetId }) {
     masterSheetId: cleanMasterId,
     rawKeyInfoX28: rawClientSheetId,
   });
-  if (cleanMasterId.startsWith("sb-")) {
-    await flushImmediateAndScheduleBackgroundClientRecomputes(sheets, clientName || cleanMasterId).catch(() => { });
+  const flushCtx = await resolveSupabaseSheetContext({
+    clientName: clientName || "",
+    spreadsheetId: cleanMasterId,
+  }).catch(() => null);
+  const flushTargetClient = flushCtx?.clientName || clientName || "";
+  if (flushTargetClient) {
+    await flushImmediateAndScheduleBackgroundClientRecomputes(sheets, flushTargetClient).catch(() => { });
   }
   if (cleanClientId) {
     await syncYear0DataToClientSheet(sheets, cleanMasterId, cleanClientId);
@@ -1165,8 +1171,13 @@ export async function saveYear0Adjustments({
     masterSheetId: cleanMasterId,
     rawKeyInfoX28: rawClientSheetId,
   });
-  if (cleanMasterId.startsWith("sb-")) {
-    await flushImmediateAndScheduleBackgroundClientRecomputes(sheets, clientName || cleanMasterId).catch(() => { });
+  const flushCtx = await resolveSupabaseSheetContext({
+    clientName: clientName || "",
+    spreadsheetId: cleanMasterId,
+  }).catch(() => null);
+  const flushTargetClient = flushCtx?.clientName || clientName || "";
+  if (flushTargetClient) {
+    await flushImmediateAndScheduleBackgroundClientRecomputes(sheets, flushTargetClient).catch(() => { });
   }
   if (cleanClientId) {
     await syncYear0DataToClientSheet(sheets, cleanMasterId, cleanClientId);

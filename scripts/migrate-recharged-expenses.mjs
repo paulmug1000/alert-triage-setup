@@ -92,21 +92,22 @@ function printUsage() {
 }
 
 function parseCliArgs(argv) {
-  let apply = false;
+  let sawApply = false;
+  let sawDryRun = false;
   let all = false;
   let templates = false;
   let client = "";
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
-    if (arg === "--apply") apply = true;
-    else if (arg === "--dry-run") apply = false;
+    if (arg === "--apply") sawApply = true;
+    else if (arg === "--dry-run") sawDryRun = true;
     else if (arg === "--all") all = true;
     else if (arg === "--templates") templates = true;
     else if (arg === "--help" || arg === "-h") return { help: true };
     else if (arg.startsWith("--client=")) client = arg.slice("--client=".length).trim();
     else if (arg === "--client" && argv[i + 1]) client = String(argv[++i]).trim();
   }
-  return { help: false, apply, all, templates, client };
+  return { help: false, apply: sawApply && !sawDryRun, all, templates, client };
 }
 
 function colIdxToA1(idx0) {

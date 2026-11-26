@@ -625,6 +625,9 @@ export default async function handler(req, res) {
       return res.status(400).json({ success: false, error: rangeCheck.error || "Please enter valid start and end dates." });
     }
     if (Array.isArray(job?.invoices)) {
+      if (job.invoices.length > 500) {
+        return res.status(400).json({ success: false, error: "Too many invoice lines in a single job save (max 500)." });
+      }
       for (let i = 0; i < job.invoices.length; i++) {
         const sd = job.invoices[i]?.sendDate;
         if (sd !== undefined && String(sd).trim() !== "" && !isValidDateInputValue(sd, { allowEmpty: false })) {
@@ -633,6 +636,9 @@ export default async function handler(req, res) {
       }
     }
     if (Array.isArray(job?.directExpenses)) {
+      if (job.directExpenses.length > 500) {
+        return res.status(400).json({ success: false, error: "Too many direct expense lines in a single job save (max 500)." });
+      }
       for (let i = 0; i < job.directExpenses.length; i++) {
         const rd = job.directExpenses[i]?.recDate;
         if (rd !== undefined && String(rd).trim() !== "" && !isValidDateInputValue(rd, { allowEmpty: false })) {

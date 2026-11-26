@@ -867,15 +867,17 @@ export async function handleUpdateViewCell(req, res, sheets) {
     })();
 
     // Invalidate cached view data across both PMA and Portal
-    const cleanId = extractSheetIdFromUrl(sheetIdClean) || sheetIdClean;
+    const cleanId = unwrapSheetId(extractSheetIdFromUrl(sheetIdClean) || sheetIdClean);
+    const cleanClientArg = unwrapSheetId(extractSheetIdFromUrl(clientSheetId) || cleanId);
+    const cleanMasterArg = masterSheetId ? unwrapSheetId(extractSheetIdFromUrl(masterSheetId) || masterSheetId) : null;
     memoryCache.del(`pulse:view_data:${cleanId}:*`);
     memoryCache.del(`pulse:view_data:${cleanId}:${screenTab}`);
     if (redisClient?.isOpen) {
       redisClient.del(`pulse:view_data:${cleanId}:${screenTab}`).catch(() => { });
     }
     invalidatePmaClientCache(
-      extractSheetIdFromUrl(clientSheetId) || cleanId,
-      extractSheetIdFromUrl(masterSheetId) || null,
+      cleanClientArg,
+      cleanMasterArg,
       screenTab === "budget" ? ["views"] : ["outgoings", "views", "cash"]
     ).catch(() => { });
 
@@ -1025,15 +1027,17 @@ export async function handleSpreadViewRow(req, res, sheets) {
       }
     })();
 
-    const cleanId = extractSheetIdFromUrl(sheetIdClean) || sheetIdClean;
+    const cleanId = unwrapSheetId(extractSheetIdFromUrl(sheetIdClean) || sheetIdClean);
+    const cleanClientArg = unwrapSheetId(extractSheetIdFromUrl(clientSheetId) || cleanId);
+    const cleanMasterArg = masterSheetId ? unwrapSheetId(extractSheetIdFromUrl(masterSheetId) || masterSheetId) : null;
     memoryCache.del(`pulse:view_data:${cleanId}:*`);
     memoryCache.del(`pulse:view_data:${cleanId}:budget`);
     if (redisClient?.isOpen) {
       redisClient.del(`pulse:view_data:${cleanId}:budget`).catch(() => { });
     }
     invalidatePmaClientCache(
-      extractSheetIdFromUrl(clientSheetId) || cleanId,
-      extractSheetIdFromUrl(masterSheetId) || null,
+      cleanClientArg,
+      cleanMasterArg,
       ["views"]
     ).catch(() => { });
 
@@ -1217,29 +1221,43 @@ export async function handleUpdateCellNote(req, res, sheets) {
         ? "'" + cleanNote.replace(/^[\s'’]+/, "")
         : cleanNote;
       const outgCellRange = `OutgNotes!${finalColLetter}${rowNum}`;
-      const cIdClean = clientSheetId ? (extractSheetIdFromUrl(clientSheetId) || clientSheetId) : null;
-      const mIdClean = masterSheetId ? (extractSheetIdFromUrl(masterSheetId) || masterSheetId) : null;
+      const cIdClean = clientSheetId ? unwrapSheetId(extractSheetIdFromUrl(clientSheetId) || clientSheetId) : null;
+      const mIdClean = masterSheetId ? unwrapSheetId(extractSheetIdFromUrl(masterSheetId) || masterSheetId) : null;
+      const outgWrites = [];
       if (cIdClean) {
-        sheets.spreadsheets.values.update({
-          spreadsheetId: cIdClean,
-          range: outgCellRange,
-          valueInputOption: "RAW",
-          requestBody: { values: [[safeOutgNote]] }
-        }).catch(() => { });
+        outgWrites.push(
+          sheets.spreadsheets.values.update({
+            spreadsheetId: cIdClean,
+            range: outgCellRange,
+            valueInputOption: "RAW",
+            requestBody: { values: [[safeOutgNote]] }
+          }).catch(() => { })
+        );
       }
       if (mIdClean) {
-        sheets.spreadsheets.values.update({
-          spreadsheetId: mIdClean,
-          range: outgCellRange,
-          valueInputOption: "RAW",
-          requestBody: { values: [[safeOutgNote]] }
-        }).catch(() => { });
+        outgWrites.push(
+          sheets.spreadsheets.values.update({
+            spreadsheetId: mIdClean,
+            range: outgCellRange,
+            valueInputOption: "RAW",
+            requestBody: { values: [[safeOutgNote]] }
+          }).catch(() => { })
+        );
       }
+      if (outgWrites.length > 0) await Promise.allSettled(outgWrites);
     }
 
     // Invalidate caches
-    const cleanId = extractSheetIdFromUrl(sheetIdClean) || sheetIdClean;
-    await invalidatePmaClientCache(cleanId, null, ["views"]).catch(() => { });
+    const cleanId = unwrapSheetId(extractSheetIdFromUrl(sheetIdClean) || sheetIdClean);
+    const cleanMasterArg = masterSheetId ? unwrapSheetId(extractSheetIdFromUrl(masterSheetId) || masterSheetId) : null;
+    memoryCache.del(`pulse:view_data:${cleanId}:*`);
+    if (redisClient?.isOpen) {
+      const tabKeysToBust = [...new Set([targetTab.toLowerCase(), targetTabNormalized].filter(Boolean))];
+      await Promise.all(
+        tabKeysToBust.map((tk) => redisClient.del(`pulse:view_data:${cleanId}:${tk}`).catch(() => { }))
+      );
+    }
+    await invalidatePmaClientCache(cleanId, cleanMasterArg, ["outgoings", "views"]).catch(() => { });
 
     let resolvedClient = clientName || "";
     if (!resolvedClient) {

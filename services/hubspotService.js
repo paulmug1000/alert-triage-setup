@@ -112,7 +112,10 @@ export async function getHubSpotAccountInfo(accessToken) {
     const cleanToken = accessToken.startsWith("Bearer ") ? accessToken : `Bearer ${accessToken}`;
 
     // 1. Fetch Token Info (user email, hub_id)
-    const tokenInfoRes = await fetch(`${HUBSPOT_API_BASE}/oauth/v1/access-tokens/${encodeURIComponent(accessToken.replace(/^Bearer\s+/i, ""))}`);
+    const tokenInfoRes = await fetch(
+      `${HUBSPOT_API_BASE}/oauth/v1/access-tokens/${encodeURIComponent(accessToken.replace(/^Bearer\s+/i, ""))}`,
+      { redirect: "manual" }
+    );
     let tokenInfo = null;
     if (tokenInfoRes.ok) {
       tokenInfo = await tokenInfoRes.json();
@@ -123,11 +126,16 @@ export async function getHubSpotAccountInfo(accessToken) {
       headers: {
         "Authorization": cleanToken,
         "Accept": "application/json"
-      }
+      },
+      redirect: "manual",
     });
     let details = null;
     if (detailsRes.ok) {
       details = await detailsRes.json();
+    }
+
+    if (!tokenInfoRes.ok && !detailsRes.ok) {
+      return null;
     }
 
     const portalId = details?.portalId || tokenInfo?.hub_id || "";

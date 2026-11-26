@@ -22,7 +22,7 @@ import {
 import { getSessionUser } from "./authService.js";
 import { get2TierCache, set2TierCache, resolvePortalCache, invalidatePmaClientCache, memoryCache } from "./cacheService.js";
 import { unwrapSheetId } from "./sheetTokenService.js";
-import { resolveSupabaseSheetContext } from "./masterEngineService.js";
+import { resolveSupabaseSheetContext, flushImmediateAndScheduleBackgroundClientRecomputes } from "./masterEngineService.js";
 import { preloadClientRelationalJobsBundle, buildRelationalFormattedTabRowsFromBundle } from "./relationalJobsService.js";
 import { redisClient, scanRedisKeys } from "./redisClient.js";
 
@@ -3605,7 +3605,22 @@ export function provisionRetainerScheduleInBackground(sheets, params = {}) {
   const bgPromise = (async () => {
     try {
       const clientInstance = sheets || (await getSheetsClient());
-      return await provisionRetainerChildRows_(clientInstance, params);
+      const res = await provisionRetainerChildRows_(clientInstance, params);
+      const flushClient =
+        params?.clientName ||
+        (await resolveSupabaseSheetContext({ spreadsheetId: params?.clientSheetId || params?.masterSheetId }).catch(() => null))?.clientName ||
+        "";
+      if (flushClient) {
+        await flushImmediateAndScheduleBackgroundClientRecomputes(clientInstance, flushClient).catch(() => {});
+      }
+      if (params?.clientSheetId || params?.masterSheetId) {
+        await invalidatePmaClientCache(
+          params.clientSheetId || null,
+          params.masterSheetId || null,
+          ["jobs", "invoices", "retainers", "cash", "views", "dashboard"]
+        ).catch(() => {});
+      }
+      return res;
     } catch (err) {
       console.error("❌ Retainer schedule provisioning failed:", err);
       return { success: false, error: err.message };

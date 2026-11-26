@@ -90,9 +90,12 @@ export default async function handler(req, res) {
     const clientName = statePayload.clientName || clientKey;
     const masterSheetId = statePayload.masterSheetId;
 
-    // 2. Fetch account metadata
+    // 2. Fetch and strictly verify account metadata before persisting tokens
     const accountInfo = await getMondayAccountInfo(tokens.accessToken);
-    const accountName = accountInfo?.accountName || clientName;
+    if (!accountInfo || (!accountInfo.accountId && !accountInfo.accountName && !accountInfo.userEmail)) {
+      throw new Error("Monday.com verification failed: unable to read authenticated account profile.");
+    }
+    const accountName = accountInfo.accountName || clientName;
 
     // 3. Encrypt and store tokens in Central Vault
     await saveIntegrationTokens({

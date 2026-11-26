@@ -85,15 +85,16 @@ function normFormula(val) {
 }
 
 function parseCliArgs(argv) {
-  let apply = false;
+  let sawApply = false;
+  let sawDryRun = false;
   let all = false;
   let templates = false;
   let includeArchived = false;
   let client = "";
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
-    if (arg === "--apply") apply = true;
-    else if (arg === "--dry-run") apply = false;
+    if (arg === "--apply") sawApply = true;
+    else if (arg === "--dry-run") sawDryRun = true;
     else if (arg === "--all") all = true;
     else if (arg === "--templates") templates = true;
     else if (arg === "--include-archived") includeArchived = true;
@@ -101,7 +102,7 @@ function parseCliArgs(argv) {
     else if (arg.startsWith("--client=")) client = arg.slice("--client=".length).trim();
     else if (arg === "--client" && argv[i + 1]) client = String(argv[++i]).trim();
   }
-  return { help: false, apply, all, templates, includeArchived, client };
+  return { help: false, apply: sawApply && !sawDryRun, all, templates, includeArchived, client };
 }
 
 function printUsage() {
@@ -575,7 +576,7 @@ async function main() {
     if (!sb) throw new Error("Supabase is required to enumerate clients.");
     const { data: rows, error } = await sb
       .from("clients")
-      .select("client_name, master_sheet_id, client_sheet_id, recon_sheet_id, status")
+      .select("client_name, master_sheet_id, client_sheet_id, recon_sheet_id, status, grid_storage_retired")
       .order("client_name");
     if (error) throw new Error(`Failed loading clients: ${error.message}`);
 
@@ -607,9 +608,13 @@ async function main() {
           await cleanupGoogleSheetKeyInfo(sheets, c.recon_sheet_id, `${name} Recon`, args.apply);
         }
 
-        // Supabase virtual workbooks
-        await cleanupSupabaseKeyInfo(sb, name, args.apply);
-        await fixSupabaseVat(sb, name, args.apply);
+        // Supabase virtual workbooks (skip retired master_sheet_grids)
+        if (!c.grid_storage_retired) {
+          await cleanupSupabaseKeyInfo(sb, name, args.apply);
+          await fixSupabaseVat(sb, name, args.apply);
+        } else {
+          console.log(`  [${name}] grid_storage_retired=true — skipping retired master_sheet_grids cleanup/VAT recalc.`);
+        }
 
         if (args.apply) {
           invalidateMasterEngineCache(name);

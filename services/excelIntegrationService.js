@@ -51,7 +51,8 @@ export async function discoverSharePointTenantId(sharingUrl) {
     const res = await fetch(`https://${u.hostname}/_vti_bin/client.svc`, {
       method: "GET",
       headers: { Authorization: "Bearer" },
-      signal: AbortSignal.timeout(2500)
+      signal: AbortSignal.timeout(2500),
+      redirect: "manual",
     });
     const authHeader = res.headers.get("www-authenticate") || "";
     const match = authHeader.match(/realm="([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})"/i);
@@ -118,7 +119,8 @@ export async function exchangeExcelCodeForTokens({ code, redirectUri, tenantId =
   const res = await fetch(`${MS_OAUTH_BASE}/${tenant}/oauth2/v2.0/token`, {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body: body.toString()
+    body: body.toString(),
+    redirect: "manual",
   });
 
   const data = await res.json().catch(() => ({}));
@@ -160,7 +162,8 @@ export async function refreshExcelTokens(refreshToken, tenantId = "common") {
   const res = await fetch(`${MS_OAUTH_BASE}/${tenant}/oauth2/v2.0/token`, {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body: body.toString()
+    body: body.toString(),
+    redirect: "manual",
   });
 
   const data = await res.json().catch(() => ({}));
@@ -205,7 +208,8 @@ export async function getAzureClientCredentialsToken(tenantId, clientId, clientS
   const res = await fetch(tokenUrl, {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body: body.toString()
+    body: body.toString(),
+    redirect: "manual",
   });
 
   const data = await res.json();
@@ -624,10 +628,26 @@ export async function linkExcelToClient({
   let resolvedDriveId = driveId;
   let resolvedFileId = fileId;
   if ((!resolvedDriveId || !resolvedFileId) && url) {
-    const { getIntegrationTokens } = await import("./vaultService.js");
-    const grant = await getIntegrationTokens({ clientKey, tool: "excel" });
-    if (grant?.tokens?.accessToken) {
-      const resolved = await resolveSharePointDriveItem({ sharingUrl: url, token: grant.tokens.accessToken });
+    const { getIntegrationTokens, refreshStoredIntegrationToken } = await import("./vaultService.js");
+    const grant = await getIntegrationTokens({ clientKey, masterSheetId, tool: "excel" });
+    if (grant?.tokens?.accessToken && !grant.reconnectRequired) {
+      let token = grant.tokens.accessToken;
+      const isExpiring = !grant.expiresAt || Date.now() > (grant.expiresAt - 300000);
+      if (isExpiring && grant.tokens.refreshToken) {
+        const refreshed = await refreshStoredIntegrationToken({
+          clientKey: grant.clientKey || clientKey,
+          masterSheetId,
+          tool: "excel",
+          bufferSeconds: 300,
+          refreshFn: (latest) =>
+            refreshExcelTokens(
+              latest.tokens.refreshToken,
+              latest?.metadata?.azureTenantId || grant.metadata?.azureTenantId
+            ),
+        });
+        token = refreshed.accessToken;
+      }
+      const resolved = await resolveSharePointDriveItem({ sharingUrl: url, token });
       resolvedDriveId = resolved.driveId;
       resolvedFileId = resolved.fileId;
     }

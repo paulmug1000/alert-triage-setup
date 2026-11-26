@@ -538,7 +538,7 @@ export default function InvoicesView({
       Object.values(allClientsMap || {}).find(c => c.clientName?.toLowerCase() === (invoicesClient?.clientName || "").toLowerCase())?.masterSheetId;
 
     if (!effectiveClientSheetId) {
-      setPlaceModalError("Could not determine client spreadsheet for placing this invoice.");
+      setPlaceModalError(isAdmin ? "Could not determine client spreadsheet for placing this invoice." : "Could not determine client workspace for placing this invoice.");
       setInvoicesSavingCell(null);
       return;
     }
@@ -1242,7 +1242,7 @@ export default function InvoicesView({
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "8px", marginBottom: "16px", borderBottom: "1px solid #e0e0e0" }}>
               <div style={{ display: "flex", gap: "8px" }}>
                 <a
-                  href={`/pma?nav=invoices&subtab=byJob${invoicesClient ? `&client=${encodeURIComponent(invoicesClient)}` : ""}`}
+                  href={`/pma?nav=invoices&subtab=byJob${invoicesClient?.clientName ? `&client=${encodeURIComponent(invoicesClient.clientName)}` : ""}`}
                   onClick={(e) => {
                     if (!e.ctrlKey && !e.metaKey && !e.shiftKey && !e.altKey && e.button === 0) {
                       e.preventDefault();
@@ -1266,7 +1266,7 @@ export default function InvoicesView({
                   By job
                 </a>
                 <a
-                  href={`/pma?nav=invoices&subtab=byInvoiceNo${invoicesClient ? `&client=${encodeURIComponent(invoicesClient)}` : ""}`}
+                  href={`/pma?nav=invoices&subtab=byInvoiceNo${invoicesClient?.clientName ? `&client=${encodeURIComponent(invoicesClient.clientName)}` : ""}`}
                   onClick={(e) => {
                     if (!e.ctrlKey && !e.metaKey && !e.shiftKey && !e.altKey && e.button === 0) {
                       e.preventDefault();

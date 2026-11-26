@@ -292,17 +292,23 @@ export async function handleBulkCreateTasks(req, res, sheets) {
           const { taskRow } = meta;
           const candidates = findMatchingTaskMemoryCandidates_(memoryRows, meta);
           if (candidates.length > 0) {
+            const getRowIdKey = (r) =>
+              r?.fingerprintHash
+                ? `fp:${r.fingerprintHash}`
+                : (r?.rowIndex !== null && r?.rowIndex !== undefined ? `row:${r.rowIndex}` : null);
             const primaryRow = candidates[0];
+            const primaryIdKey = getRowIdKey(primaryRow);
             for (const dup of candidates.slice(1)) {
-              if (dup.rowIndex === primaryRow.rowIndex || queuedRowIndices.has(dup.rowIndex)) continue;
-              queuedRowIndices.add(dup.rowIndex);
+              const dupIdKey = getRowIdKey(dup);
+              if (dup === primaryRow || (dupIdKey && dupIdKey === primaryIdKey) || (dupIdKey && queuedRowIndices.has(dupIdKey))) continue;
+              if (dupIdKey) queuedRowIndices.add(dupIdKey);
               toUpdate.push({
                 rowIndex: dup.rowIndex,
                 updates: { ...dup, status: "superseded" },
               });
             }
-            if (!queuedRowIndices.has(primaryRow.rowIndex)) {
-              queuedRowIndices.add(primaryRow.rowIndex);
+            if (!primaryIdKey || !queuedRowIndices.has(primaryIdKey)) {
+              if (primaryIdKey) queuedRowIndices.add(primaryIdKey);
               let prevSnap = {};
               try { prevSnap = JSON.parse(primaryRow.dataSnapshot || "{}"); } catch (_) { }
               let newSnap = {};
@@ -507,8 +513,15 @@ export async function handleCreateTask(req, res, sheets) {
 
         if (candidates.length > 0) {
           const primaryRow = candidates[0];
+          const primaryFp = primaryRow.fingerprintHash || "";
           for (const dup of candidates.slice(1)) {
-            if (dup.rowIndex === primaryRow.rowIndex) continue;
+            if (
+              dup === primaryRow ||
+              (dup.fingerprintHash && dup.fingerprintHash === primaryFp) ||
+              (!dup.fingerprintHash && dup.rowIndex != null && dup.rowIndex === primaryRow.rowIndex)
+            ) {
+              continue;
+            }
             await updateAlertMemoryRow(sheets, acId, dup.rowIndex, {
               ...dup,
               status: "superseded",

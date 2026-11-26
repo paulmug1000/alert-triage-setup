@@ -90,9 +90,15 @@ export default async function handler(req, res) {
     const clientName = statePayload.clientName || clientKey;
     const masterSheetId = statePayload.masterSheetId;
 
-    // 2. Fetch workspace metadata
+    // 2. Fetch and strictly verify workspace metadata before persisting tokens
     const workspaceInfo = await getClickUpWorkspaceInfo(tokens.accessToken);
-    const workspaceName = workspaceInfo?.workspaceName || workspaceInfo?.teamName || clientName;
+    if (
+      !workspaceInfo ||
+      (!workspaceInfo.teamId && !workspaceInfo.workspaceName && !workspaceInfo.teamName && !workspaceInfo.userEmail)
+    ) {
+      throw new Error("ClickUp verification failed: unable to read authenticated workspace profile.");
+    }
+    const workspaceName = workspaceInfo.workspaceName || workspaceInfo.teamName || clientName;
 
     // 3. Encrypt and store tokens in Central Vault
     await saveIntegrationTokens({

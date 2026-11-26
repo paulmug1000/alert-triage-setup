@@ -343,7 +343,7 @@ export async function syncControlPlaneToSupabase({ sheets, automationCommanderSh
 
   const { data: existingDbClients } = await sb
     .from("clients")
-    .select("normalized_key, status, metadata, master_mode, client_mode, reports_folder_id");
+    .select("normalized_key, status, metadata, master_mode, client_mode, reports_folder_id, client_sheet_id, master_sheet_id, recon_sheet_id, client_sheet_url, master_sheet_url, recon_sheet_url");
   const existingClientsByKey = new Map(
     (existingDbClients || []).filter(c => c.normalized_key).map(c => [c.normalized_key, c])
   );
@@ -374,12 +374,12 @@ export async function syncControlPlaneToSupabase({ sheets, automationCommanderSh
       normalized_key: normKey,
       version_in_use: String(row[1] || "").trim(),
       service_type: String(row[5] || "").trim(),
-      client_sheet_url: clientUrl,
-      master_sheet_url: masterUrl,
-      recon_sheet_url: reconUrl,
-      client_sheet_id: extractSheetIdFromUrl(clientUrl) || "",
-      master_sheet_id: extractSheetIdFromUrl(masterUrl) || "",
-      recon_sheet_id: extractSheetIdFromUrl(reconUrl) || "",
+      client_sheet_url: clientUrl || prev?.client_sheet_url || "",
+      master_sheet_url: masterUrl || prev?.master_sheet_url || "",
+      recon_sheet_url: reconUrl || prev?.recon_sheet_url || "",
+      client_sheet_id: extractSheetIdFromUrl(clientUrl) || prev?.client_sheet_id || "",
+      master_sheet_id: extractSheetIdFromUrl(masterUrl) || prev?.master_sheet_id || "",
+      recon_sheet_id: extractSheetIdFromUrl(reconUrl) || prev?.recon_sheet_id || "",
       web_app_url: String(row[14] || "").trim(),
       short_code: String(row[15] || "").trim() || null,
       client_script_id: String(row[17] || "").trim(),

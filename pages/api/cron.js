@@ -220,6 +220,7 @@ export default async function handler(req, res) {
           await fetch(`${baseUrl}/api/triage`, {
             method: "POST",
             headers: cronHeaders,
+            redirect: "manual",
             body: JSON.stringify({
               action: "get_activity",
               forceRefresh: true,
@@ -324,6 +325,7 @@ export default async function handler(req, res) {
             await fetch(`${baseUrl}/api/triage`, {
               method: "POST",
               headers: cronHeaders,
+              redirect: "manual",
               body: JSON.stringify({ action: "auto_provision_recon_tabs", secret: cronSecret, automationCommanderSheetId: acId }),
             });
           } catch (tabErr) {

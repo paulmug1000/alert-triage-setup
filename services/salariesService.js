@@ -1017,7 +1017,7 @@ export async function applySalaryForecastResolution_({
       effectiveSheets.spreadsheets.values.get({
         spreadsheetId: targetSheetId,
         range: `Salaries!A${rowNum}:I${rowNum}`,
-        valueRenderOption: "FORMATTED_VALUE",
+        valueRenderOption: "FORMULA",
       })
     );
     const existing = rowResp.data?.values?.[0] || [];

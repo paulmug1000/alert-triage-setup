@@ -219,7 +219,21 @@ export default function SetupHoldingGate({
     return { bg: "#0047AB", hover: "#003b8e" };
   };
 
+  const cannotConnectIntegrations = Boolean(
+    user?.isReadOnly ||
+    user?.authProvider === "EmailOTP" ||
+    user?.isSenior ||
+    user?.role === "Senior (Restricted)"
+  );
+
   const handleConnect = (tool) => {
+    if (cannotConnectIntegrations) {
+      setLocalFeedback({
+        type: "warning",
+        message: "Only standard client users or workspace administrators can authorise new tool connections."
+      });
+      return;
+    }
     const provider = String(tool).toLowerCase();
     if (provider === "googlesheet") {
       setGoogleSheetModalOpen(true);
@@ -832,7 +846,7 @@ export default function SetupHoldingGate({
                       >
                         <div style={{ textAlign: "left" }}>
                           <div style={{ fontSize: "11px", fontWeight: 700, color: "#64748B", textTransform: "uppercase", letterSpacing: "0.5px" }}>
-                            {t.type === "accounting" ? "Accounting Platform" : "CRM Platform"}
+                            {t.type === "accounting" ? "Accounting platform" : "CRM platform"}
                           </div>
                           <div style={{ fontSize: "17px", fontWeight: 700, color: "#0F172A", marginTop: "3px" }}>
                             {getToolDisplayName(t.tool)}
@@ -857,6 +871,21 @@ export default function SetupHoldingGate({
                             >
                               <span>✓</span>
                               <span>Connected</span>
+                            </span>
+                          ) : cannotConnectIntegrations ? (
+                            <span
+                              style={{
+                                display: "inline-block",
+                                padding: "7px 14px",
+                                borderRadius: "6px",
+                                background: "#F1F5F9",
+                                color: "#64748B",
+                                fontSize: "12.5px",
+                                fontWeight: 600,
+                                border: "1px solid #CBD5E1"
+                              }}
+                            >
+                              Ask workspace owner to connect
                             </span>
                           ) : (
                             <button

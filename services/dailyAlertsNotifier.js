@@ -877,6 +877,7 @@ async function collectZeroGridHealthAndMetrics_(sb, activeClients = [], suiteFai
         .from("pulse_execution_logs")
         .select("client_id, client_name, function_name, status, executed_at, summary")
         .order("executed_at", { ascending: false })
+        .order("id", { ascending: false })
         .limit(200),
       sb.from("tenant_integrations").select("client_id, tool, status"),
       sb.from("master_sheet_grids").select("client_name").limit(200),

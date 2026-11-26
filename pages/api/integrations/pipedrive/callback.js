@@ -90,9 +90,12 @@ export default async function handler(req, res) {
     const clientName = statePayload.clientName || clientKey;
     const masterSheetId = statePayload.masterSheetId;
 
-    // 2. Fetch account metadata
+    // 2. Fetch and strictly verify account metadata before persisting tokens
     const accountInfo = await getPipedriveAccountInfo(tokens.accessToken);
-    const companyName = accountInfo?.companyName || clientName;
+    if (!accountInfo || (!accountInfo.companyId && !accountInfo.companyName && !accountInfo.userEmail)) {
+      throw new Error("Pipedrive verification failed: unable to read authenticated account profile.");
+    }
+    const companyName = accountInfo.companyName || clientName;
 
     // 3. Encrypt and store tokens in Central Vault
     await saveIntegrationTokens({

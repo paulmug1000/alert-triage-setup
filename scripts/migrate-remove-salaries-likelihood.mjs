@@ -65,21 +65,22 @@ function colIdxToA1(idx0) {
 }
 
 function parseCliArgs(argv) {
-  let apply = false;
+  let sawApply = false;
+  let sawDryRun = false;
   let all = false;
   let templates = false;
   let client = "";
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
-    if (arg === "--apply") apply = true;
-    else if (arg === "--dry-run") apply = false;
+    if (arg === "--apply") sawApply = true;
+    else if (arg === "--dry-run") sawDryRun = true;
     else if (arg === "--all") all = true;
     else if (arg === "--templates") templates = true;
     else if (arg === "--help" || arg === "-h") return { help: true };
     else if (arg.startsWith("--client=")) client = arg.slice("--client=".length).trim();
     else if (arg === "--client" && argv[i + 1]) client = String(argv[++i]).trim();
   }
-  return { help: false, apply, all, templates, client };
+  return { help: false, apply: sawApply && !sawDryRun, all, templates, client };
 }
 
 function printUsage() {
@@ -628,9 +629,11 @@ async function main() {
         } else {
           console.log(`  [${c.clientName}] Synthetic/no Google clientSheetId (${c.clientSheetId || "none"}), skipping Google Sheet.`);
         }
-        if (sb) {
+        if (sb && !c.gridStorageRetired) {
           await migrateSupabaseGrid(sb, c.clientName, args.apply);
           await migrateSupabaseReconGrid(sb, c.clientName, args.apply);
+        } else if (c.gridStorageRetired) {
+          console.log(`  [${c.clientName} Supabase] grid_storage_retired=true — skipping retired master_sheet_grids cleanup.`);
         }
         if (args.apply && (c.clientSheetId || c.masterSheetId)) {
           await invalidateSalariesCache(c.masterSheetId, c.clientSheetId);

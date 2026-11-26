@@ -77,7 +77,8 @@ export async function getClickUpWorkspaceInfo(accessToken) {
       headers: {
         "Authorization": cleanToken,
         "Accept": "application/json"
-      }
+      },
+      redirect: "manual",
     });
 
     let userData = null;
@@ -91,7 +92,8 @@ export async function getClickUpWorkspaceInfo(accessToken) {
       headers: {
         "Authorization": cleanToken,
         "Accept": "application/json"
-      }
+      },
+      redirect: "manual",
     });
 
     let teamData = null;
@@ -100,6 +102,10 @@ export async function getClickUpWorkspaceInfo(accessToken) {
       if (tJson.teams && tJson.teams.length > 0) {
         teamData = tJson.teams[0];
       }
+    }
+
+    if (!userRes.ok && !teamRes.ok) {
+      return null;
     }
 
     return {

@@ -614,9 +614,11 @@ export async function backfillClientNativeCalc(clientName) {
   }
   const staleIds = (existingRows || []).filter((r) => !keepTabs.has(r.tab_name)).map((r) => r.id);
   if (rows.length > 0 && staleIds.length > 0) {
-    const { error: delErr } = await supabase.from("pulse_client_tab_blueprints").delete().in("id", staleIds);
-    if (delErr) {
-      throw new Error(`Failed deleting stale blueprints (${ctx.clientName}): ${delErr.message}`);
+    for (let i = 0; i < staleIds.length; i += 200) {
+      const { error: delErr } = await supabase.from("pulse_client_tab_blueprints").delete().in("id", staleIds.slice(i, i + 200));
+      if (delErr) {
+        throw new Error(`Failed deleting stale blueprints (${ctx.clientName}): ${delErr.message}`);
+      }
     }
   }
 
@@ -1810,9 +1812,11 @@ export async function verifyNativeClientMutationMatrix({
       schema.schemaReady &&
       (source === "db" ||
         (source === "auto" && Boolean(cl.metadata?.native_client_calc_state?.lastBackfilledAt)));
-    const effectiveSource = canUseDb ? "db" : "in_memory";
+    const effectiveSource = cl.grid_storage_retired ? "db" : (canUseDb ? "db" : "in_memory");
 
-    const rawTabs = await loadRawClientTabsFromGrids_(supabase, cl.client_name, { valuesOnly: false });
+    const rawTabs = effectiveSource === "in_memory"
+      ? await loadRawClientTabsFromGrids_(supabase, cl.client_name, { valuesOnly: false })
+      : {};
     const nativeBaseRecords = await loadNativeClientTabRecordsBatch(ctx, CORE_CLIENT_TABS, {
       source: effectiveSource,
       valuesOnly: false,

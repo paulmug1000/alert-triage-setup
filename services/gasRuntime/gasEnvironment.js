@@ -2844,7 +2844,7 @@ export async function createGasEnvironment({
         collectUpsert(sObj, "recon");
       }
 
-      if (ctx.syncOrchestratorMode !== "native") {
+      if (ctx.syncOrchestratorMode !== "native" && !ctx.gridStorageRetired) {
         for (let i = 0; i < upserts.length; i += 6) {
           const batch = upserts.slice(i, i + 6);
           const { error: batchErr } = await supabase

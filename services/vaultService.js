@@ -503,7 +503,11 @@ export async function getSharedXeroGrant({ bypassL1 = false } = {}) {
  * Updates the Central/Shared Advisor Xero Grant tokens after a refresh.
  */
 export async function updateSharedXeroGrantTokens(tokens) {
-  const rawJson = await redisClient.get(SHARED_XERO_KEY);
+  let rawJson = await redisClient.get(SHARED_XERO_KEY);
+  if (!rawJson) {
+    const sbRecord = await loadVaultRecordFromSupabase_({ clientKey: "__shared_xero__", tool: "xero" });
+    if (sbRecord) rawJson = JSON.stringify(sbRecord);
+  }
   if (!rawJson) {
     throw new Error("No shared Xero grant found in Vault to update.");
   }
@@ -908,18 +912,27 @@ export async function getIntegrationTokens(arg1, arg2, arg3) {
  * Updates tokens in-place (e.g. after automated refresh) without wiping metadata.
  * Automatically synchronizes with Central Shared Xero Grant when applicable.
  */
-export async function updateRefreshedTokens({ clientKey, tool, tokens, newTenantId = null }) {
+export async function updateRefreshedTokens({ clientKey, masterSheetId = "", tool, tokens, newTenantId = null }) {
   const cleanClient = normalizeKey(clientKey);
   const cleanTool = normalizeKey(tool);
   const redisKey = getVaultRedisKey(cleanClient, cleanTool);
-  const rawJson = await redisClient.get(redisKey);
+  let rawJson = await redisClient.get(redisKey);
 
-  // If no client-specific record exists:
+  // If no client-specific record in Redis, fall back to Supabase before giving up:
   if (!rawJson) {
     if (cleanTool === "xero" && (cleanClient === "advisor" || cleanClient === "shared")) {
       return await updateSharedXeroGrantTokens(tokens);
     }
-    throw new Error(`Cannot update tokens: No existing integration record found for ${cleanClient}:${cleanTool}`);
+    const sbRecord = await loadVaultRecordFromSupabase_({
+      clientKey: cleanClient,
+      masterSheetId: String(masterSheetId || "").trim(),
+      tool: cleanTool,
+    });
+    if (sbRecord) {
+      rawJson = JSON.stringify(sbRecord);
+    } else {
+      throw new Error(`Cannot update tokens: No existing integration record found for ${cleanClient}:${cleanTool}`);
+    }
   }
 
   const record = JSON.parse(rawJson);

@@ -466,6 +466,8 @@ async function loadClientsArrayFromSupabaseFallback_() {
         hasAccountingIntegration: ["xero", "quickbooks", "qb"].some((t) => String(accountingTool).toLowerCase().includes(t)),
         clientMode: c.client_mode || "sheet",
         masterMode: c.master_mode || "sheet",
+        setupMode: Boolean(c.metadata?.setupMode),
+        pulseLive: !c.metadata?.setupMode || Boolean(c.metadata?.pulseLive),
       });
     }
     return { clientsArray };
@@ -566,7 +568,7 @@ export async function getSsrInitialPmaData(sessionUser) {
         const hasAccountingIntegration = c.hasAccountingIntegration ?? ["xero", "quickbooks", "qb"].some(t => String(accTool).toLowerCase().includes(t));
         const nextSetupMode = Boolean(c.setupMode ?? (ic?.setupMode || ic?.isSetupMode));
         const nextPulseLive = !nextSetupMode || Boolean(c.pulseLive ?? ic?.pulseLive);
-        return {
+        const item = {
           ...c,
           accountingTool: accTool,
           crmTool,
@@ -575,6 +577,15 @@ export async function getSsrInitialPmaData(sessionUser) {
           setupMode: nextSetupMode,
           pulseLive: nextPulseLive
         };
+        if (!sessionUser.isAdmin) {
+          delete item.scriptId;
+          delete item.webAppUrl;
+          delete item.reconSheetUrl;
+          delete item.reconSheetId;
+          delete item.clientMode;
+          delete item.masterMode;
+        }
+        return item;
       })
       .sort((a, b) => String(a.clientName || "").localeCompare(String(b.clientName || "")));
   }

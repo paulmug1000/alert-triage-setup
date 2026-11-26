@@ -71,6 +71,20 @@ export default async function handler(req, res) {
         bypassCache === "true" || bypassCache === true,
         { minBypassAgeMs: sessionUser.isAdmin ? 0 : 15000 }
       );
+      if (!sessionUser.isAdmin && data) {
+        const stripMonthTabNames = (months) =>
+          Array.isArray(months) ? months.map(({ tabName, ...mRest }) => mRest) : months;
+        const cleanData = {
+          ...data,
+          fyYears: Array.isArray(data.fyYears)
+            ? data.fyYears.map(({ totalColLetter, ...fyRest }) => fyRest)
+            : data.fyYears,
+          months: stripMonthTabNames(data.months),
+          reconSheetId: undefined,
+        };
+        delete cleanData.reconSheetId;
+        return res.status(200).json(cleanData);
+      }
       return res.status(200).json(data);
     } catch (err) {
       console.error("Error in GET /api/pma/expenses:", err);

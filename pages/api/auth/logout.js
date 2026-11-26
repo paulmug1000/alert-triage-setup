@@ -1,4 +1,4 @@
-import { clearSessionCookie, revokeRequestSessionJti } from "../../../services/authService";
+import { clearSessionCookie, revokeRequestSessionJti, getTrustedClientIp, checkRateLimit } from "../../../services/authService";
 import { assertTrustedOrigin } from "../../../utils/helpers";
 
 export default async function handler(req, res) {
@@ -6,6 +6,10 @@ export default async function handler(req, res) {
     return res.status(405).json({ success: false, error: "Method not allowed" });
   }
   if (!assertTrustedOrigin(req, res)) return;
+  const rl = await checkRateLimit("auth-logout", getTrustedClientIp(req), 60, 60);
+  if (!rl.allowed) {
+    return res.status(429).json({ success: false, error: "Too many logout requests. Please retry shortly." });
+  }
   try {
     await revokeRequestSessionJti(req);
     clearSessionCookie(res);

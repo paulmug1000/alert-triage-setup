@@ -276,7 +276,8 @@ export default async function handler(req, res) {
         const tokenRes = await fetch(tokenUrl, {
           method: "POST",
           headers: { "Content-Type": "application/x-www-form-urlencoded" },
-          body: tokenBody.toString()
+          body: tokenBody.toString(),
+          redirect: "manual",
         });
 
         const tokenData = await tokenRes.json();

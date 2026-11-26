@@ -380,15 +380,21 @@ async function renameKeyedTenantTables_({
 
   // alert_memory: paginated rename client_name and patch clientName inside data_snapshot JSON
   let alertUpdated = 0;
-  for (let from = 0; ; from += 1000) {
+  let prevAlertFirstId = null;
+  for (;;) {
     const { data: alertRows, error: alertReadErr } = await sb
       .from("alert_memory")
       .select("id, data_snapshot")
       .eq("client_name", oldClientName)
       .order("id", { ascending: true })
-      .range(from, from + 999);
+      .range(0, 999);
     if (alertReadErr) throw new Error(`Failed reading alert_memory for rename: ${alertReadErr.message}`);
     if (!Array.isArray(alertRows) || alertRows.length === 0) break;
+    const firstId = alertRows[0]?.id ?? null;
+    if (firstId !== null && firstId === prevAlertFirstId) {
+      throw new Error(`Pagination stalled while renaming alert_memory for ${oldClientName} (id=${firstId})`);
+    }
+    prevAlertFirstId = firstId;
     for (const aRow of alertRows) {
       const snapRes = replaceSnapshotClientName_(aRow.data_snapshot, oldClientName, newClientName);
       const patch = { client_name: newClientName };
@@ -404,15 +410,21 @@ async function renameKeyedTenantTables_({
 
   // pma_tasks: paginated rename client_name and patch clientName inside data_snapshot JSONB
   let tasksUpdated = 0;
-  for (let from = 0; ; from += 1000) {
+  let prevTaskFirstId = null;
+  for (;;) {
     const { data: taskRows, error: taskReadErr } = await sb
       .from("pma_tasks")
       .select("id, data_snapshot")
       .eq("client_name", oldClientName)
       .order("id", { ascending: true })
-      .range(from, from + 999);
+      .range(0, 999);
     if (taskReadErr) throw new Error(`Failed reading pma_tasks for rename: ${taskReadErr.message}`);
     if (!Array.isArray(taskRows) || taskRows.length === 0) break;
+    const firstId = taskRows[0]?.id ?? null;
+    if (firstId !== null && firstId === prevTaskFirstId) {
+      throw new Error(`Pagination stalled while renaming pma_tasks for ${oldClientName} (id=${firstId})`);
+    }
+    prevTaskFirstId = firstId;
     for (const tRow of taskRows) {
       const snapRes = replaceSnapshotClientName_(tRow.data_snapshot, oldClientName, newClientName);
       const patch = { client_name: newClientName };
@@ -427,18 +439,25 @@ async function renameKeyedTenantTables_({
   summary.tablesUpdated.push("pma_tasks");
 
   // eom_cycles_and_tasks: rename client_name and patch JSONB payloads
-  for (let from = 0; ; from += 1000) {
+  let prevEomFirstId = null;
+  for (;;) {
     const { data: eomRows, error: eomReadErr } = await sb
       .from("eom_cycles_and_tasks")
       .select("id, tasks_payload, narrative_payload")
       .eq("client_name", oldClientName)
       .order("id", { ascending: true })
-      .range(from, from + 999);
+      .range(0, 999);
     if (eomReadErr) {
       summary.warnings.push(`eom_cycles_and_tasks lookup warning: ${eomReadErr.message}`);
       break;
     }
     if (!Array.isArray(eomRows) || eomRows.length === 0) break;
+    const firstId = eomRows[0]?.id ?? null;
+    if (firstId !== null && firstId === prevEomFirstId) {
+      summary.warnings.push(`eom_cycles_and_tasks rename pagination stopped early at id=${firstId}`);
+      break;
+    }
+    prevEomFirstId = firstId;
     for (const eRow of eomRows) {
       const patch = { client_name: newClientName };
       const tRes = renameClientReferencesRecursive_(eRow.tasks_payload, oldClientName, newClientName);
@@ -683,6 +702,7 @@ async function updateKeyInfoGridsAndSheets_({
         range: "KeyInfo!B1",
         valueInputOption: "RAW",
         requestBody: { values: [[newClientName]] },
+        _bypassSupabaseVirtualSheet: true,
       });
       summary.googleSheetsUpdated.push(target.role);
     } catch (sheetErr) {
@@ -887,6 +907,8 @@ export async function renameTenantClient({
     newNormKey,
     summary,
   });
+
+  invalidateMasterEngineCache(currentName, null, null, { invalidateSheetContext: true });
 
   await updateKeyInfoGridsAndSheets_({
     sb,

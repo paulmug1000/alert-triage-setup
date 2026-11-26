@@ -66,10 +66,14 @@ export default async function handler(req, res) {
                   (c.master_mode === "supabase" && normKey ? `sb-master-${normKey}` : "");
                 if (!clientName) continue;
                 if (!clientSheetId && !masterSheetId && c.client_mode !== "supabase" && c.master_mode !== "supabase") continue;
+                const metaSetupMode = Boolean(c?.metadata?.setupMode);
+                const metaPulseLive = !metaSetupMode || Boolean(c?.metadata?.pulseLive);
                 fresh.push({
                   clientName,
                   clientSheetId,
                   masterSheetId,
+                  _metaSetupMode: metaSetupMode,
+                  _metaPulseLive: metaPulseLive,
                 });
               }
             }
@@ -171,53 +175,60 @@ export default async function handler(req, res) {
     authorizedClients.sort((a, b) => a.clientName.localeCompare(b.clientName));
 
     // Attach setupMode & pulseLive booleans (and full setupStatus when holding gate applies) so Portal never flashes before SetupHoldingGate
-    let setupFlags = [];
+    let setupFlags = authorizedClients.map((c) => {
+      const setupMode = Boolean(c._metaSetupMode);
+      const pulseLive = setupMode ? Boolean(c._metaPulseLive) : true;
+      return { setupMode, pulseLive };
+    });
     let setupStatuses = [];
-    if (redisClient?.isOpen && authorizedClients.length > 0) {
-      try {
-        const keys = authorizedClients.map(
-          (c) => `pulse:setup:${String(c.clientName || "").trim().toLowerCase().replace(/[^a-z0-9_-]/g, "_")}`
-        );
-        const rawList = await redisClient.mGet(keys);
-        setupFlags = rawList.map((raw) => {
-          if (!raw) return { setupMode: false, pulseLive: true };
-          try {
-            const parsed = JSON.parse(raw);
-            const setupMode = Boolean(parsed?.setupMode);
-            const pulseLive = !setupMode || Boolean(parsed?.pulseLive);
-            return { setupMode, pulseLive };
-          } catch {
-            return { setupMode: false, pulseLive: true };
-          }
-        });
-        setupStatuses = await Promise.all(
-          authorizedClients.map(async (c, idx) => {
-            const flags = setupFlags[idx];
-            if (!flags?.setupMode || flags?.pulseLive) return null;
+    if (authorizedClients.length > 0) {
+      if (redisClient?.isOpen) {
+        try {
+          const keys = authorizedClients.map(
+            (c) => `pulse:setup:${String(c.clientName || "").trim().toLowerCase().replace(/[^a-z0-9_-]/g, "_")}`
+          );
+          const rawList = await redisClient.mGet(keys);
+          setupFlags = rawList.map((raw, idx) => {
+            if (!raw) return setupFlags[idx];
             try {
-              return await getClientSetupStatusForPortal({
-                clientName: c.clientName,
-                masterSheetId: c.masterSheetId,
-                clientSheetId: c.clientSheetId
-              });
+              const parsed = JSON.parse(raw);
+              const setupMode = Boolean(parsed?.setupMode);
+              const pulseLive = !setupMode || Boolean(parsed?.pulseLive);
+              return { setupMode, pulseLive };
             } catch {
-              return null;
+              return setupFlags[idx];
             }
-          })
-        );
-      } catch (_) { }
+          });
+        } catch (_) { }
+      }
+      setupStatuses = await Promise.all(
+        authorizedClients.map(async (c, idx) => {
+          const flags = setupFlags[idx];
+          if (!flags?.setupMode || flags?.pulseLive) return null;
+          try {
+            return await getClientSetupStatusForPortal({
+              clientName: c.clientName,
+              masterSheetId: c.masterSheetId,
+              clientSheetId: c.clientSheetId
+            });
+          } catch {
+            return null;
+          }
+        })
+      );
     }
 
     const staffCanAccessPma = canAccessPma(sessionUser);
     const hideMasterId = isPulseOnlyUser(sessionUser);
     const safeClients = authorizedClients.map((c, idx) => {
+      const { _metaSetupMode, _metaPulseLive, ...cleanClient } = c;
       const rawSetupMode = Boolean(setupFlags[idx]?.setupMode);
       const pulseLive = setupFlags[idx] ? Boolean(setupFlags[idx].pulseLive) : !rawSetupMode;
       const setupMode = staffCanAccessPma ? rawSetupMode : (rawSetupMode && !pulseLive);
       const setupStatus = setupStatuses[idx] || null;
       return hideMasterId
-        ? { clientName: c.clientName, clientSheetId: c.clientSheetId, setupMode, pulseLive, ...(setupStatus ? { setupStatus } : {}) }
-        : { ...c, setupMode, pulseLive, ...(setupStatus ? { setupStatus } : {}) };
+        ? { clientName: cleanClient.clientName, clientSheetId: cleanClient.clientSheetId, setupMode, pulseLive, ...(setupStatus ? { setupStatus } : {}) }
+        : { ...cleanClient, setupMode, pulseLive, ...(setupStatus ? { setupStatus } : {}) };
     });
 
     return res.status(200).json({

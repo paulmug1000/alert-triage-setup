@@ -122,7 +122,8 @@ export async function getMondayAccountInfo(accessToken) {
         "Content-Type": "application/json",
         "API-Version": "2024-04"
       },
-      body: JSON.stringify({ query })
+      body: JSON.stringify({ query }),
+      redirect: "manual",
     });
 
     if (!res.ok) return null;

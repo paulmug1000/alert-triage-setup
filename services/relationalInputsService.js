@@ -2333,8 +2333,10 @@ async function runSingleInputReconcilePass_(ctx, targetTabs, options = {}) {
       }
       const obsBkIds = existingBk.filter((b) => !usedMonths.has(b.period_ym)).map((b) => b.id);
       if (obsBkIds.length > 0) {
-        const { error } = await supabase.from("pulse_cash_bank_balances").delete().in("id", obsBkIds);
-        if (error) throw new Error(`Failed deleting pulse_cash_bank_balances: ${error.message}`);
+        for (let i = 0; i < obsBkIds.length; i += 200) {
+          const { error } = await supabase.from("pulse_cash_bank_balances").delete().in("id", obsBkIds.slice(i, i + 200));
+          if (error) throw new Error(`Failed deleting pulse_cash_bank_balances: ${error.message}`);
+        }
       }
       if (bkUpserts.length > 0) {
         const { error } = await supabase

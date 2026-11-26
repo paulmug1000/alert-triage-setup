@@ -477,7 +477,13 @@ export default function NavShell({
     }
     return `/pma?nav=${encodeURIComponent(key)}${clientQuery}`;
   };
-  const getChildHref = (sub) => getNavHref(sub.navKey || sub.key);
+  const getChildHref = (sub) => {
+    const base = getNavHref(sub.navKey || sub.key);
+    if (sub.tabId) {
+      return `${base}${base.includes("?") ? "&" : "?"}tab=${encodeURIComponent(sub.tabId)}`;
+    }
+    return base;
+  };
 
   const handleNavClick = (e, handler) => {
     if (!e.ctrlKey && !e.metaKey && !e.shiftKey && !e.altKey && e.button === 0) {

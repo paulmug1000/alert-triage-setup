@@ -1853,7 +1853,7 @@ export async function computeNativeMgmtRepForClient({
 
   // Persist updated MgmtRep virtual grid back to Supabase
   if (persistToSupabase && sb && resolvedClientName) {
-    if (ctx?.syncOrchestratorMode === "native") {
+    if (ctx?.syncOrchestratorMode === "native" || ctx?.gridStorageRetired) {
       const { saveMasterAuxTabsToConfig } = await import("./nativeSyncOrchestratorService.js");
       await saveMasterAuxTabsToConfig(ctx, { MgmtRep: mgmtGrid });
     } else {

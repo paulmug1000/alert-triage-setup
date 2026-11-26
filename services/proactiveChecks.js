@@ -3602,6 +3602,11 @@ export async function handleClassifyPLCategory(sheets, {
       try {
         await flushImmediateAndScheduleBackgroundClientRecomputes();
       } catch (_) { }
+      await invalidatePmaClientCache(
+        supaCtx?.clientSheetId || null,
+        supaCtx?.masterSheetId || masterSheetId || null,
+        ["outgoings", "budget", "expenses", "cash", "views", "dashboard"]
+      ).catch(() => { });
     } else {
       const webAppUrl = await getClientWebAppUrl(sheets, clientName, automationCommanderSheetId);
       if (webAppUrl) {
@@ -4161,6 +4166,17 @@ export async function handleUpdatePartPaidDate(sheets, {
         }]
       }
     });
+
+    const safeOutgNotesVal = typeof updatedNote === "string" && /^[\s'’]*[=+\-@]/.test(updatedNote)
+      ? `'${updatedNote.replace(/^[\s'’]+/, "")}`
+      : String(updatedNote ?? "");
+    await sheets.spreadsheets.values.update({
+      spreadsheetId: clientSheetId,
+      range: `OutgNotes!${cellCoord}`,
+      valueInputOption: "RAW",
+      _deferBackgroundRecompute: true,
+      requestBody: { values: [[safeOutgNotesVal]] },
+    }).catch((err) => console.warn("⚠️ OutgNotes mirror warning (handleUpdatePartPaidDate):", err.message));
 
     scheduleWaitUntil_(() =>
       logPmaActivity({

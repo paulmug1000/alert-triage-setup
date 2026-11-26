@@ -11,7 +11,7 @@ import {
   lookupInvFromAppMeta,
 } from "./sharedHelpers.js";
 import { unwrapSheetId, sanitizeFormulaInput } from "./userPermissions.js";
-import { resolveSupabaseSheetContext, flushImmediateAndScheduleBackgroundClientRecomputes } from "./masterEngineService.js";
+import { resolveSupabaseSheetContext, flushImmediateAndScheduleBackgroundClientRecomputes, flushPendingClientRecomputes } from "./masterEngineService.js";
 import { resolveAuthoritativeJobAnchor } from "./relationalJobsService.js";
 import { runNativeMasterAmdAction } from "./masterSyncEngine.js";
 import {
@@ -1924,6 +1924,12 @@ export async function batchAssignOrUnassignJobItems({
         normRes.relocations
       );
     }
+    const tenantClient =
+      resolvedClientName ||
+      (await resolveClientNameBySheetId(sheets, cleanClientSheetId, automationCommanderSheetId));
+    if (tenantClient) {
+      await flushImmediateAndScheduleBackgroundClientRecomputes(sheets, tenantClient).catch(() => {});
+    }
     await invalidatePortalAndPmaCaches_(cleanClientSheetId, cleanMasterSheetId, [
       "invoices",
       "outgoings",
@@ -1931,10 +1937,6 @@ export async function batchAssignOrUnassignJobItems({
       "retainers",
       "cash",
     ]);
-
-    const tenantClient =
-      resolvedClientName ||
-      (await resolveClientNameBySheetId(sheets, cleanClientSheetId, automationCommanderSheetId));
     const jobLabel = matchedJob.client
       ? `"${matchedJob.client} - ${matchedJob.jobName}"`
       : `"${matchedJob.jobName}"`;
@@ -2396,7 +2398,7 @@ export async function moveAccountingItemToJob({
       }
     }
 
-    // Update Outgoings cell values FIRST so Google Sheets recomputes Row 111 ("Making up CoS") before we read it
+    // Update Outgoings cell values FIRST so Google Sheets / virtual engine recomputes Row 111 ("Making up CoS") before we read it
     await withRetry(() =>
       sheets.spreadsheets.values.batchUpdate({
         spreadsheetId: cleanClientSheetId,
@@ -2404,9 +2406,15 @@ export async function moveAccountingItemToJob({
           valueInputOption: "USER_ENTERED",
           data: outgoingsValueWrites,
         },
-        _skipFormulaRecompute: true,
       })
     );
+
+    const resolvedMoveClient =
+      resolvedClientName ||
+      (await resolveClientNameBySheetId(sheets, cleanClientSheetId, automationCommanderSheetId));
+    if (resolvedMoveClient) {
+      await flushPendingClientRecomputes(sheets, resolvedMoveClient).catch(() => {});
+    }
 
     const uniqueColLetters = [...new Set(Array.from(cellMap.values()).map((c) => c.colLetter))];
     try {
@@ -2563,6 +2571,9 @@ export async function moveAccountingItemToJob({
       outgNotesData,
     });
 
+    if (tenantClient) {
+      await flushImmediateAndScheduleBackgroundClientRecomputes(sheets, tenantClient).catch(() => {});
+    }
     const bgTasks = (async () => {
       if (normRes.relocations?.length > 0) {
         await applySlotNoteAndFormattingRelocations_(

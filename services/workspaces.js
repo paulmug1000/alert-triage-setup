@@ -9725,6 +9725,11 @@ export async function handleUpdateOutgoingNote(req, res, sheets) {
       .reduce((sum, b) => sum + (parseFloat(b.amount) || 0), 0);
 
     const cellRef = `Outgoings!${colLetter}${sheetRow}`;
+    let tenantClient = req.body.clientName || "";
+    if (!tenantClient) {
+      tenantClient = await resolveClientNameBySheetId(sheets, sheetIdClean, req.body.automationCommanderSheetId);
+    }
+
     if (blocks !== undefined) {
       if (parsedRow === 111) {
         // Row 111 ("Making up CoS") is a formula row; Row 112 is the manual override row ("ZERO" clears Making up CoS)
@@ -9734,7 +9739,6 @@ export async function handleUpdateOutgoingNote(req, res, sheets) {
             range: `Outgoings!${colLetter}112`,
             valueInputOption: "USER_ENTERED",
             requestBody: { values: [["ZERO"]] },
-            _skipFormulaRecompute: true,
           });
         }
       } else {
@@ -9743,8 +9747,10 @@ export async function handleUpdateOutgoingNote(req, res, sheets) {
           range: cellRef,
           valueInputOption: "USER_ENTERED",
           requestBody: { values: [[cellTotal || ""]] },
-          _skipFormulaRecompute: true,
         });
+      }
+      if (sheetRow >= 12 && sheetRow <= 110 && tenantClient) {
+        await flushPendingClientRecomputes(sheets, tenantClient).catch(() => {});
       }
     }
 
@@ -9812,11 +9818,6 @@ export async function handleUpdateOutgoingNote(req, res, sheets) {
     });
 
     console.log(`  ✅ Outgoings note updated: ${cellRef}${newCosNote !== null ? " (and Row 111 Making up CoS)" : ""}`);
-
-    let tenantClient = req.body.clientName || "";
-    if (!tenantClient) {
-      tenantClient = await resolveClientNameBySheetId(sheets, sheetIdClean, req.body.automationCommanderSheetId);
-    }
 
     const targetMasterId = await resolveMasterIdForOutgoings_(sheets, sheetIdClean, tenantClient, req.body.masterSheetId);
 
@@ -10035,6 +10036,11 @@ export async function handleUpdateOutgoingNotesBatch(req, res, sheets) {
       }
     }
 
+    let tenantClient = clientName || "";
+    if (!tenantClient) {
+      tenantClient = await resolveClientNameBySheetId(sheets, sheetIdClean, automationCommanderSheetId);
+    }
+
     // 1. Write cell totals first so Row 111 Making up CoS formulas reflect updated totals
     await withRetry(() =>
       sheets.spreadsheets.values.batchUpdate({
@@ -10045,6 +10051,9 @@ export async function handleUpdateOutgoingNotesBatch(req, res, sheets) {
         },
       })
     );
+    if (touchedCosCols.size > 0 && tenantClient) {
+      await flushPendingClientRecomputes(sheets, tenantClient).catch(() => {});
+    }
 
     // 2. Inspect Row 111 Making up CoS for each affected column in a single batch read
     const updatedCosCells = {};
@@ -10118,10 +10127,6 @@ export async function handleUpdateOutgoingNotesBatch(req, res, sheets) {
       );
     }
 
-    let tenantClient = clientName || "";
-    if (!tenantClient) {
-      tenantClient = await resolveClientNameBySheetId(sheets, sheetIdClean, automationCommanderSheetId);
-    }
     const targetMasterId = await resolveMasterIdForOutgoings_(sheets, sheetIdClean, tenantClient, masterSheetId);
     await syncOutgNotesAndTriggerRefresh_(sheets, { sheetIdClean, targetMasterId, tenantClient, outgNotesData });
 
@@ -10182,6 +10187,10 @@ export async function handleSetMakingUpCosZero(req, res, sheets) {
         requestBody: { values: [[writeValue]] },
       })
     );
+    const flushClientZero = clientName || (await resolveClientNameBySheetId(sheets, sheetIdClean, automationCommanderSheetId));
+    if (flushClientZero) {
+      await flushPendingClientRecomputes(sheets, flushClientZero).catch(() => {});
+    }
 
     // Read back row 111 in that column to get recalculated value
     let recalculatedAmount = 0;
@@ -10269,6 +10278,10 @@ export async function handleSetMakingUpCosTarget(req, res, sheets) {
         requestBody: { values: [[formattedPct]] },
       })
     );
+    const flushClientTarget = clientName || (await resolveClientNameBySheetId(sheets, sheetIdClean, automationCommanderSheetId));
+    if (flushClientTarget) {
+      await flushPendingClientRecomputes(sheets, flushClientTarget).catch(() => {});
+    }
 
     // 2. Invalidate Client Settings cache in Redis so Client Settings immediately reflects the change
     if (redisClient?.isOpen) {

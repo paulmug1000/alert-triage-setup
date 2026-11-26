@@ -697,6 +697,11 @@ export async function handleUpdateSessionFlags(req, res) {
   }
 }
 
+const getMemoryRowIdentity_ = (r) =>
+  r?.fingerprintHash
+    ? `fp:${r.fingerprintHash}`
+    : (r?.rowIndex !== null && r?.rowIndex !== undefined ? `row:${r.rowIndex}` : null);
+
 export async function handleResolveNoActionFlag(req, res, sheets) {
   const { sessionId, clientName, flagType, fingerprintHash, preserveTaskStatus, automationCommanderSheetId: acIdResolve } = req.body;
   if (!sessionId || !clientName || !flagType) return res.status(400).json({ success: false, error: "Missing required fields" });
@@ -1464,9 +1469,11 @@ export async function handleAcknowledgeProactiveAlert(req, res, sheets) {
       try { snap = JSON.parse(primaryRow.dataSnapshot || "{}"); } catch (e) { }
       if (alertData) snap = { ...snap, ...alertData };
 
+      const primaryIdentity = getMemoryRowIdentity_(primaryRow);
       const batchUpdates = [];
       for (const dup of candidateMatches.slice(1)) {
-        if (dup.rowIndex === primaryRow.rowIndex) continue;
+        const dupIdentity = getMemoryRowIdentity_(dup);
+        if (dup === primaryRow || (dupIdentity && dupIdentity === primaryIdentity)) continue;
         batchUpdates.push({
           rowIndex: dup.rowIndex,
           updates: { ...dup, status: "superseded" },
@@ -1577,9 +1584,11 @@ export async function handleResolveProactiveAlert(req, res, sheets) {
       if (alertData) snapObj = { ...snapObj, ...alertData };
       snapObj.resolution = resolution;
 
+      const primaryIdentity = getMemoryRowIdentity_(primaryRow);
       const batchUpdates = [];
       for (const dup of candidateMatches.slice(1)) {
-        if (dup.rowIndex === primaryRow.rowIndex) continue;
+        const dupIdentity = getMemoryRowIdentity_(dup);
+        if (dup === primaryRow || (dupIdentity && dupIdentity === primaryIdentity)) continue;
         batchUpdates.push({
           rowIndex: dup.rowIndex,
           updates: { ...dup, status: "superseded" },
@@ -1745,9 +1754,11 @@ export async function handleBulkAcknowledgeProactiveAlerts(req, res, sheets) {
         if (item.alertData) snap = { ...snap, ...item.alertData };
 
         // Supersede duplicates first so primaryRow remains authoritative
+        const primaryIdentity = getMemoryRowIdentity_(primaryRow);
         for (const dup of candidateMatches.slice(1)) {
-          if (dup.rowIndex === primaryRow.rowIndex || queuedRowIndices.has(dup.rowIndex)) continue;
-          queuedRowIndices.add(dup.rowIndex);
+          const dupIdentity = getMemoryRowIdentity_(dup);
+          if (dup === primaryRow || (dupIdentity && dupIdentity === primaryIdentity) || (dupIdentity && queuedRowIndices.has(dupIdentity))) continue;
+          if (dupIdentity) queuedRowIndices.add(dupIdentity);
           updateBatchItems.push({
             rowIndex: dup.rowIndex,
             updates: {
@@ -1756,8 +1767,8 @@ export async function handleBulkAcknowledgeProactiveAlerts(req, res, sheets) {
             }
           });
         }
-        if (!queuedRowIndices.has(primaryRow.rowIndex)) {
-          queuedRowIndices.add(primaryRow.rowIndex);
+        if (!primaryIdentity || !queuedRowIndices.has(primaryIdentity)) {
+          if (primaryIdentity) queuedRowIndices.add(primaryIdentity);
           updateBatchItems.push({
             rowIndex: primaryRow.rowIndex,
             updates: {
@@ -2043,7 +2054,10 @@ export async function handleGetProactiveAlerts(req, res, sheets) {
                 ca.endDate = fixedEnd;
                 ca._endDateVerified = true;
                 if (ca.metadata) ca.metadata.endDate = fixedEnd;
-                const origMemRow = all.find(r => r.rowIndex === ca.rowIndex);
+                const origMemRow = all.find((r) =>
+                  (ca.fingerprintHash && r.fingerprintHash === ca.fingerprintHash) ||
+                  (ca.rowIndex !== null && ca.rowIndex !== undefined && r.rowIndex === ca.rowIndex)
+                );
                 if (origMemRow) {
                   try {
                     const snap = JSON.parse(origMemRow.dataSnapshot || "{}");

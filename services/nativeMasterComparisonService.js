@@ -1072,7 +1072,7 @@ export async function verifyNativeMasterComparisonMutationMatrix({
   const schema = await checkPhase6NativeComputeSchemaStatus();
   const { data: clients, error } = await supabase
     .from("clients")
-    .select("id, client_name, recon_sheet_id, metadata")
+    .select("id, client_name, recon_sheet_id, grid_storage_retired, metadata")
     .in("client_name", clientNames)
     .order("client_name");
   if (error) throw new Error(`Failed loading Master matrix clients: ${error.message}`);
@@ -1082,18 +1082,20 @@ export async function verifyNativeMasterComparisonMutationMatrix({
     const ctx = {
       clientId: cl.id,
       clientName: cl.client_name,
+      gridStorageRetired: Boolean(cl.grid_storage_retired),
       reconSheetId: cl.recon_sheet_id || `sb-recon-${String(cl.client_name).toLowerCase()}`,
     };
     const canUseDb =
       schema.schemaReady &&
-      (source === "db" ||
+      (cl.grid_storage_retired ||
+        source === "db" ||
         (source === "auto" && Boolean(cl.metadata?.native_master_comp_state?.lastBackfilledAt)));
     const effectiveSource = canUseDb ? "db" : "in_memory";
 
-    const [legacyBase, nativeBase] = await Promise.all([
-      evaluateFreshLegacyMasterComparisons_(supabase, ctx),
-      evaluateNativeMasterComparisonsInMemory(ctx, { source: effectiveSource }),
-    ]);
+    const nativeBase = await evaluateNativeMasterComparisonsInMemory(ctx, { source: effectiveSource });
+    const legacyBase = cl.grid_storage_retired
+      ? Object.fromEntries(Object.entries(nativeBase.grids || {}).map(([k, v]) => [k, clone2D_(v)]))
+      : await evaluateFreshLegacyMasterComparisons_(supabase, ctx);
 
     const scenarios = [
       {
@@ -1132,6 +1134,7 @@ export async function verifyNativeMasterComparisonMutationMatrix({
           setCol("Total", 1200);
           setCol("SubTotal", 1000);
           setCol("TotalTax", 200);
+          if (!Array.isArray(g.InvFromApp)) g.InvFromApp = [[]];
           g.InvFromApp.push(row);
           runMasterComparisonEvaluators_(g, null, ctx?.clientSheetId || "");
         },
@@ -1155,6 +1158,7 @@ export async function verifyNativeMasterComparisonMutationMatrix({
           setCol(["gross", "total"], 540);
           setCol(["type", "transactiontype"], "ACCPAY");
           setCol(["sourceid", "invoiceid", "externalid"], "ext-synth-dir-999");
+          if (!Array.isArray(g.JnlsFromApp)) g.JnlsFromApp = [[]];
           g.JnlsFromApp.push(row);
           runMasterComparisonEvaluators_(g, null, ctx?.clientSheetId || "");
         },

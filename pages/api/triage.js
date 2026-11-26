@@ -153,12 +153,13 @@ import {
 import { matchesClientName, sanitizeSpreadsheetTerms, assertTrustedOrigin, isValidGoogleScriptUrl, resolveCanonicalOAuthHost, postGasWebAppLocked } from "../../utils/helpers";
 
 async function checkTriageClientAuth(sheets, sessionUser, clientNameClaim, sheetIds = []) {
-  if (sessionUser?.isAdmin && !isReadOnlySession(sessionUser)) return true;
   if (!sessionUser) return false;
+  const isFullAdmin = Boolean(sessionUser?.isAdmin && !isReadOnlySession(sessionUser));
+  const canonicalAcId = getCanonicalAcSheetId();
 
   const validSheetIds = (Array.isArray(sheetIds) ? sheetIds : [sheetIds])
     .map(s => (typeof s === "string" ? s.trim() : ""))
-    .filter(Boolean);
+    .filter(s => s && !(isFullAdmin && (s === canonicalAcId || s === "__SHARED__")));
 
   if (validSheetIds.length > 0) {
     let boundClient = clientNameClaim ? String(clientNameClaim).trim() : "";
@@ -167,7 +168,7 @@ async function checkTriageClientAuth(sheets, sessionUser, clientNameClaim, sheet
         const auth = await verifyUserAuthorizedForSheet(sessionUser, sid, boundClient, sheets);
         if (!auth.authorized) return false;
         if (auth.clientName) {
-          if (boundClient && !matchesClientName(boundClient, auth.clientName)) return false;
+          if (boundClient && boundClient !== "Admin" && !matchesClientName(boundClient, auth.clientName)) return false;
           boundClient = auth.clientName;
         }
       } catch (_) {
@@ -177,6 +178,7 @@ async function checkTriageClientAuth(sheets, sessionUser, clientNameClaim, sheet
     return true;
   }
 
+  if (isFullAdmin) return true;
   return Boolean(clientNameClaim && isUserAuthorizedForClient(sessionUser, clientNameClaim));
 }
 
@@ -516,6 +518,22 @@ export default async function handler(req, res) {
       : await resolveLiveSessionUser(req, res, { sheets });
     installSheetIdBoundary(req, res, sessionUser);
 
+    // Wrap res.json inside request lifecycle so non-admin callers never receive leaked spreadsheet terms from inner catch blocks
+    const rawJsonFn = res.json.bind(res);
+    res.json = (body) => {
+      if (
+        sessionUser &&
+        !sessionUser.isAdmin &&
+        body &&
+        typeof body === "object" &&
+        body.success === false &&
+        typeof body.error === "string"
+      ) {
+        return rawJsonFn({ ...body, error: sanitizeSpreadsheetTerms(body.error) });
+      }
+      return rawJsonFn(body);
+    };
+
     if (req.method === "POST" && !isSystemAuthorized && !assertTrustedOrigin(req, res)) {
       return;
     }
@@ -640,6 +658,9 @@ export default async function handler(req, res) {
         }
 
         if (Array.isArray(b.alerts) && b.alerts.length > 0) {
+          if (b.alerts.length > 500) {
+            return res.status(400).json({ success: false, error: "Too many alert items in batch (max 500)." });
+          }
           for (const item of b.alerts) {
             if (!item) continue;
             const itemAllowed = await checkTriageClientAuth(
@@ -655,6 +676,9 @@ export default async function handler(req, res) {
         }
 
         if (Array.isArray(b.updates) && b.updates.length > 0) {
+          if (b.updates.length > 500) {
+            return res.status(400).json({ success: false, error: "Too many update items in batch (max 500)." });
+          }
           for (const item of b.updates) {
             if (!item || !item.clientName) continue;
             if (!isUserAuthorizedForClient(sessionUser, item.clientName)) {
@@ -824,6 +848,11 @@ export default async function handler(req, res) {
           return res.status(200).json(result);
         }
         if (action === "batch_assign_job_items") {
+          const assignItems = Array.isArray(b.assignItems) ? b.assignItems : [];
+          const unassignKeys = Array.isArray(b.unassignKeys) ? b.unassignKeys : [];
+          if (assignItems.length > 500 || unassignKeys.length > 500) {
+            return res.status(400).json({ success: false, error: "Too many items in batch assignment (max 500)." });
+          }
           const result = await batchAssignOrUnassignJobItems({
             sheets,
             clientSheetId: b.clientSheetId,
@@ -831,8 +860,8 @@ export default async function handler(req, res) {
             clientName: boundClient,
             itemType: b.itemType || "invoice",
             targetJob: b.targetJob,
-            assignItems: Array.isArray(b.assignItems) ? b.assignItems : [],
-            unassignKeys: Array.isArray(b.unassignKeys) ? b.unassignKeys : [],
+            assignItems,
+            unassignKeys,
             updateJobRevenue: Boolean(b.updateJobRevenue),
             newJobRevenue: b.newJobRevenue,
             updateJobBudget: Boolean(b.updateJobBudget),
@@ -1476,14 +1505,14 @@ export default async function handler(req, res) {
           isPriv || !rawStatus || typeof rawStatus !== "object"
             ? rawStatus
             : {
-                status: rawStatus.status || "idle",
-                startedAt: rawStatus.startedAt || null,
-                updatedAt: rawStatus.updatedAt || null,
-                finishedAt: rawStatus.finishedAt || null,
-                completed: typeof rawStatus.completed === "number" ? rawStatus.completed : undefined,
-                total: typeof rawStatus.total === "number" ? rawStatus.total : undefined,
-                error: typeof rawStatus.error === "string" ? sanitizeSpreadsheetTerms(rawStatus.error) : undefined,
-              };
+              status: rawStatus.status || "idle",
+              startedAt: rawStatus.startedAt || null,
+              updatedAt: rawStatus.updatedAt || null,
+              finishedAt: rawStatus.finishedAt || null,
+              completed: typeof rawStatus.completed === "number" ? rawStatus.completed : undefined,
+              total: typeof rawStatus.total === "number" ? rawStatus.total : undefined,
+              error: typeof rawStatus.error === "string" ? sanitizeSpreadsheetTerms(rawStatus.error) : undefined,
+            };
         return res.status(200).json({ success: true, status });
       } catch (err) {
         const msg = req.isSystemAuthorized || sessionUser?.isAdmin ? err.message : sanitizeSpreadsheetTerms(err.message || "Failed to read refresh status.");
@@ -1506,13 +1535,21 @@ export default async function handler(req, res) {
             supabaseClockActive: false,
           });
         }
-        const [{ data: allClients }, { data: setupStates }, clockStatus] = await Promise.all([
-          sb
-            .from("clients")
-            .select("client_name, normalized_key, master_mode, metadata, client_sheet_id, master_sheet_id"),
-          sb.from("client_setup_state").select("client_name, setup_status"),
-          getSupabaseClockStatusAndSyncConfig().catch(() => null),
-        ]);
+        const [{ data: allClients, error: clientsErr }, { data: setupStates, error: setupErr }, clockStatus] =
+          await Promise.all([
+            sb
+              .from("clients")
+              .select("client_name, normalized_key, master_mode, metadata, client_sheet_id, master_sheet_id")
+              .range(0, 4999),
+            sb.from("client_setup_state").select("client_name, setup_status").range(0, 4999),
+            getSupabaseClockStatusAndSyncConfig().catch(() => null),
+          ]);
+        if (clientsErr || setupErr) {
+          return res.status(503).json({
+            success: false,
+            error: (clientsErr || setupErr).message || "Supabase client registry query failed",
+          });
+        }
         const setupInProgressSet = new Set(
           (setupStates || [])
             .filter((s) => String(s.setup_status || "").trim().toUpperCase() === "IN_PROGRESS")

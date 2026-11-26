@@ -2140,17 +2140,25 @@ export async function handleRehashIgnoredAlerts(req, res, sheets) {
     if (supaControlPlane && sb) {
       const { data: dbClients } = await sb
         .from("clients")
-        .select("client_name, status, metadata, client_sheet_id, master_sheet_id")
+        .select("client_name, normalized_key, status, metadata, client_sheet_id, master_sheet_id, master_mode")
         .order("client_name", { ascending: true });
       clientTargets = (dbClients || [])
         .filter((c) => {
           const st = String(c?.metadata?.statusOverride || c?.status || "live").trim().toLowerCase();
           return c.client_name && st !== "inactive" && st !== "archived" && st !== "suspended" && (c.client_sheet_id || c.master_sheet_id);
         })
-        .map((c) => ({
-          clientName: String(c.client_name).trim(),
-          clientSheetId: extractSheetIdFromUrl(c.client_sheet_id) || String(c.client_sheet_id || "").trim(),
-        }));
+        .map((c) => {
+          const clientNameVal = String(c.client_name).trim();
+          const normKey = String(c.normalized_key || clientNameVal.toLowerCase().replace(/[^a-z0-9_-]/g, "_")).trim();
+          return {
+            clientName: clientNameVal,
+            clientSheetId: extractSheetIdFromUrl(c.client_sheet_id) || String(c.client_sheet_id || "").trim(),
+            masterSheetId:
+              extractSheetIdFromUrl(c.master_sheet_id) ||
+              String(c.master_sheet_id || "").trim() ||
+              (c.master_mode === "supabase" && normKey ? `sb-master-${normKey}` : ""),
+          };
+        });
     }
 
     if (clientTargets.length === 0 && sheets && acId) {
@@ -2161,20 +2169,22 @@ export async function handleRehashIgnoredAlerts(req, res, sheets) {
       });
       clientTargets = (flagResp.data.values || [])
         .slice(1)
-        .filter(r => r[0] && r[11] && r[12])
+        .filter(r => r[0] && (r[11] || r[12]))
         .map(r => ({
           clientName: String(r[0] || "").trim(),
           clientSheetId: extractSheetIdFromUrl(String(r[11] || "")) || String(r[11] || ""),
+          masterSheetId: extractSheetIdFromUrl(String(r[12] || "")) || String(r[12] || ""),
         }));
     }
 
     // Build map of alertSummary → fresh fingerprint by reading each client's InvComp
     const freshHashByInvNo = {}; // invoiceNo → { hash, clientName }
     for (const cr of clientTargets) {
-      const { clientName, clientSheetId } = cr;
-      if (!clientSheetId) continue;
+      const { clientName, masterSheetId, clientSheetId } = cr;
+      const targetMasterId = masterSheetId || clientSheetId;
+      if (!targetMasterId) continue;
       try {
-        const alerts = await readInvCompAlerts(sheets, clientSheetId);
+        const alerts = await readInvCompAlerts(sheets, targetMasterId);
         for (const alert of alerts) {
           alert.fingerprintHash = buildAlertFingerprint(alert);
           const invNo = alert.summary?.invoiceNo || "";
@@ -5156,7 +5166,6 @@ async function writeOutgoingsExpense(sheets, clientSheetId, outgoingsData) {
     range: cellA1,
     valueInputOption: "USER_ENTERED",
     requestBody: { values: [[newValue]] },
-    _skipFormulaRecompute: true,
   });
   console.log(`  ✅ Value written: ${existingValue} → ${newValue} (${placementMode})`);
 
@@ -5205,6 +5214,15 @@ async function writeOutgoingsExpense(sheets, clientSheetId, outgoingsData) {
     spreadsheetId: sheetIdClean,
     requestBody: { requests: formatRequests },
   });
+  const safeOutgNote = /^[\s'’]*[=+\-@]/.test(String(newNote || ""))
+    ? `'${String(newNote).replace(/^[\s'’]+/, "")}`
+    : String(newNote || "");
+  await sheets.spreadsheets.values.update({
+    spreadsheetId: sheetIdClean,
+    range: `OutgNotes!${colLetter}${sheetRow}`,
+    valueInputOption: "RAW",
+    requestBody: { values: [[safeOutgNote]] },
+  }).catch((err) => console.warn("⚠️ OutgNotes mirror warning (writeOutgoingsExpense):", err.message));
   console.log(`  ✅ Note written and formatting applied`);
 
   return { sheetRow, colLetter, newValue, prevValue: existingValue, isNewVendor, mode: placementMode, resultingBlocks };
@@ -10064,7 +10082,7 @@ export async function handleAcceptOption(req, res, sheets, sessionUserArg = null
 
       // Clear RAM cache immediately and prune shared precomputed cache in background via waitUntil
       try {
-        const canRemoveClient = (cName) => req.isSystemAuthorized || !sessionUser || sessionUser.isAdmin || isUserAuthorizedForClient(sessionUser, cName);
+        const canRemoveClient = (cName) => req.isSystemAuthorized || !callerUser || callerUser.isAdmin || isUserAuthorizedForClient(callerUser, cName);
         const targetIds = [fp, `${alert.flagType || alert.type}-${alert.sheetName}-${alert.rowNumber}`].filter(Boolean);
         invalidatePrecomputedMemoryCache();
         prunePrecomputedInBackground_({

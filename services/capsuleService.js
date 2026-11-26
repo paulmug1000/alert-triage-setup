@@ -117,7 +117,8 @@ export async function getCapsuleAccountInfo(accessToken) {
       headers: {
         "Authorization": cleanToken,
         "Accept": "application/json"
-      }
+      },
+      redirect: "manual",
     });
 
     let siteData = null;
@@ -131,13 +132,18 @@ export async function getCapsuleAccountInfo(accessToken) {
       headers: {
         "Authorization": cleanToken,
         "Accept": "application/json"
-      }
+      },
+      redirect: "manual",
     });
 
     let userData = null;
     if (userRes.ok) {
       const uJson = await userRes.json();
       userData = uJson.user;
+    }
+
+    if (!siteRes.ok && !userRes.ok) {
+      return null;
     }
 
     return {

@@ -458,5 +458,5 @@ export async function applyCrmMappings({
     }
   });
 
-  return { success: true, message: "CRM field mappings and job definitions successfully applied to Master Sheet." };
+  return { success: true, message: "CRM field mappings and job definitions successfully applied to Pulse." };
 }

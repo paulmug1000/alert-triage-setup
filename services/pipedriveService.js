@@ -110,7 +110,8 @@ export async function getPipedriveAccountInfo(accessToken) {
       headers: {
         "Authorization": `Bearer ${accessToken}`,
         "Accept": "application/json"
-      }
+      },
+      redirect: "manual",
     });
 
     if (!res.ok) return null;
@@ -142,7 +143,8 @@ export async function revokePipedriveToken(token, customClientId, customClientSe
         "Authorization": `Basic ${basicAuth}`,
         "Content-Type": "application/x-www-form-urlencoded"
       },
-      body: bodyParams.toString()
+      body: bodyParams.toString(),
+      redirect: "manual",
     });
 
     return res.ok;

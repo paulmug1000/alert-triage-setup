@@ -145,11 +145,11 @@ function sanitizeCachedSettings_(parsed) {
       googleSheetUrl: sanitizeCrmGoogleSheetUrl_(clone.crm.googleSheetUrl),
       ...(clone.crm.excel && typeof clone.crm.excel === "object"
         ? {
-            excel: {
-              ...clone.crm.excel,
-              ...(clone.crm.excel.azureClientSecret ? { azureClientSecret: "••••••••" } : {}),
-            },
-          }
+          excel: {
+            ...clone.crm.excel,
+            ...(clone.crm.excel.azureClientSecret ? { azureClientSecret: "••••••••" } : {}),
+          },
+        }
         : {}),
     };
   }
@@ -561,17 +561,17 @@ export async function getClientSettings({
   const [fallbackMasterResp, fallbackClientResp] = await Promise.all([
     fallbackMasterRanges.length > 0
       ? withRetry(() => sheets.spreadsheets.values.batchGet({
-          spreadsheetId: masterSheetId,
-          ranges: fallbackMasterRanges,
-          valueRenderOption: "FORMATTED_VALUE"
-        }))
+        spreadsheetId: masterSheetId,
+        ranges: fallbackMasterRanges,
+        valueRenderOption: "FORMATTED_VALUE"
+      }))
       : Promise.resolve({ data: { valueRanges: [] } }),
     needClientFallback
       ? withRetry(() => sheets.spreadsheets.values.batchGet({
-          spreadsheetId: clientSheetId,
-          ranges: ["Outgoings!A112"],
-          valueRenderOption: "FORMATTED_VALUE"
-        })).catch(() => ({ data: { valueRanges: [] } }))
+        spreadsheetId: clientSheetId,
+        ranges: ["Outgoings!A112"],
+        valueRenderOption: "FORMATTED_VALUE"
+      })).catch(() => ({ data: { valueRanges: [] } }))
       : Promise.resolve({ data: { valueRanges: [] } })
   ]);
 
@@ -1709,13 +1709,16 @@ export async function saveClientSettings({
     try {
       const sb = getSupabaseAdmin();
       if (sb && clientName) {
-        const { data: existingTki } = await sb
+        const { data: existingTki, error: existingTkiErr } = await sb
           .from("tenant_key_info")
           .select("portal_feature_flags")
           .eq("client_name", clientName)
-          .limit(1);
-        const existingFlags = existingTki?.[0]?.portal_feature_flags && typeof existingTki[0].portal_feature_flags === "object"
-          ? existingTki[0].portal_feature_flags
+          .maybeSingle();
+        if (existingTkiErr) {
+          throw new Error(`Failed to load tenant_key_info portal_feature_flags for ${clientName}: ${existingTkiErr.message}`);
+        }
+        const existingFlags = existingTki?.portal_feature_flags && typeof existingTki.portal_feature_flags === "object"
+          ? existingTki.portal_feature_flags
           : {};
         await sb
           .from("tenant_key_info")

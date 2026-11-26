@@ -179,11 +179,10 @@ export default function ContractorExpenseModal({
     }
 
     try {
-      const res = await fetch("/api/triage", {
+      const res = await fetch("/api/portal/update-outgoing-note", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          action: "update_outgoing_note",
           clientSheetId,
           clientName,
           contractorName: contractor.name,
@@ -219,11 +218,10 @@ export default function ContractorExpenseModal({
     const updatedBlocks = allBlocks.filter((b) => b.appId !== item.appId);
 
     try {
-      const res = await fetch("/api/triage", {
+      const res = await fetch("/api/portal/update-outgoing-note", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          action: "update_outgoing_note",
           clientSheetId,
           clientName,
           contractorName: contractor.name,

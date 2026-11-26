@@ -12,7 +12,7 @@ import { getIntegrationTokens, saveIntegrationTokens, getSharedXeroGrant, linkCl
 import { getSheetsClient, withRetry, extractSheetIdFromUrl } from "../../../services/sheetsClient.js";
 import { resolveLiveSessionUser, safeCompareSecret, getTrustedClientIp, checkRateLimit } from "../../../services/authService.js";
 import { notifyStaffOnClientConnection } from "../../../services/connectionNotifier.js";
-import { isReadOnlySession, resolveClientNameBySheetId, isUserAuthorizedForClient } from "../../../services/userPermissions.js";
+import { isReadOnlySession, resolveClientNameBySheetId, isUserAuthorizedForClient, assertSetupClientSheetBinding } from "../../../services/userPermissions.js";
 import { unwrapSheetId } from "../../../services/sheetTokenService.js";
 import { assertTrustedOrigin } from "../../../utils/helpers.js";
 
@@ -70,6 +70,18 @@ export default async function handler(req, res) {
       const sheets = await getSheetsClient();
       resolvedClientKey = (await resolveClientNameBySheetId(sheets, masterSheetId)) || "";
     }
+    if (sessionUser && masterSheetId) {
+      const sheets = await getSheetsClient();
+      const bindCheck = await assertSetupClientSheetBinding(sessionUser, {
+        clientName: resolvedClientKey,
+        masterSheetId,
+        sheets,
+      });
+      if (!bindCheck.authorized) {
+        return res.status(bindCheck.status || 403).json({ success: false, error: bindCheck.error || "Access denied to this client." });
+      }
+      if (bindCheck.clientName) resolvedClientKey = bindCheck.clientName;
+    }
     if (sessionUser && !sessionUser.isAdmin && (!resolvedClientKey || !isUserAuthorizedForClient(sessionUser, resolvedClientKey))) {
       return res.status(403).json({ success: false, error: "Access denied to this client." });
     }
@@ -125,7 +137,7 @@ export default async function handler(req, res) {
           tenantName: tenantName || cleanTenantId,
           masterSheetId,
           mode: "shared"
-        }).catch(() => {});
+        }).catch(() => { });
 
         return res.status(200).json({
           success: true,
@@ -203,7 +215,7 @@ export default async function handler(req, res) {
       tool: cleanTool,
       tenantName: tenantName || record.tenantName || "",
       masterSheetId: effectiveMasterSheetId
-    }).catch(() => {});
+    }).catch(() => { });
 
     return res.status(200).json({
       success: true,

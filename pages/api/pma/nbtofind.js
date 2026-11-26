@@ -68,6 +68,15 @@ export default async function handler(req, res) {
         bypassCache === "true" || bypassCache === true,
         { minBypassAgeMs: sessionUser.isAdmin ? 0 : 15000 }
       );
+      if (!sessionUser.isAdmin && data) {
+        const cleanData = {
+          ...data,
+          fyYears: Array.isArray(data.fyYears)
+            ? data.fyYears.map(({ totalColLetter, ...fyRest }) => fyRest)
+            : data.fyYears,
+        };
+        return res.status(200).json(cleanData);
+      }
       return res.status(200).json(data);
     } catch (err) {
       console.error("Error in GET /api/pma/nbtofind:", err);
@@ -137,6 +146,15 @@ export default async function handler(req, res) {
       // Action: save_monthly_values (Row 3, Row 5, Row 10, or Row 25)
       if (action === "save_monthly_values") {
         if (!sheetRow) return res.status(400).json({ success: false, error: "sheetRow is required" });
+        const valCount = Array.isArray(monthlyValues)
+          ? monthlyValues.length
+          : (monthlyValues && typeof monthlyValues === "object" ? Object.keys(monthlyValues).length : 0);
+        const noteCount = Array.isArray(req.body?.cellNotes)
+          ? req.body.cellNotes.length
+          : (req.body?.cellNotes && typeof req.body.cellNotes === "object" ? Object.keys(req.body.cellNotes).length : 0);
+        if (valCount > 500 || noteCount > 500) {
+          return res.status(400).json({ success: false, error: "Too many monthly values or cell notes in request (max 500)." });
+        }
         const result = await saveNBToFindMonthlyValues({
           clientName: clientName || "Client",
           clientSheetId,

@@ -121,6 +121,8 @@ function attachNativeConnectorHooksToEnv_(env, ctx, dryRun = false) {
             rt?.setLastCrmSyncBlocked_?.(res.blockInfo);
             env.scriptProperties?.set("CRM_SYNC_SWING_BLOCK_JSON", JSON.stringify(res.blockInfo));
             return res;
+          } else {
+            env.scriptProperties?.delete("CRM_SYNC_SWING_BLOCK_JSON");
           }
           if (!res.success) {
             rt?.setLastConnectorError?.(res.lastError || "Native CRM pull failed");
@@ -1772,61 +1774,74 @@ export async function dispatchDueNativeMasterSyncs({
         return { data: out };
       };
 
+      const fetchEstateChunkedByClients_ = async (namesList, queryBuilderFactory, orderCol = "id") => {
+        if (!Array.isArray(namesList) || namesList.length === 0) return { data: [] };
+        const combined = [];
+        for (let i = 0; i < namesList.length; i += 200) {
+          const nameChunk = namesList.slice(i, i + 200);
+          const resp = await fetchEstatePaged_(() => queryBuilderFactory(nameChunk), orderCol);
+          if (Array.isArray(resp?.data)) combined.push(...resp.data);
+        }
+        return { data: combined };
+      };
+
       const [{ data: masterMetaRows }, { data: localGridRows }, { data: nativeSyncCfgMeta }, { data: bpUpdatedRows }, { data: reconCfgRows }, { data: reconPeriodRows }] = await Promise.all([
-        nonNativeMasterCandidates.length > 0
-          ? fetchEstatePaged_(
-              () =>
-                supabase
-                  .from("master_sheet_grids")
-                  .select("client_name, tab_name, values_grid")
-                  .eq("sheet_role", "master")
-                  .in("tab_name", ["KeyInfo", "CRMList"])
-                  .in("client_name", nonNativeMasterCandidates),
-              "id"
-            )
-          : Promise.resolve({ data: [] }),
-        nonNativeSyncCandidates.length > 0
-          ? fetchEstatePaged_(
-              () =>
-                supabase
-                  .from("master_sheet_grids")
-                  .select("client_name, sheet_role, tab_name, updated_at")
-                  .in("sheet_role", ["client", "recon"])
-                  .in("client_name", nonNativeSyncCandidates),
-              "id"
-            )
-          : Promise.resolve({ data: [] }),
-        fetchEstatePaged_(
-          () =>
+        fetchEstateChunkedByClients_(
+          nonNativeMasterCandidates,
+          (chunk) =>
+            supabase
+              .from("master_sheet_grids")
+              .select("client_name, tab_name, values_grid")
+              .eq("sheet_role", "master")
+              .in("tab_name", ["KeyInfo", "CRMList"])
+              .in("client_name", chunk),
+          "id"
+        ),
+        fetchEstateChunkedByClients_(
+          nonNativeSyncCandidates,
+          (chunk) =>
+            supabase
+              .from("master_sheet_grids")
+              .select("client_name, sheet_role, tab_name, updated_at")
+              .in("sheet_role", ["client", "recon"])
+              .in("client_name", chunk),
+          "id"
+        ),
+        fetchEstateChunkedByClients_(
+          candidateNames,
+          (chunk) =>
             supabase
               .from("pulse_master_sync_configs")
               .select("client_name, master_key_info_grid, crm_list_config")
-              .in("client_name", candidateNames),
+              .in("client_name", chunk),
           "client_id"
         ),
-        fetchEstatePaged_(
-          () =>
+        fetchEstateChunkedByClients_(
+          candidateNames,
+          (chunk) =>
             supabase
               .from("pulse_client_tab_blueprints")
               .select("client_name, tab_name, updated_at")
               .in("tab_name", ["Pipeline", "Confirmed", "Outgoings", "OutgNotes"])
-              .in("client_name", candidateNames),
+              .in("client_name", chunk),
           "id"
         ),
-        fetchEstatePaged_(
-          () =>
+        fetchEstateChunkedByClients_(
+          candidateNames,
+          (chunk) =>
             supabase
               .from("pulse_recon_configs")
               .select("client_name, updated_at")
-              .in("client_name", candidateNames),
+              .in("client_name", chunk),
           "client_id"
         ),
-        fetchEstatePaged_(
-          () =>
+        fetchEstateChunkedByClients_(
+          candidateNames,
+          (chunk) =>
             supabase
               .from("bank_recon_periods")
               .select("client_name, updated_at")
-              .in("client_name", candidateNames),
+              .in("client_name", chunk),
           "id"
         ),
       ]);

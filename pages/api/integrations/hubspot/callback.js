@@ -90,9 +90,15 @@ export default async function handler(req, res) {
     const clientName = statePayload.clientName || clientKey;
     const masterSheetId = statePayload.masterSheetId;
 
-    // 2. Fetch account metadata
+    // 2. Fetch and strictly verify account metadata before persisting tokens
     const accountInfo = await getHubSpotAccountInfo(tokens.accessToken);
-    const portalName = accountInfo?.accountName || (accountInfo?.portalId ? `HubSpot Portal ${accountInfo.portalId}` : clientName);
+    if (
+      !accountInfo ||
+      (!accountInfo.portalId && !accountInfo.hubId && !accountInfo.accountName && !accountInfo.userEmail)
+    ) {
+      throw new Error("HubSpot verification failed: unable to read authenticated portal profile.");
+    }
+    const portalName = accountInfo.accountName || (accountInfo.portalId ? `HubSpot Portal ${accountInfo.portalId}` : clientName);
 
     // 3. Encrypt and store tokens in Central Vault
     await saveIntegrationTokens({

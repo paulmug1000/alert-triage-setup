@@ -7,6 +7,7 @@ import { getSessionUser } from "./authService";
 import { DEFAULT_AC_SHEET_ID, isUserAuthorizedForClient, resolveClientNameBySheetId, verifyUserAuthorizedForSheet, isReadOnlySession, canViewSalariesAndDividends } from "./userPermissions";
 import { sanitizeSpreadsheetTerms } from "../utils/helpers";
 import { getAllClients } from "./workspaces";
+import { flushImmediateAndScheduleBackgroundClientRecomputes, resolveSupabaseSheetContext } from "./masterEngineService.js";
 import {
   findForecastOnlyEmployeesInMonth_,
   applySalaryForecastResolution_,
@@ -520,7 +521,8 @@ async function writePayrollDataToSheet_(sheets, clientSheetId, extractedData, ta
   const blockingNames = new Set(blockingForecastEmployees.map(e => e.name));
   const inactiveMissingFromDoc = missingFromDoc.filter(n => !blockingNames.has(n));
 
-  await invalidateSalariesCache(null, clientSheetId);
+  const salCtx = await resolveSupabaseSheetContext({ spreadsheetId: clientSheetId }).catch(() => null);
+  await invalidateSalariesCache(salCtx?.masterSheetId || null, clientSheetId);
 
   return {
     writeSuccess: true,
@@ -950,6 +952,13 @@ export async function handleResolvePayrollImportForecast(req, res, sheets) {
     });
 
     const acId = automationCommanderSheetId || DEFAULT_AC_SHEET_ID;
+    const flushTarget =
+      clientName ||
+      (await resolveSupabaseSheetContext({ spreadsheetId: clientSheetId || masterSheetId }).catch(() => null))?.clientName ||
+      "";
+    if (flushTarget) {
+      await flushImmediateAndScheduleBackgroundClientRecomputes(sheets, flushTarget).catch(() => {});
+    }
     let taskCompleted = false;
     if (completeTask && acId && clientName) {
       const payrollWorkMonthKey = eomTargetMonthToWorkMonth_(monthStrToEomKey_(monthLabel));

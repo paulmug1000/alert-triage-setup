@@ -19,7 +19,7 @@ import { getSessionUser } from "./authService.js";
 import { isUserAuthorizedForClient, sanitizeFormulaInput, getCanonicalAcSheetId, verifyUserAuthorizedForSheet } from "./userPermissions.js";
 import { getAllClients, DEFAULT_AC_SHEET_ID } from "./workspaces.js";
 import { matchesClientName, sanitizeSpreadsheetTerms, isPlaceholderInvoice, parseSheetDate, postGasWebAppLocked } from "../utils/helpers.js";
-import { resolveSupabaseSheetContext } from "./masterEngineService.js";
+import { resolveSupabaseSheetContext, resolveClientSheetIdFromMaster, flushImmediateAndScheduleBackgroundClientRecomputes } from "./masterEngineService.js";
 import {
   pullLivePLToSupabaseNative,
   pushOutgoingsToClientSheetNative,
@@ -286,15 +286,22 @@ async function getEomSupabaseState_(sheets, acSheetId, monthKeys = [], options =
     if (cached) return cached;
   }
 
-  let { data: rows, error } = await sb
-    .from("eom_cycles_and_tasks")
-    .select("work_month_key, client_name, record_type, tasks_payload")
-    .in("record_type", ["template", "client_tasks"])
-    .in("work_month_key", targetMonths);
-
-  if (error) {
-    console.warn("[eomTools] Supabase state query failed, falling back to Sheets:", error.message);
-    return null;
+  let rows = [];
+  for (let from = 0; ; from += 1000) {
+    const pageResp = await sb
+      .from("eom_cycles_and_tasks")
+      .select("work_month_key, client_name, record_type, tasks_payload")
+      .in("record_type", ["template", "client_tasks"])
+      .in("work_month_key", targetMonths)
+      .order("id", { ascending: true })
+      .range(from, from + 999);
+    if (pageResp.error) {
+      console.warn("[eomTools] Supabase state query failed, falling back to Sheets:", pageResp.error.message);
+      return null;
+    }
+    const pageRows = pageResp.data || [];
+    rows.push(...pageRows);
+    if (pageRows.length < 1000) break;
   }
 
   let globalRow = (rows || []).find(
@@ -305,13 +312,20 @@ async function getEomSupabaseState_(sheets, acSheetId, monthKeys = [], options =
     if (!sheets || !acSheetId) return null;
     try {
       await ensureEomSeededInSupabase_(sheets, acSheetId, sb);
-      const retryResp = await sb
-        .from("eom_cycles_and_tasks")
-        .select("work_month_key, client_name, record_type, tasks_payload")
-        .in("record_type", ["template", "client_tasks"])
-        .in("work_month_key", targetMonths);
-      if (retryResp.error) return null;
-      rows = retryResp.data || [];
+      rows = [];
+      for (let from = 0; ; from += 1000) {
+        const retryResp = await sb
+          .from("eom_cycles_and_tasks")
+          .select("work_month_key, client_name, record_type, tasks_payload")
+          .in("record_type", ["template", "client_tasks"])
+          .in("work_month_key", targetMonths)
+          .order("id", { ascending: true })
+          .range(from, from + 999);
+        if (retryResp.error) return null;
+        const pageRows = retryResp.data || [];
+        rows.push(...pageRows);
+        if (pageRows.length < 1000) break;
+      }
       globalRow = rows.find(
         (r) => r.work_month_key === "__global__" && r.client_name === "__system__" && r.record_type === "template"
       );
@@ -481,13 +495,14 @@ async function syncEomTaskStatusToSupabase_(clientName, monthKey, taskId, status
   try {
     const sb = getSupabaseAdmin();
     if (!sb) return;
-    const { data: existing } = await sb
+    const { data: existing, error: selErr } = await sb
       .from("eom_cycles_and_tasks")
       .select("tasks_payload")
       .eq("work_month_key", monthKey)
       .eq("client_name", clientName)
       .eq("record_type", "client_tasks")
       .maybeSingle();
+    if (selErr) throw new Error(`Failed loading EOM task statuses: ${selErr.message}`);
     const payload = (existing?.tasks_payload && typeof existing.tasks_payload === "object")
       ? { ...existing.tasks_payload }
       : {};
@@ -1556,13 +1571,24 @@ export async function handleEomUpdateTaskStatusBatch(req, res, sheets) {
       const distinctClients = Array.from(new Set(updates.map(u => u.clientName).filter(Boolean)));
       await getEomSupabaseState_(sheets, automationCommanderSheetId, distinctMonths, { bypassCache: true });
 
-      const { data: existingRows, error: fetchErr } = await sb
-        .from("eom_cycles_and_tasks")
-        .select("work_month_key, client_name, tasks_payload")
-        .eq("record_type", "client_tasks")
-        .in("work_month_key", distinctMonths)
-        .in("client_name", distinctClients);
-      if (fetchErr) throw new Error(fetchErr.message);
+      const existingRows = [];
+      for (let i = 0; i < distinctClients.length; i += 200) {
+        const clientChunk = distinctClients.slice(i, i + 200);
+        for (let from = 0; ; from += 1000) {
+          const { data: pageRows, error: fetchErr } = await sb
+            .from("eom_cycles_and_tasks")
+            .select("work_month_key, client_name, tasks_payload")
+            .eq("record_type", "client_tasks")
+            .in("work_month_key", distinctMonths)
+            .in("client_name", clientChunk)
+            .order("id", { ascending: true })
+            .range(from, from + 999);
+          if (fetchErr) throw new Error(fetchErr.message);
+          if (!Array.isArray(pageRows) || pageRows.length === 0) break;
+          existingRows.push(...pageRows);
+          if (pageRows.length < 1000) break;
+        }
+      }
 
       const payloadMap = new Map();
       (existingRows || []).forEach((r) => {
@@ -2068,7 +2094,16 @@ export async function handleEomSaveCashBalance(req, res, sheets) {
       }).catch((err) => console.warn("Failed to persist EoM bank breakdown:", err.message));
     }
 
-    await invalidatePmaClientCache(cashClientSheetId, null, ["cash"]).catch(() => {});
+    const cashCtx = await resolveSupabaseSheetContext({
+      clientName: cashClientName,
+      spreadsheetId: cashClientSheetId,
+    }).catch(() => null);
+    await flushImmediateAndScheduleBackgroundClientRecomputes(sheets, cashCtx?.clientName || cashClientName).catch(() => {});
+    await invalidatePmaClientCache(
+      cashClientSheetId,
+      cashCtx?.masterSheetId || req.body?.masterSheetId || null,
+      ["cash", "views", "dashboard"]
+    ).catch(() => {});
 
     const cashWorkMonthKey = eomTargetMonthToWorkMonth_(cashTargetMonthKey);
     const completedTaskId = await autoCompleteLinkedEomTask_(sheets, automationCommanderSheetId, cashClientName, "cash_balance", cashWorkMonthKey);
@@ -2205,6 +2240,8 @@ export async function handleEomMarkMonthActual(req, res, sheets) {
       valueInputOption: "USER_ENTERED", requestBody: { values: [["Actual"]] },
     });
 
+    await invalidatePmaClientCache(perfClientSheetId, null, ["views", "dashboard", "jobs"]).catch(() => {});
+
     await autoCompleteLinkedEomTask_(sheets, automationCommanderSheetId, perfClientName, "mark_actual", perfWorkMonthKey);
 
     logPmaActivity(sheets, {
@@ -2321,13 +2358,15 @@ export async function handleEomMarkNbExclude(req, res, sheets) {
     });
 
     // Invalidate NBtoFind cache so the UI reflects the change immediately
-    const cacheKey = `pma_nbtofind_${clientSheetId}`;
+    const cleanNbClientId = extractSheetIdFromUrl(clientSheetId) || clientSheetId;
+    const cacheKey = `pma_nbtofind_${cleanNbClientId}`;
     try {
+      memoryCache?.del?.(cacheKey);
       if (redisClient?.isOpen) await redisClient.del(cacheKey);
-      else memoryCache?.delete(cacheKey);
     } catch (e) {
       console.warn("NBtoFind cache invalidate error:", e?.message);
     }
+    await invalidatePmaClientCache(cleanNbClientId, null, ["nbtofind", "views", "dashboard"]).catch(() => {});
 
     await autoCompleteLinkedEomTask_(sheets, automationCommanderSheetId, clientName, "mark_nb_exclude", workMonthKey);
 
@@ -5474,9 +5513,12 @@ export async function handleEomRunReportingAction(req, res, sheets) {
           mgmtGrid = computed.mgmtGrid;
         }
 
-        // 2. Update Recon Sheet tab if GENERATE on first batch
+        // 2. Update Recon Sheet tab if GENERATE on first batch (skip legacy Google Recon sheet duplication when native recon/retired)
         if (mode === "GENERATE" && isFirstBatch && reconSheetId) {
-          await updateReconTabNative_(sheets, reconSheetId, effectiveReportMonth);
+          const reconCtx = await resolveSupabaseSheetContext({ clientName: cName, spreadsheetId: reconSheetId }).catch(() => null);
+          if (!(reconCtx?.reconMode === "native" || reconCtx?.gridStorageRetired)) {
+            await updateReconTabNative_(sheets, reconSheetId, effectiveReportMonth);
+          }
         }
 
         // 3. Resolve or create target presentation
@@ -6074,15 +6116,8 @@ async function readAndParseOverheadExpenses_(sheets, masterSheetId, checkboxOver
       if (supaCtx?.clientSheetId) clientSheetId = supaCtx.clientSheetId;
     } catch (_) { }
   }
-  if (!clientSheetId) {
-    try {
-      const c1Resp = await withRetry(() => sheets.spreadsheets.values.get({
-        spreadsheetId: masterSheetId,
-        range: "KeyInfo!C1",
-        valueRenderOption: "FORMATTED_VALUE"
-      }));
-      clientSheetId = extractSheetIdFromUrl(c1Resp.data.values?.[0]?.[0] || "") || "";
-    } catch (_) { }
+  if (!clientSheetId && masterSheetId) {
+    clientSheetId = await resolveClientSheetIdFromMaster(sheets, masterSheetId).catch(() => "");
   }
 
   let outgoingsEntries = [];
@@ -6344,17 +6379,11 @@ export async function handleEomAddZeroBudgetCategory(req, res, sheets) {
 
     let targetBudgetSheetId = extractSheetIdFromUrl(clientSheetId) || clientSheetId || "";
     if (!targetBudgetSheetId) {
-      try {
-        const c1Resp = await withRetry(() => sheets.spreadsheets.values.get({
-          spreadsheetId: mId,
-          range: "KeyInfo!C1",
-          valueRenderOption: "FORMATTED_VALUE"
-        }));
-        const c1Url = c1Resp.data.values?.[0]?.[0] || "";
-        targetBudgetSheetId = extractSheetIdFromUrl(c1Url) || "";
-      } catch (_) { }
+      targetBudgetSheetId = await resolveClientSheetIdFromMaster(sheets, mId, clientName).catch(() => "");
     }
-    if (!targetBudgetSheetId) targetBudgetSheetId = mId;
+    if (!targetBudgetSheetId) {
+      return res.status(400).json({ success: false, error: "Client workspace sheet ID could not be resolved." });
+    }
 
     const catsToAdd = Array.isArray(categories)
       ? categories.map(c => String(c || "").trim()).filter(Boolean)
@@ -7025,14 +7054,7 @@ async function extractRevenueItemsFromMasterSheet_(sheets, masterSheetId, monthK
     try {
       let targetClientSheetId = clientSheetId;
       if (!targetClientSheetId && masterSheetId) {
-        try {
-          const c1Resp = await withRetry(() => sheets.spreadsheets.values.get({
-            spreadsheetId: masterSheetId,
-            range: "KeyInfo!C1",
-            valueRenderOption: "FORMATTED_VALUE"
-          }));
-          targetClientSheetId = extractSheetIdFromUrl(c1Resp.data.values?.[0]?.[0] || "");
-        } catch (_) { }
+        targetClientSheetId = await resolveClientSheetIdFromMaster(sheets, masterSheetId).catch(() => "");
       }
 
       let monthlyResp = null;
@@ -7106,14 +7128,7 @@ async function extractRevenueItemsFromMasterSheet_(sheets, masterSheetId, monthK
     try {
       let rechClientSheetId = clientSheetId;
       if (!rechClientSheetId && masterSheetId) {
-        try {
-          const c1Resp = await withRetry(() => sheets.spreadsheets.values.get({
-            spreadsheetId: masterSheetId,
-            range: "KeyInfo!C1",
-            valueRenderOption: "FORMATTED_VALUE"
-          }));
-          rechClientSheetId = extractSheetIdFromUrl(c1Resp.data.values?.[0]?.[0] || "");
-        } catch (_) { }
+        rechClientSheetId = await resolveClientSheetIdFromMaster(sheets, masterSheetId).catch(() => "");
       }
 
       if (rechClientSheetId) {

@@ -819,10 +819,14 @@ async function syncPmaTaskRowsToSupabase_(sb, sbRows) {
       }
     }
     if (tasksToUpsert.length > 0) {
-      await sb.from("pma_tasks").upsert(tasksToUpsert, { onConflict: "fingerprint_hash" });
+      for (let i = 0; i < tasksToUpsert.length; i += 200) {
+        await sb.from("pma_tasks").upsert(tasksToUpsert.slice(i, i + 200), { onConflict: "fingerprint_hash" });
+      }
     }
     if (hashesToRemoveFromTasks.length > 0) {
-      await sb.from("pma_tasks").delete().in("fingerprint_hash", hashesToRemoveFromTasks);
+      for (let i = 0; i < hashesToRemoveFromTasks.length; i += 200) {
+        await sb.from("pma_tasks").delete().in("fingerprint_hash", hashesToRemoveFromTasks.slice(i, i + 200));
+      }
     }
   } catch (err) {
     console.warn("⚠️ syncPmaTaskRowsToSupabase_ warning:", err.message);
@@ -1573,15 +1577,21 @@ export async function updateAlertMemoryRowsBatch(sheets, automationCommanderShee
             if (stKey !== "task") oldHashesToRemoveFromTasks.push(oldHash);
           }
           for (const [stKey, hashes] of Object.entries(oldHashesByStatus)) {
-            subTasks.push(
-              sb
-                .from("alert_memory")
-                .update({ status: stKey, last_seen: now, last_rechecked: now })
-                .in("fingerprint_hash", hashes)
-            );
+            for (let i = 0; i < hashes.length; i += 200) {
+              subTasks.push(
+                sb
+                  .from("alert_memory")
+                  .update({ status: stKey, last_seen: now, last_rechecked: now })
+                  .in("fingerprint_hash", hashes.slice(i, i + 200))
+              );
+            }
           }
           if (oldHashesToRemoveFromTasks.length > 0 && shouldSyncPmaTasksMirror_()) {
-            subTasks.push(sb.from("pma_tasks").delete().in("fingerprint_hash", oldHashesToRemoveFromTasks));
+            for (let i = 0; i < oldHashesToRemoveFromTasks.length; i += 200) {
+              subTasks.push(
+                sb.from("pma_tasks").delete().in("fingerprint_hash", oldHashesToRemoveFromTasks.slice(i, i + 200))
+              );
+            }
           }
           if (subTasks.length > 0) {
             const results = await Promise.all(subTasks);
@@ -2010,10 +2020,11 @@ export async function deleteAlertMemoryRows(sheets, automationCommanderSheetId, 
             const remainingSet = new Set();
             for (let i = 0; i < rowCandidateList.length; i += 200) {
               const chunk = rowCandidateList.slice(i, i + 200);
-              const { data: stillPresent } = await sb
+              const { data: stillPresent, error: stillErr } = await sb
                 .from("alert_memory")
                 .select("fingerprint_hash")
                 .in("fingerprint_hash", chunk);
+              if (stillErr) throw new Error(`alert_memory orphan verification query failed: ${stillErr.message}`);
               for (const r of stillPresent || []) {
                 if (r?.fingerprint_hash) remainingSet.add(r.fingerprint_hash);
               }

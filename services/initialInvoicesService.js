@@ -25,6 +25,7 @@ import { invalidatePmaClientCache } from "./cacheService.js";
 import {
   flushImmediateAndScheduleBackgroundClientRecomputes,
   resolveClientSheetIdFromMaster,
+  resolveSupabaseSheetContext,
 } from "./masterEngineService.js";
 import { logPmaActivity } from "./pmaLogger.js";
 import { sanitizeFormulaInput } from "./userPermissions.js";
@@ -1555,8 +1556,13 @@ export async function createInitialRetainerJobs({
     }
   }
 
-  if (cleanClientId.startsWith("sb-") || cleanMasterId.startsWith("sb-")) {
-    await flushImmediateAndScheduleBackgroundClientRecomputes(sheets, clientName || cleanMasterId).catch(() => { });
+  const flushCtx = await resolveSupabaseSheetContext({
+    clientName: clientName || "",
+    spreadsheetId: cleanClientId || cleanMasterId,
+  }).catch(() => null);
+  const flushTargetClient = flushCtx?.clientName || clientName || "";
+  if (flushTargetClient) {
+    await flushImmediateAndScheduleBackgroundClientRecomputes(sheets, flushTargetClient).catch(() => { });
   }
   await invalidatePmaClientCache(cleanClientId, cleanMasterId, ["jobs", "invoices", "retainers", "cash", "dashboard"]).catch(() => { });
 
@@ -1675,8 +1681,13 @@ export async function createInitialProjectJobs({
     })
   );
 
-  if (cleanClientId.startsWith("sb-") || cleanMasterId.startsWith("sb-")) {
-    await flushImmediateAndScheduleBackgroundClientRecomputes(sheets, clientName || cleanMasterId).catch(() => { });
+  const flushCtx = await resolveSupabaseSheetContext({
+    clientName: clientName || "",
+    spreadsheetId: cleanClientId || cleanMasterId,
+  }).catch(() => null);
+  const flushTargetClient = flushCtx?.clientName || clientName || "";
+  if (flushTargetClient) {
+    await flushImmediateAndScheduleBackgroundClientRecomputes(sheets, flushTargetClient).catch(() => { });
   }
   await invalidatePmaClientCache(cleanClientId, cleanMasterId, ["jobs", "invoices", "retainers", "cash", "dashboard"]).catch(() => { });
 

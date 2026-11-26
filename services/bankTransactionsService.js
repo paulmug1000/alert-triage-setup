@@ -14,7 +14,7 @@
  */
 
 import { getSheetsClient, withRetry, extractSheetIdFromUrl } from "./sheetsClient.js";
-import { getIntegrationTokens, updateRefreshedTokens, getSharedXeroGrant, updateSharedXeroGrantTokens, refreshStoredIntegrationToken } from "./vaultService.js";
+import { getIntegrationTokens, getSharedXeroGrant, refreshStoredIntegrationToken } from "./vaultService.js";
 import { fetchXeroBankAccounts, fetchXeroAccountTransactions, refreshXeroTokens, fetchXeroBankSummaryReport, parseXeroBankSummaryReport } from "./xeroService.js";
 import { fetchQuickBooksBankAccounts, fetchQuickBooksAccountTransactions, refreshQBTokens } from "./quickbooksService.js";
 import { syncReconBankTransactions, syncReconUnreconciledItems } from "./cashflowReconService.js";
@@ -154,7 +154,7 @@ export async function fetchClientReconciledBankTransactions({
     return {
       success: true,
       hasTrackedAccounts: false,
-      message: "No bank accounts currently configured in Client Settings > Bank Accounts (KeyInfo!H12:H28).",
+      message: "No bank accounts currently configured in Client Settings > Bank Accounts.",
       trackedAccountNames: [],
       trackedNonCashAccountNames: [],
       transactions: [],
@@ -1771,19 +1771,34 @@ export async function autoReconcileClientBankTransactions({
         const sb = getSupabaseAdmin();
         const { data: sbClients, error: sbErr } = await sb
           .from("clients")
-          .select("client_name, master_sheet_id, master_sheet_url, recon_sheet_id, recon_sheet_url");
+          .select("client_name, normalized_key, master_mode, master_sheet_id, master_sheet_url, recon_sheet_id, recon_sheet_url");
         if (!sbErr && Array.isArray(sbClients)) {
           const match = sbClients.find(c => {
             const cName = String(c.client_name || "").trim().toLowerCase();
-            const mId = extractSheetIdFromUrl(c.master_sheet_url || c.master_sheet_id) || String(c.master_sheet_id || "").trim();
+            const nKey = String(c.normalized_key || cName.replace(/[^a-z0-9_-]/g, "_")).trim();
+            const mId =
+              extractSheetIdFromUrl(c.master_sheet_url || c.master_sheet_id) ||
+              String(c.master_sheet_id || "").trim() ||
+              (c.master_mode === "supabase" && nKey ? `sb-master-${nKey}` : "");
             if (cleanMasterId && mId === cleanMasterId) return true;
             if (resolvedClient && (cName === resolvedClient.toLowerCase().trim() || cName.includes(resolvedClient.toLowerCase().trim()))) return true;
             return false;
           });
           if (match) {
+            const nKey = String(match.normalized_key || String(match.client_name || "").trim().toLowerCase().replace(/[^a-z0-9_-]/g, "_")).trim();
             if (!resolvedClient) resolvedClient = String(match.client_name || "").trim();
-            if (!cleanMasterId) cleanMasterId = extractSheetIdFromUrl(match.master_sheet_url || match.master_sheet_id) || String(match.master_sheet_id || "").trim();
-            if (!cleanReconId) cleanReconId = extractSheetIdFromUrl(match.recon_sheet_url || match.recon_sheet_id) || String(match.recon_sheet_id || "").trim();
+            if (!cleanMasterId) {
+              cleanMasterId =
+                extractSheetIdFromUrl(match.master_sheet_url || match.master_sheet_id) ||
+                String(match.master_sheet_id || "").trim() ||
+                (match.master_mode === "supabase" && nKey ? `sb-master-${nKey}` : "");
+            }
+            if (!cleanReconId) {
+              cleanReconId =
+                extractSheetIdFromUrl(match.recon_sheet_url || match.recon_sheet_id) ||
+                String(match.recon_sheet_id || "").trim() ||
+                (match.master_mode === "supabase" && nKey ? `sb-recon-${nKey}` : "");
+            }
             resolvedFromSupa = Boolean(resolvedClient && cleanMasterId);
           }
         }
@@ -2184,20 +2199,24 @@ export async function checkClientBankReconciliationStatus({
   // 3. Xero BankSummary Handling
   let accessToken = activeTokens.tokens?.accessToken;
   let tenantId = activeTokens.tenantId;
-  const isShared = Boolean(activeTokens.isSharedGrant);
 
-  const doRefreshXero = async () => {
-    const refreshToken = activeTokens.tokens?.refreshToken;
-    if (!refreshToken) throw new Error("No refresh token available to refresh Xero connection.");
+  const doRefreshXero = async (forceRefresh = false) => {
     console.log(`🔄 Bank Recon Health: Refreshing Xero access token for ${clientName}...`);
-    const refreshed = await refreshXeroTokens(refreshToken);
+    const refreshed = await refreshStoredIntegrationToken({
+      clientKey: activeTokens.clientKey || clientName,
+      masterSheetId: cleanMasterId,
+      tool: "xero",
+      bufferSeconds: 300,
+      forceRefresh,
+      refreshFn: (latest) => {
+        if (!latest?.tokens?.refreshToken) {
+          throw new Error("No refresh token available to refresh Xero connection.");
+        }
+        return refreshXeroTokens(latest.tokens.refreshToken);
+      },
+    });
     accessToken = refreshed.accessToken;
-    activeTokens.tokens = refreshed;
-    if (isShared) {
-      await updateSharedXeroGrantTokens(refreshed);
-    } else {
-      await updateRefreshedTokens({ clientKey: clientName, masterSheetId: cleanMasterId, tool: "xero", tokens: refreshed });
-    }
+    activeTokens.tokens = { ...(activeTokens.tokens || {}), accessToken: refreshed.accessToken };
     return refreshed.accessToken;
   };
 
@@ -2211,7 +2230,7 @@ export async function checkClientBankReconciliationStatus({
 
   if (isExpiringSoon && activeTokens.tokens?.refreshToken) {
     try {
-      await doRefreshXero();
+      await doRefreshXero(false);
     } catch (refErr) {
       console.warn("⚠️ Token pre-refresh failed, will attempt with existing token:", refErr.message);
     }
@@ -2223,7 +2242,7 @@ export async function checkClientBankReconciliationStatus({
   } catch (err) {
     if (String(err.message).includes("401") || String(err.message).includes("Unauthorized")) {
       try {
-        const freshToken = await doRefreshXero();
+        const freshToken = await doRefreshXero(true);
         reportJson = await fetchXeroBankSummaryReport({ accessToken: freshToken, tenantId, fromDate, toDate });
       } catch (retryErr) {
         throw new Error(`Xero Bank Summary failed after token refresh: ${retryErr.message}`);

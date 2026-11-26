@@ -90,9 +90,12 @@ export default async function handler(req, res) {
     const clientName = statePayload.clientName || clientKey;
     const masterSheetId = statePayload.masterSheetId;
 
-    // 2. Fetch site/account metadata
+    // 2. Fetch and strictly verify site/account metadata before persisting tokens
     const accountInfo = await getCapsuleAccountInfo(tokens.accessToken);
-    const siteName = accountInfo?.siteName || clientName;
+    if (!accountInfo || (!accountInfo.siteName && !accountInfo.siteUrl && !accountInfo.userEmail)) {
+      throw new Error("Capsule CRM verification failed: unable to read authenticated site profile.");
+    }
+    const siteName = accountInfo.siteName || clientName;
 
     // 3. Encrypt and store tokens in Central Vault
     await saveIntegrationTokens({

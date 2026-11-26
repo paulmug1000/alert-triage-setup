@@ -513,12 +513,22 @@ export default function PortalJobsView({
     setOptimisticJobs({});
   }, [data?.jobs]);
 
+  const editClient = editingJob?.client || "";
+  const editJobName = editingJob?.jobName || "";
+  const editProjectCode = editingJob?.projectCode || "";
+  const editProjectRetainer = editingJob?.projectRetainer || "";
+  const editIsVariableRetainerSeries = Boolean(editingJob?.isVariableRetainerSeries);
+  const editStartDate = editingJob?.startDate || "";
+  const editEndDate = editingJob?.endDate || "";
+  const editRowNumber = editingJob?.rowNumber;
+  const editType = editingJob?.type;
+
   // Background-prefetch accounting catalogs when an existing Confirmed job opens
   useEffect(() => {
     setPrefetchedCatalogByType({ invoice: null, directCost: null });
     if (
-      !editingJob?.rowNumber ||
-      editingJob?.type !== "Confirmed" ||
+      !editRowNumber ||
+      editType !== "Confirmed" ||
       !hasAccounting ||
       isReadOnly ||
       !clientSheetId
@@ -527,13 +537,13 @@ export default function PortalJobsView({
     }
     let cancelled = false;
     const targetPayload = {
-      client: editingJob.client || "",
-      jobName: editingJob.jobName || "",
-      projectCode: editingJob.projectCode || "",
-      isRetainer: Boolean(String(editingJob.projectRetainer || "").toLowerCase().includes("retainer") && !editingJob.isVariableRetainerSeries),
-      startDate: editingJob.startDate || "",
-      endDate: editingJob.endDate || "",
-      rowNum: editingJob.rowNumber,
+      client: editClient,
+      jobName: editJobName,
+      projectCode: editProjectCode,
+      isRetainer: Boolean(String(editProjectRetainer).toLowerCase().includes("retainer") && !editIsVariableRetainerSeries),
+      startDate: editStartDate,
+      endDate: editEndDate,
+      rowNum: editRowNumber,
     };
     ["invoice", "directCost"].forEach((t) => {
       fetch("/api/portal/accounting-catalog", {
@@ -559,7 +569,7 @@ export default function PortalJobsView({
     return () => {
       cancelled = true;
     };
-  }, [editingJob?.rowNumber, editingJob?.type, editingJob?.jobName, editingJob?.client, hasAccounting, isReadOnly, clientSheetId, clientName]);
+  }, [editRowNumber, editType, editJobName, editClient, editProjectCode, editProjectRetainer, editIsVariableRetainerSeries, editStartDate, editEndDate, hasAccounting, isReadOnly, clientSheetId, clientName]);
 
   // Lock background scroll when modal is open
   useEffect(() => {

@@ -475,7 +475,8 @@ export async function suggestAccountingSettings({ clientName, masterSheetId, isA
           "Authorization": `Bearer ${auth.accessToken}`,
           "Xero-tenant-id": auth.tenantId,
           "Accept": "application/json"
-        }
+        },
+        redirect: "manual",
       });
 
       if (orgRes.ok) {
@@ -591,7 +592,8 @@ export async function suggestAccountingSettings({ clientName, masterSheetId, isA
           "Authorization": `Bearer ${auth.accessToken}`,
           "Xero-tenant-id": auth.tenantId,
           "Accept": "application/json"
-        }
+        },
+        redirect: "manual",
       });
 
       if (btRes.ok) {
@@ -738,8 +740,8 @@ async function fetchXeroPlAndAccounts(auth) {
   };
 
   const [plRes, accRes] = await Promise.all([
-    fetch(`https://api.xero.com/api.xro/2.0/Reports/ProfitAndLoss?fromDate=${fromStr}&toDate=${toStr}&periods=4&timeframe=YEAR&standardLayout=false`, { headers }).catch(() => null),
-    fetch("https://api.xero.com/api.xro/2.0/Accounts", { headers }).catch(() => null)
+    fetch(`https://api.xero.com/api.xro/2.0/Reports/ProfitAndLoss?fromDate=${fromStr}&toDate=${toStr}&periods=4&timeframe=YEAR&standardLayout=false`, { headers, redirect: "manual" }).catch(() => null),
+    fetch("https://api.xero.com/api.xro/2.0/Accounts", { headers, redirect: "manual" }).catch(() => null)
   ]);
 
   const accountTypeMap = new Map();
@@ -1110,7 +1112,7 @@ export async function applyAccountingSettings({ clientName, masterSheetId, setti
     }
   });
 
-  return { success: true, message: "Accounting settings successfully applied to Master Sheet." };
+  return { success: true, message: "Accounting settings successfully applied to Pulse." };
 }
 
 /**
@@ -1151,5 +1153,5 @@ export async function applyCategoryMappings({ clientName, masterSheetId, mapping
     }
   });
 
-  return { success: true, message: "Category mapping rules successfully applied to Master Sheet." };
+  return { success: true, message: "Category mapping rules successfully applied to Pulse." };
 }

@@ -1374,11 +1374,23 @@ export async function setClientReconMode(clientName, mode) {
     );
   }
 
+  let latestMeta = cl.metadata || {};
   if (cleanMode === "relational" && !cl.grid_storage_retired) {
     await backfillClientRecon(clientName);
+    const { data: refreshedClient, error: refreshErr } = await supabase
+      .from("clients")
+      .select("metadata")
+      .eq("id", cl.id)
+      .single();
+    if (refreshErr) {
+      throw new Error(`Failed to reload client metadata after recon backfill: ${refreshErr.message}`);
+    }
+    if (refreshedClient?.metadata && typeof refreshedClient.metadata === "object") {
+      latestMeta = refreshedClient.metadata;
+    }
   }
 
-  const nextMeta = { ...(cl.metadata || {}), recon_mode: cleanMode };
+  const nextMeta = { ...latestMeta, recon_mode: cleanMode };
   const { data: upd, error: uErr } = await supabase
     .from("clients")
     .update({ recon_mode: cleanMode, metadata: nextMeta })

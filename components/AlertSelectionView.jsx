@@ -2816,7 +2816,7 @@ export default function AlertSelectionView({
                                         <div style={{ fontSize: "12px", color: "#555", display: "flex", flexDirection: "column", gap: "2px", marginTop: "2px", marginBottom: "4px" }}>
                                           {clientName && <div><strong>End client:</strong> {clientName}</div>}
                                           {jName && <div><strong>Job:</strong> {jName}{pCode ? ` [${pCode}]` : ""}</div>}
-                                          {confRow && <div><strong>Confirmed tab row:</strong> {confRow}</div>}
+                                          {isAdmin && confRow && <div><strong>Confirmed tab row:</strong> {confRow}</div>}
                                           {eDate && <div><strong>Job ended:</strong> {formatJobEndDateDisplay(eDate, eDate)}</div>}
                                           {dCosts && <div><strong>Direct cost budget:</strong> £{parseFloat(dCosts).toFixed(2)}</div>}
                                           {unrecAmt && <div style={{ marginTop: "4px", fontWeight: "600", color: "#c62828" }}>£{parseFloat(unrecAmt).toFixed(2)} unreceived (placeholders and estimates excluded)</div>}
@@ -2843,7 +2843,11 @@ export default function AlertSelectionView({
                                       return (
                                         <div style={{ fontSize: "12px", color: "#555", display: "flex", flexDirection: "column", gap: "2px", marginTop: "2px", marginBottom: "4px" }}>
                                           {contractor && <div><strong>Contractor:</strong> {contractor}</div>}
-                                          <div><strong>Location:</strong> Outgoings tab{month ? ` (${month})` : ""}{cellCoord ? `, Cell ${cellCoord}` : ""}</div>
+                                          {isAdmin ? (
+                                            <div><strong>Location:</strong> Outgoings tab{month ? ` (${month})` : ""}{cellCoord ? `, Cell ${cellCoord}` : ""}</div>
+                                          ) : (
+                                            <div><strong>Location:</strong> Contractors{month ? ` (${month})` : ""}</div>
+                                          )}
                                           {appId && <div><strong>App ID:</strong> {appId}</div>}
                                           {amount && <div><strong>Amount:</strong> £{parseFloat(amount).toFixed(2)}</div>}
                                           {recDate && <div><strong>Received date:</strong> {recDate} {weeksAgo ? <span style={{ color: "#b45309", fontWeight: "600" }}>({weeksAgo} weeks ago - overdue)</span> : null}</div>}
@@ -3185,7 +3189,7 @@ export default function AlertSelectionView({
                                         <div style={{ fontSize: "12px", color: "#555", display: "flex", flexDirection: "column", gap: "2px", marginTop: "2px", marginBottom: "4px" }}>
                                           {clientName && <div><strong>End client:</strong> {clientName}</div>}
                                           {jName && <div><strong>Job:</strong> {jName}{pCode ? ` [${pCode}]` : ""}</div>}
-                                          {confRow && <div><strong>Confirmed tab row:</strong> {confRow}</div>}
+                                          {isAdmin && confRow && <div><strong>Confirmed tab row:</strong> {confRow}</div>}
                                           {eDate && <div><strong>{endLabel}</strong> {eDate}</div>}
                                           {rev && (
                                             hasRechargedContext ? (
@@ -3451,8 +3455,8 @@ export default function AlertSelectionView({
                                         <div style={{ fontSize: "12px", color: "#555", display: "flex", flexDirection: "column", gap: "3px", marginTop: "2px", marginBottom: "4px" }}>
                                           {clientName && <div><strong>{isExp ? "Contractor:" : "End client:"}</strong> {clientName}</div>}
                                           {jName && !isExp && <div><strong>Job:</strong> {jName}</div>}
-                                          {confRow && <div><strong>Confirmed tab row:</strong> {confRow}{slot ? `, Slot ${slot}` : ""}</div>}
-                                          {m.cellCoord && <div><strong>Outgoings cell:</strong> {m.cellCoord}</div>}
+                                          {isAdmin && confRow && <div><strong>Confirmed tab row:</strong> {confRow}{slot ? `, Slot ${slot}` : ""}</div>}
+                                          {isAdmin && m.cellCoord && <div><strong>Outgoings cell:</strong> {m.cellCoord}</div>}
                                           {ref && (
                                             <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
                                               <span><strong>{isExp ? "Expense ID:" : "Invoice ref:"}</strong> {ref}</span>
@@ -3710,7 +3714,7 @@ export default function AlertSelectionView({
                                                     });
                                                   }}
                                                   style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "4px 12px", color: "#dc2626", borderColor: "#fecaca" }}
-                                                  title="Delete this invoice entry from the Confirmed tab in Pulse"
+                                                  title={isAdmin ? "Delete this invoice entry from the Confirmed tab in Pulse" : "Delete this invoice entry from Pulse"}
                                                 >
                                                   Delete invoice from Pulse
                                                 </button>

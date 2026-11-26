@@ -423,6 +423,7 @@ async function refreshAutoUpdatesSheetMappings(sheets) {
     } catch (_) { }
   }
 
+  if (!sheets) return;
   const acId = getCanonicalAcSheetId();
   const resp = await withRetry(() =>
     sheets.spreadsheets.values.get({
@@ -564,35 +565,51 @@ export async function verifyUserAuthorizedForSheet(arg1, arg2, arg3, arg4, _igno
     } catch (_) { }
   }
 
-  if (effectiveUser.isAdmin && !effectiveUser.isReadOnly && effectiveUser.authProvider !== "EmailOTP") {
-    return { authorized: true, clientName: clientNameClaim || "Admin" };
-  }
+  const isFullAdmin = Boolean(
+    effectiveUser.isAdmin && !effectiveUser.isReadOnly && effectiveUser.authProvider !== "EmailOTP"
+  );
+  const rawSuppliedSheetId = sheetId;
   sheetId = unwrapSheetId(sheetId);
+  if (
+    rawSuppliedSheetId &&
+    (!sheetId || sheetId === "__INVALID_WS_TOKEN__" || sheetId === "__RAW_SHEET_ID_FORBIDDEN__")
+  ) {
+    return { authorized: false, status: 403, error: "Forbidden: Invalid workspace token" };
+  }
   if (!sheetId && clientNameClaim && sheets) {
     sheetId =
       (await resolveClientSheetIdByClientName(sheets, clientNameClaim)) ||
       (await resolveMasterSheetIdByClientName(sheets, clientNameClaim));
   }
   if (!sheetId) {
+    if (isFullAdmin && clientNameClaim) {
+      return { authorized: true, clientName: clientNameClaim };
+    }
     return { authorized: false, status: 400, error: "Missing sheet ID" };
   }
 
-  // 1. Resolve registered tenant name strictly from canonical AutoUpdates registry
+  if (isFullAdmin && (sheetId === "__SHARED__" || sheetId === getCanonicalAcSheetId())) {
+    return { authorized: true, clientName: clientNameClaim || "Admin" };
+  }
+
+  // 1. Resolve registered tenant name strictly from canonical AutoUpdates / Supabase registry
   const resolvedClient = await resolveClientNameBySheetId(sheets, sheetId);
 
   if (!resolvedClient) {
     return { authorized: false, status: 403, error: "Forbidden: Unrecognized or unmapped client spreadsheet" };
   }
 
-  // 2. Ensure clientName claim (if supplied) matches the actual sheet
-  if (clientNameClaim && !matchesClientName(clientNameClaim, resolvedClient)) {
+  // 2. Ensure clientName claim (if supplied) matches the actual sheet for BOTH admins and non-admins
+  if (clientNameClaim && clientNameClaim !== "Admin" && !matchesClientName(clientNameClaim, resolvedClient)) {
     return { authorized: false, status: 403, error: "Forbidden: Client identifier mismatch for requested spreadsheet" };
   }
 
-  // 3. Verify user assignment for this client
-  const isAuthorized = isUserAuthorizedForClient(effectiveUser, resolvedClient);
-  if (!isAuthorized) {
-    return { authorized: false, status: 403, error: "Forbidden: Not authorized for this client" };
+  // 3. Verify user assignment for non-admin sessions
+  if (!isFullAdmin) {
+    const isAuthorized = isUserAuthorizedForClient(effectiveUser, resolvedClient);
+    if (!isAuthorized) {
+      return { authorized: false, status: 403, error: "Forbidden: Not authorized for this client" };
+    }
   }
 
   return { authorized: true, clientName: resolvedClient };

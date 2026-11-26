@@ -14,7 +14,7 @@
  */
 
 import zlib from "zlib";
-import { randomUUID } from "crypto";
+import { createHash, randomUUID } from "crypto";
 import { getSupabaseAdmin } from "./supabaseClient.js";
 import { redisClient, ensureRedisConnected } from "./redisClient.js";
 import { invalidateMasterEngineCache } from "./masterEngineService.js";
@@ -56,14 +56,12 @@ const ALLOWED_TENANT_KEY_INFO_FIELDS = [
 // Strict parent-before-child topological order so FK constraints always succeed
 // on forward insert and reverse delete during Format v2 snapshot restore.
 export const RELATIONAL_BACKUP_TABLES = Object.freeze([
-  // Master domain
+  // Master domain (non-cross-domain-FK tables)
   { table: "sync_schedules", domain: "master" },
   { table: "client_setup_state", domain: "master" },
   { table: "accounting_invoices", domain: "master" },
   { table: "accounting_direct_costs", domain: "master" },
   { table: "accounting_pl_lines", domain: "master" },
-  { table: "crm_deals_raw", domain: "master" },
-  { table: "time_entries_raw", domain: "master" },
   { table: "pulse_master_sync_configs", domain: "master" },
   { table: "pulse_master_comparisons", domain: "master" },
   { table: "pulse_automation_logs", domain: "master" },
@@ -73,7 +71,7 @@ export const RELATIONAL_BACKUP_TABLES = Object.freeze([
   { table: "bank_recon_items", domain: "recon" },
   { table: "bank_recon_learning_map", domain: "recon" },
   { table: "pulse_recon_configs", domain: "recon" },
-  // Client domain
+  // Client domain (parent entities before child & cross-domain FK tables)
   { table: "pulse_retainer_series", domain: "client" },
   { table: "pulse_jobs", domain: "client" },
   { table: "pulse_job_invoices", domain: "client" },
@@ -81,6 +79,9 @@ export const RELATIONAL_BACKUP_TABLES = Object.freeze([
   { table: "pulse_employees", domain: "client" },
   { table: "pulse_outgoing_items", domain: "client" },
   { table: "pulse_contractor_entries", domain: "client" },
+  // Master tables with nullable FKs into pulse_jobs / pulse_employees (must insert AFTER parents & delete BEFORE parents)
+  { table: "crm_deals_raw", domain: "master" },
+  { table: "time_entries_raw", domain: "master" },
   { table: "pulse_nb_to_find", domain: "client" },
   { table: "pulse_budget_items", domain: "client" },
   { table: "pulse_cash_adjustments", domain: "client" },
@@ -315,17 +316,20 @@ async function ensureBackupBucket_(sb) {
 }
 
 async function readBackupIndex_(sb) {
-  const { data } = await sb
+  const { data, error } = await sb
     .from("system_config")
     .select("value")
     .eq("key", BACKUP_INDEX_CONFIG_KEY)
     .maybeSingle();
+  if (error) {
+    throw new Error(`Failed reading backup index: ${error.message}`);
+  }
   const list = data?.value?.snapshots;
   return Array.isArray(list) ? list : [];
 }
 
 async function writeBackupIndex_(sb, snapshots, updatedBy = "System") {
-  await sb.from("system_config").upsert({
+  const { error } = await sb.from("system_config").upsert({
     key: BACKUP_INDEX_CONFIG_KEY,
     value: {
       snapshots,
@@ -334,16 +338,22 @@ async function writeBackupIndex_(sb, snapshots, updatedBy = "System") {
     description: "Catalogue of compressed client workbook snapshots stored in the pulse-backups bucket",
     updated_by: updatedBy,
   });
+  if (error) {
+    throw new Error(`Failed updating backup index: ${error.message}`);
+  }
 }
 
 export async function getBackupPolicy(sbOverride = null) {
   const sb = sbOverride || getSupabaseAdmin();
   if (!sb) return { ...DEFAULT_BACKUP_POLICY };
-  const { data } = await sb
+  const { data, error } = await sb
     .from("system_config")
     .select("value")
     .eq("key", BACKUP_POLICY_CONFIG_KEY)
     .maybeSingle();
+  if (error) {
+    throw new Error(`Failed reading backup policy: ${error.message}`);
+  }
   return {
     ...DEFAULT_BACKUP_POLICY,
     ...(data?.value || {}),
@@ -364,12 +374,15 @@ export async function updateBackupPolicy(patch = {}, updatedBy = "Admin") {
     ...(patch.lastDailyBackupAt !== undefined ? { lastDailyBackupAt: patch.lastDailyBackupAt } : {}),
     ...(patch.lastDailyBackupCount !== undefined ? { lastDailyBackupCount: patch.lastDailyBackupCount } : {}),
   };
-  await sb.from("system_config").upsert({
+  const { error } = await sb.from("system_config").upsert({
     key: BACKUP_POLICY_CONFIG_KEY,
     value: next,
     description: "Automated daily Supabase client workbook snapshot policy and retention settings",
     updated_by: updatedBy,
   });
+  if (error) {
+    throw new Error(`Failed updating backup policy: ${error.message}`);
+  }
   return next;
 }
 
@@ -803,6 +816,7 @@ export async function restoreClientSnapshot({
   targetTabName = null,
   createPreRestoreBackup = true,
   restoredBy = "Admin",
+  skipSheetBridgeSync = false,
 } = {}) {
   const sb = getSupabaseAdmin();
   if (!sb) throw new Error("Supabase admin client is not configured.");
@@ -828,7 +842,7 @@ export async function restoreClientSnapshot({
 
   const { data: cfgRow } = await sb
     .from("clients")
-    .select("id, client_name, grid_storage_retired, client_sheet_id, master_sheet_id")
+    .select("id, client_name, grid_storage_retired, client_sheet_id, master_sheet_id, metadata")
     .ilike("client_name", escapeIlikeExact(targetClientName))
     .maybeSingle();
 
@@ -915,10 +929,12 @@ export async function restoreClientSnapshot({
     const fkCols = [
       "retainer_series_id",
       "job_id",
+      "matched_job_id",
       "employee_id",
       "outgoing_item_id",
       "contractor_entry_id",
       "note_id",
+      "period_id",
       "accounting_invoice_id",
       "accounting_direct_cost_id",
     ];
@@ -935,6 +951,31 @@ export async function restoreClientSnapshot({
       }
     }
 
+    // For partial-scope restores (e.g. scope = "client" or "master_recon"), validate cross-domain nullable FKs against live surviving parent IDs
+    const liveCrossDomainIds = {
+      pulse_jobs: null,
+      pulse_employees: null,
+      accounting_invoices: null,
+      accounting_direct_costs: null,
+    };
+    if (!allowedDomains.has("client")) {
+      const [jobsLive, empLive] = await Promise.all([
+        fetchPaginatedEq_(sb, "pulse_jobs", "client_id", clientId, "id").catch(() => []),
+        fetchPaginatedEq_(sb, "pulse_employees", "client_id", clientId, "id").catch(() => []),
+      ]);
+      liveCrossDomainIds.pulse_jobs = new Set(jobsLive.map((r) => r.id).filter(Boolean));
+      liveCrossDomainIds.pulse_employees = new Set(empLive.map((r) => r.id).filter(Boolean));
+    }
+    if (!allowedDomains.has("master")) {
+      const [invLive, dcLive] = await Promise.all([
+        fetchPaginatedEq_(sb, "accounting_invoices", "client_id", clientId, "id").catch(() => []),
+        fetchPaginatedEq_(sb, "accounting_direct_costs", "client_id", clientId, "id").catch(() => []),
+      ]);
+      liveCrossDomainIds.accounting_invoices = new Set(invLive.map((r) => r.id).filter(Boolean));
+      liveCrossDomainIds.accounting_direct_costs = new Set(dcLive.map((r) => r.id).filter(Boolean));
+    }
+
+    const canonicalNormKey = normalizeClientKey_(canonicalClient);
     const sanitizeAndStampRow_ = (row, tableName) => {
       const clean = Object.create(null);
       for (const [k, v] of Object.entries(row || {})) {
@@ -949,6 +990,33 @@ export async function restoreClientSnapshot({
           if (clean[fkCol]) {
             clean[fkCol] = uuidRemap.has(clean[fkCol]) ? uuidRemap.get(clean[fkCol]) : null;
           }
+        }
+        if ("normalized_key" in clean) {
+          clean.normalized_key = canonicalNormKey;
+        }
+        if ((tableName === "alert_memory" || tableName === "pma_tasks") && clean.fingerprint_hash) {
+          clean.fingerprint_hash = createHash("sha256")
+            .update(`${canonicalClient}::${clean.fingerprint_hash}`)
+            .digest("hex");
+          if (tableName === "pma_tasks" && clean.task_key) {
+            clean.task_key = `${canonicalNormKey}::${clean.fingerprint_hash}`;
+          }
+        }
+      }
+      if (!allowedDomains.has("client")) {
+        if (clean.matched_job_id && !liveCrossDomainIds.pulse_jobs?.has(clean.matched_job_id)) {
+          clean.matched_job_id = null;
+        }
+        if (clean.employee_id && !liveCrossDomainIds.pulse_employees?.has(clean.employee_id)) {
+          clean.employee_id = null;
+        }
+      }
+      if (!allowedDomains.has("master")) {
+        if (clean.accounting_invoice_id && !liveCrossDomainIds.accounting_invoices?.has(clean.accounting_invoice_id)) {
+          clean.accounting_invoice_id = null;
+        }
+        if (clean.accounting_direct_cost_id && !liveCrossDomainIds.accounting_direct_costs?.has(clean.accounting_direct_cost_id)) {
+          clean.accounting_direct_cost_id = null;
         }
       }
       if ("client_id" in clean || tableName !== "pulse_note_replies") {
@@ -1082,6 +1150,19 @@ export async function restoreClientSnapshot({
         ? import("./cacheService.js").then((m) => m.invalidatePmaClientCache(cfgRow.client_sheet_id, cfgRow.master_sheet_id || null, ["all"])).catch(() => { })
         : Promise.resolve(),
     ]);
+
+    const isLiveBridgedTarget =
+      !skipSheetBridgeSync &&
+      String(cfgRow?.metadata?.sheet_bridge_mode || "").trim().toLowerCase() === "live" &&
+      Boolean(cfgRow?.client_sheet_id) &&
+      !String(cfgRow.client_sheet_id).startsWith("sb-");
+    if (isLiveBridgedTarget && allowedDomains.has("client")) {
+      await import("./clientSheetBridgeService.js")
+        .then((m) => m.forceOverwriteSheetFromSupabase(canonicalClient))
+        .catch((bridgeErr) =>
+          console.warn(`[supabaseBackupService] Post-restore Google Sheet bridge sync warning (${canonicalClient}):`, bridgeErr.message)
+        );
+    }
 
     return {
       formatVersion: 2,

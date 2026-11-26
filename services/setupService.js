@@ -428,7 +428,7 @@ export async function assertClientPortalLive(sessionUser, clientName, res = null
   } else {
     let cfg = null;
     try {
-      await ensureRedisConnected(300).catch(() => {});
+      await ensureRedisConnected(300).catch(() => { });
       const raw = await redisClient.get(getSetupRedisKey(clientName));
       if (raw) cfg = JSON.parse(raw);
     } catch { }
@@ -1936,11 +1936,14 @@ export async function getClientChecklistState(sheets, clientName, masterSheetId)
         try {
           const sb = getSupabaseAdmin();
           const norm = normalizeKey(clientName);
-          const { data: existingState } = await sb
+          const { data: existingState, error: existingStateErr } = await sb
             .from("client_setup_state")
             .select("tasks_map")
             .eq("normalized_key", norm)
             .maybeSingle();
+          if (existingStateErr) {
+            throw new Error(`Failed to read client_setup_state for ${norm}: ${existingStateErr.message}`);
+          }
           const mergedTasks = {
             ...seedTasksMap,
             ...(existingState?.tasks_map && typeof existingState.tasks_map === "object" ? existingState.tasks_map : {}),
@@ -2491,10 +2494,9 @@ export async function saveMasterKeyInfoSettings(sheets, { masterSheetId, clientN
     try {
       const ctx = await resolveSupabaseSheetContext({ spreadsheetId: masterSheetId, masterSheetId, clientName }).catch(() => null);
       let clientSheetId = ctx?.clientSheetId || "";
-      if (!clientSheetId) {
-        const c1Res = await sheets.spreadsheets.values.get({ spreadsheetId: masterSheetId, range: "KeyInfo!C1" });
-        const m = String(c1Res.data.values?.[0]?.[0] || "").match(/\/d\/([a-zA-Z0-9-_]+)/);
-        if (m) clientSheetId = m[1];
+      if (!clientSheetId && masterSheetId) {
+        const { resolveClientSheetIdFromMaster } = await import("./masterEngineService.js");
+        clientSheetId = await resolveClientSheetIdFromMaster(sheets, masterSheetId, clientName).catch(() => "");
       }
       if (clientSheetId && !(ctx?.masterMode === "sheet" && ctx?.clientMode === "supabase")) {
         await withRetry(() =>
@@ -2513,11 +2515,14 @@ export async function saveMasterKeyInfoSettings(sheets, { masterSheetId, clientN
       try {
         const sb = getSupabaseAdmin();
         const normKey = normalizeKey(clientName);
-        const { data: curClient } = await sb
+        const { data: curClient, error: curClientErr } = await sb
           .from("clients")
           .select("metadata")
           .eq("normalized_key", normKey)
           .maybeSingle();
+        if (curClientErr) {
+          throw new Error(`Failed to load client metadata for ${normKey}: ${curClientErr.message}`);
+        }
         const existingMeta = curClient?.metadata && typeof curClient.metadata === "object" ? curClient.metadata : {};
         const rf = settings.revenueFocus || existingMeta.revenueFocus || "Revenue";
         const dcm = rf === "Income" ? "Pass-through" : (settings.directCostsMode === "Pass-through" ? "Pass-through" : "Contractors");

@@ -75,6 +75,14 @@ export default async function handler(req, res) {
       return res.status(400).json({ success: false, error: "Missing required clientName or settings payload." });
     }
 
+    if (masterSheetId) {
+      const sheets = await getSheetsClient();
+      const binding = await assertSetupClientSheetBinding(sessionUser, { clientName, masterSheetId, sheets });
+      if (!binding.authorized) {
+        return res.status(binding.status || 403).json({ success: false, error: binding.error || "Access denied to this client." });
+      }
+    }
+
     try {
       const result = await applyAccountingSettings({ clientName, masterSheetId, settings });
       return res.status(200).json(result);

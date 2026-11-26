@@ -1903,18 +1903,22 @@ export async function saveVirtualTabGrid_(
     };
     const headerCol = headerColByPhase4Tab[tabName];
     if (headerCol && Array.isArray(compactedValues?.[0]) && compactedValues[0].length > 0 && ctx.clientId) {
-      await supabase
-        .from("pulse_master_sync_configs")
-        .upsert(
-          {
-            client_id: ctx.clientId,
-            client_name: ctx.clientName,
-            [headerCol]: compactedValues[0].map((v) => String(v ?? "").trim()),
-            updated_at: new Date().toISOString(),
-          },
-          { onConflict: "client_id" }
-        )
-        .catch(() => { });
+      try {
+        const { error: hdrUpsertErr } = await supabase
+          .from("pulse_master_sync_configs")
+          .upsert(
+            {
+              client_id: ctx.clientId,
+              client_name: ctx.clientName,
+              [headerCol]: compactedValues[0].map((v) => String(v ?? "").trim()),
+              updated_at: new Date().toISOString(),
+            },
+            { onConflict: "client_id" }
+          );
+        if (hdrUpsertErr) {
+          console.warn(`[masterEngineService] pulse_master_sync_configs header upsert warning (${tabName}):`, hdrUpsertErr.message);
+        }
+      } catch (_) { }
     }
 
     const { reconcileClientMasterIngestionFromGrids } = await import("./relationalMasterService.js");
@@ -1981,7 +1985,7 @@ export async function saveVirtualTabGrid_(
     throw new Error(`Supabase master_sheet_grids upsert failed (${tabName}): ${upsertErr.message}`);
   }
 
-  // Keep live tenant_key_info synchronized unconditionally; normalized recon mirrors follow PULSE_SYNC_NORMALIZED_MIRROR_TABLES
+  // Keep live tenant_key_info synchronized unconditionally; normalized recon/master ingestion uses Phase 4 lossless services
   if (sheetRole === "master" && tabName === "KeyInfo") {
     await syncStructuredKeyInfoFromGrid_(ctx, valuesGrid).catch((e) =>
       console.warn("[masterEngineService] KeyInfo relational sync warning:", e.message)
@@ -1991,9 +1995,16 @@ export async function saveVirtualTabGrid_(
     /^\d{4}$/.test(tabName) &&
     (options?.syncNormalizedMirrors || shouldSyncNormalizedMirrorTables())
   ) {
-    await syncReconPeriodAndItemsFromGrid_(ctx, tabName, valuesGrid).catch((e) =>
-      console.warn("[masterEngineService] Recon relational sync warning:", e.message)
-    );
+    if (ctx.reconMode === "native") {
+      const { reconcileClientReconFromGrids } = await import("./relationalReconService.js");
+      await reconcileClientReconFromGrids(ctx, [tabName], {
+        gridsOverride: { [tabName]: valuesGrid },
+      }).catch((e) => console.warn("[masterEngineService] Recon Phase 4C sync warning:", e.message));
+    } else {
+      await syncReconPeriodAndItemsFromGrid_(ctx, tabName, valuesGrid).catch((e) =>
+        console.warn("[masterEngineService] Recon relational sync warning:", e.message)
+      );
+    }
   }
 }
 
@@ -3461,7 +3472,7 @@ async function executeClientFormulaRecomputePass_(ctx, clientKey, allUpdatedTabs
 
     const dbRole = _useClientRoleFallback ? "master" : "client";
     const queries = [];
-    if (stillMissingAffected.length > 0) {
+    if (!ctx.gridStorageRetired && stillMissingAffected.length > 0) {
       const targetNames = _useClientRoleFallback
         ? stillMissingAffected.map((t) => `Client::${t}`)
         : stillMissingAffected;
@@ -3479,7 +3490,7 @@ async function executeClientFormulaRecomputePass_(ctx, clientKey, allUpdatedTabs
         );
       }
     }
-    if (stillMissingUnaffNotes.length > 0) {
+    if (!ctx.gridStorageRetired && stillMissingUnaffNotes.length > 0) {
       const targetNames = _useClientRoleFallback
         ? stillMissingUnaffNotes.map((t) => `Client::${t}`)
         : stillMissingUnaffNotes;
@@ -3493,7 +3504,7 @@ async function executeClientFormulaRecomputePass_(ctx, clientKey, allUpdatedTabs
           .then(({ data }) => ({ rows: data || [], valuesOnly: true, includeNotes: true }))
       );
     }
-    if (stillMissingUnaff.length > 0) {
+    if (!ctx.gridStorageRetired && stillMissingUnaff.length > 0) {
       const targetNames = _useClientRoleFallback
         ? stillMissingUnaff.map((t) => `Client::${t}`)
         : stillMissingUnaff;
@@ -4652,6 +4663,13 @@ export async function handleVirtualSheetsCall({
 
     if (sheetRole === "recon") {
       await syncPhase4ReconIfEnabled_(ctx, [parsed.tabName]);
+    } else if (sheetRole === "master") {
+      if (!params._skipMasterFormulaRecompute) {
+        await recomputeMasterFormulasAfterVirtualWrite_(ctx, [parsed.tabName], rawSheetsApi).catch((e) =>
+          console.warn("[masterEngineService] Master formula recompute after append warning:", e.message)
+        );
+      }
+      await syncPhase4MasterIngestionIfEnabled_(ctx, [parsed.tabName]);
     } else if (sheetRole === "client") {
       if (params._skipFormulaRecompute) {
         queuePendingClientTabs_(ctx, [parsed.tabName], {
@@ -5687,9 +5705,6 @@ export async function handleVirtualSheetsCall({
         }
       } else if (noteOnlyClientTabs.size > 0) {
         const noteTabsArr = [...noteOnlyClientTabs];
-        await syncPhase2RelationalJobsIfEnabled_(ctx, noteTabsArr);
-        await syncPhase3OperatingInputsIfEnabled_(ctx, noteTabsArr);
-        await syncPhase5FinancialsIfEnabled_(ctx, noteTabsArr);
         const noteGrids = {};
         for (const [tName, rec] of dirtyTargets.entries()) {
           noteGrids[tName] = {
@@ -5698,7 +5713,10 @@ export async function handleVirtualSheetsCall({
             notes: rec.notes_grid || {},
           };
         }
-        syncStructuredClientTablesFromGrids_(ctx, noteGrids, [...noteOnlyClientTabs]).catch((e) =>
+        await syncPhase2RelationalJobsIfEnabled_(ctx, noteTabsArr, noteGrids);
+        await syncPhase3OperatingInputsIfEnabled_(ctx, noteTabsArr, noteGrids);
+        await syncPhase5FinancialsIfEnabled_(ctx, noteTabsArr, noteGrids);
+        syncStructuredClientTablesFromGrids_(ctx, noteGrids, noteTabsArr).catch((e) =>
           console.warn("[masterEngineService] Stage 4 relational note sync warning:", e.message)
         );
       }
@@ -5712,6 +5730,16 @@ export async function handleVirtualSheetsCall({
             }
           })
           .catch(() => { });
+      }
+    } else if (sheetRole === "master") {
+      const touchedMasterTabs = [...dirtyTargets.keys()];
+      if (touchedMasterTabs.length > 0) {
+        if (!params._skipMasterFormulaRecompute) {
+          await recomputeMasterFormulasAfterVirtualWrite_(ctx, touchedMasterTabs, rawSheetsApi).catch((e) =>
+            console.warn("[masterEngineService] Master formula recompute after batchUpdate warning:", e.message)
+          );
+        }
+        await syncPhase4MasterIngestionIfEnabled_(ctx, touchedMasterTabs);
       }
     } else if (sheetRole === "recon") {
       const touchedReconTabs = [...new Set([...dirtyTargets.keys(), ...renamedReconTabs])];
@@ -5882,6 +5910,13 @@ function parseNumericVal_(val) {
  * Extracts structured Bank Recon period summary and items from a Recon YYMM grid
  */
 async function syncReconPeriodAndItemsFromGrid_(ctx, monthKey, grid) {
+  if (ctx.reconMode === "native" || ctx.gridStorageRetired) {
+    const { reconcileClientReconFromGrids } = await import("./relationalReconService.js");
+    await reconcileClientReconFromGrids(ctx, [monthKey], {
+      gridsOverride: { [monthKey]: grid },
+    });
+    return;
+  }
   const supabase = getSupabaseAdmin();
   if (!supabase || !Array.isArray(grid) || !/^\d{4}$/.test(monthKey)) return;
 
@@ -5918,7 +5953,7 @@ async function syncReconPeriodAndItemsFromGrid_(ctx, monthKey, grid) {
       actuals_summary: actualsSummary,
       updated_at: new Date().toISOString(),
     },
-    { onConflict: "client_name,month_key" }
+    { onConflict: "client_id,month_key" }
   );
 
   // Extract reconciled bank transactions (A3:Q200 -> rows 2..199) and unreconciled items (CD4:CN60 -> rows 3..59, cols 81..91)
@@ -6045,6 +6080,7 @@ export async function migrateClientMasterAndReconToSupabase(sheets, clientName =
     const tabsToPull = [...orderedCore, ...extraTabs];
 
     let migratedInvMode = "Whole";
+    const pulledMasterGrids = {};
 
     for (let i = 0; i < tabsToPull.length; i += 6) {
       const chunk = tabsToPull.slice(i, i + 6);
@@ -6073,6 +6109,7 @@ export async function migrateClientMasterAndReconToSupabase(sheets, clientName =
         const tabName = chunk[j];
         const vGrid = vList[j]?.values || [];
         const fGrid = fList[j]?.values || vGrid;
+        pulledMasterGrids[tabName] = { values: vGrid, formulas: fGrid, notes: {} };
         await saveVirtualTabGrid_(ctx, "master", tabName, vGrid, fGrid, {});
         summary.masterTabsSynced++;
 
@@ -6096,18 +6133,33 @@ export async function migrateClientMasterAndReconToSupabase(sheets, clientName =
           } catch (_) {
             // ignore non-critical sync_schedules update warning
           }
-        } else if (tabName === "InvFromApp") {
-          summary.invoicesCount = await syncInvoicesTableFromGrid_(ctx, vGrid);
-        } else if (tabName === "JnlsFromApp") {
-          summary.directCostsCount = await syncDirectCostsTableFromGrid_(ctx, vGrid);
-        } else if (tabName === "PLFromApp") {
-          summary.plLinesCount = await syncPLLinesTableFromGrid_(ctx, vGrid);
-        } else if (tabName === "DataFromCRM") {
-          summary.crmDealsCount = await syncCrmDealsTableFromGrid_(ctx, vGrid);
-        } else if (tabName === "TimeComp") {
-          summary.timeEntriesCount = await syncTimeEntriesTableFromGrid_(ctx, vGrid);
+        } else if (
+          tabName === "InvFromApp" ||
+          tabName === "RevFromApp" ||
+          tabName === "JnlsFromApp" ||
+          tabName === "PLFromApp" ||
+          tabName === "Year0PLFromApp" ||
+          tabName === "DataFromCRM" ||
+          tabName === "DataFromTime" ||
+          tabName === "ProjectsFromTime" ||
+          tabName === "TimeComp"
+        ) {
+          // Delegated to lossless Phase 4A/4B relational mappers after the tab loop
         }
       }
+    }
+
+    const { reconcileClientMasterIngestionFromGrids } = await import("./relationalMasterService.js");
+    const masterIngestRes = await reconcileClientMasterIngestionFromGrids(ctx, tabsToPull, {
+      forceFullUpsert: true,
+      gridsOverride: pulledMasterGrids,
+    }).catch(() => null);
+    if (masterIngestRes) {
+      summary.invoicesCount = masterIngestRes.invoicesCount ?? summary.invoicesCount;
+      summary.directCostsCount = masterIngestRes.directCostsCount ?? summary.directCostsCount;
+      summary.plLinesCount = masterIngestRes.plLinesCount ?? summary.plLinesCount;
+      summary.crmDealsCount = masterIngestRes.crmDealsCount ?? summary.crmDealsCount;
+      summary.timeEntriesCount = masterIngestRes.timeEntriesCount ?? summary.timeEntriesCount;
     }
 
     // Seed GasScriptProps if not already initialized so the very first scheduled sync uses the Delta Update Engine cleanly
@@ -8269,11 +8321,14 @@ export async function setSupabaseClockEnabled(enabled, updatedBy = "Admin") {
   if (!supabase) throw new Error("Supabase is not configured.");
 
   await getSupabaseClockStatusAndSyncConfig(updatedBy);
-  const { data: cfgRow } = await supabase
+  const { data: cfgRow, error: cfgReadErr } = await supabase
     .from("system_config")
     .select("*")
     .eq("key", "supabase_cron_clock")
     .maybeSingle();
+  if (cfgReadErr) {
+    throw new Error(`Failed reading system_config clock state: ${cfgReadErr.message}`);
+  }
 
   const nextVal = {
     ...(cfgRow?.value || {}),
@@ -8281,12 +8336,15 @@ export async function setSupabaseClockEnabled(enabled, updatedBy = "Admin") {
     updatedAt: new Date().toISOString(),
   };
 
-  await supabase.from("system_config").upsert({
+  const { error: cfgUpsertErr } = await supabase.from("system_config").upsert({
     key: "supabase_cron_clock",
     value: nextVal,
     description: "Supabase pg_cron 30-minute wake-up clock configuration and telemetry",
     updated_by: updatedBy,
   });
+  if (cfgUpsertErr) {
+    throw new Error(`Failed updating system_config clock state: ${cfgUpsertErr.message}`);
+  }
 
   return getSupabaseClockStatusAndSyncConfig(updatedBy);
 }
@@ -9955,7 +10013,7 @@ export async function resolveClientSheetIdFromMaster({
   try {
     const ctx = await resolveSupabaseSheetContext({
       clientName: String(clientName || "").trim(),
-      sheetId: cleanRaw(masterSheetId),
+      spreadsheetId: cleanRaw(masterSheetId),
     });
     if (ctx?.clientSheetId) {
       const candidate = cleanRaw(ctx.clientSheetId);

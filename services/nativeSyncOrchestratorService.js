@@ -226,6 +226,7 @@ async function pruneClientAutomationLogs_(supabase, clientId, maxRows = 2500) {
     .select("id")
     .eq("client_id", clientId)
     .order("sort_seq", { ascending: false })
+    .order("id", { ascending: false })
     .range(maxRows, maxRows + 500);
   const ids = (overflow || []).map((r) => r.id).filter(Boolean);
   for (let i = 0; i < ids.length; i += 200) {
@@ -240,6 +241,7 @@ async function pruneClientExecutionLogs_(supabase, clientId, maxRows = 50) {
     .select("id")
     .eq("client_id", clientId)
     .order("sort_seq", { ascending: false })
+    .order("id", { ascending: false })
     .range(maxRows, maxRows + 200);
   const ids = (overflow || []).map((r) => r.id).filter(Boolean);
   for (let i = 0; i < ids.length; i += 200) {
@@ -312,6 +314,7 @@ export async function loadClientAutomationLogGrid(ctx, { limit = 5000 } = {}) {
       .select("raw_timestamp_cell, timestamp_display, category, summary, details")
       .eq("client_id", ctx.clientId)
       .order("sort_seq", { ascending: false })
+      .order("id", { ascending: false })
       .range(from, to);
     if (error) throw new Error(`pulse_automation_logs load failed: ${error.message}`);
     if (!Array.isArray(data) || data.length === 0) break;
@@ -701,6 +704,11 @@ export async function setClientSyncOrchestratorMode(clientName, modeRaw) {
   const ctx = await resolveSupabaseSheetContext({ clientName });
   if (!ctx?.clientId) throw new Error(`Client "${clientName}" not found.`);
   if (ctx.gridStorageRetired) {
+    if (mode !== "native") {
+      throw new Error(
+        `Client "${ctx.clientName}" has retired grid storage and cannot be downgraded from 'native' sync_orchestrator_mode.`
+      );
+    }
     const supa = getSupabaseAdmin();
     const [aCnt, eCnt, cfgRes] = await Promise.all([
       supa.from("pulse_automation_logs").select("id", { count: "exact", head: true }).eq("client_id", ctx.clientId),
@@ -709,6 +717,7 @@ export async function setClientSyncOrchestratorMode(clientName, modeRaw) {
     ]);
     return {
       clientName: ctx.clientName,
+      syncOrchestratorMode: "native",
       skippedRetired: true,
       autoLogsCount: aCnt.count ?? 0,
       execLogsCount: eCnt.count ?? 0,
@@ -736,11 +745,12 @@ export async function setClientSyncOrchestratorMode(clientName, modeRaw) {
     }
   }
 
-  const { data: curClient } = await supabase
+  const { data: curClient, error: curErr } = await supabase
     .from("clients")
     .select("metadata")
     .eq("id", ctx.clientId)
     .maybeSingle();
+  if (curErr) throw new Error(`Failed loading client metadata for ${ctx.clientName}: ${curErr.message}`);
 
   const nextMeta = {
     ...(curClient?.metadata || {}),

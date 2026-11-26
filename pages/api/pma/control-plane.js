@@ -226,11 +226,14 @@ async function upsertClientRegistryRecord_(sb, rawRow) {
   }
 
   const payload = buildClientRegistryPayload_(rawRow, { isUpdate: false });
-  const { data: existingByKey } = await sb
+  const { data: existingByKey, error: existingByKeyErr } = await sb
     .from("clients")
     .select("id, metadata")
     .eq("normalized_key", payload.normalized_key)
     .maybeSingle();
+  if (existingByKeyErr) {
+    throw new Error(`Failed to check existing client registry row: ${existingByKeyErr.message}`);
+  }
 
   const nextMetadata = { ...(existingByKey?.metadata || {}) };
   if (payload.status === "suspended") {
@@ -275,7 +278,7 @@ async function invalidateClientsCache_(acId, extraExcludedNames = []) {
   invalidatePrecomputedMemoryCache();
   await import("../../../services/masterEngineService.js")
     .then((m) => m.invalidateSheetContextCache?.())
-    .catch(() => {});
+    .catch(() => { });
   const canonicalAcId = acId || getCanonicalAcSheetId();
   if (canonicalAcId) {
     memoryCache.del(`pulse:portal:allClients:${canonicalAcId}`);
@@ -679,18 +682,42 @@ export default async function handler(req, res) {
       }
       const sb = getSupabaseAdmin();
       let resolvedClientName = cleanName;
-      if (!resolvedClientName && cleanId) {
-        const { data: existingClient } = await sb
-          .from("clients")
-          .select("client_name")
-          .eq("id", cleanId)
-          .maybeSingle();
-        if (existingClient?.client_name) resolvedClientName = String(existingClient.client_name).trim();
+      let resolvedNormKey = "";
+      {
+        let lookupQuery = sb.from("clients").select("client_name, normalized_key");
+        lookupQuery = cleanId ? lookupQuery.eq("id", cleanId) : lookupQuery.eq("client_name", cleanName);
+        const { data: existingClient, error: lookupErr } = await lookupQuery.maybeSingle();
+        if (lookupErr) throw new Error(`Failed to look up client before delete: ${lookupErr.message}`);
+        if (!resolvedClientName && existingClient?.client_name) {
+          resolvedClientName = String(existingClient.client_name).trim();
+        }
+        if (existingClient?.normalized_key) {
+          resolvedNormKey = String(existingClient.normalized_key).trim();
+        }
       }
       let query = sb.from("clients").delete();
       query = cleanId ? query.eq("id", cleanId) : query.eq("client_name", cleanName);
       const { error: delErr } = await query;
       if (delErr) throw new Error(delErr.message);
+
+      if (resolvedClientName) {
+        const { error: eomDelErr } = await sb
+          .from("eom_cycles_and_tasks")
+          .delete()
+          .eq("client_name", resolvedClientName);
+        if (eomDelErr) {
+          console.warn("eom_cycles_and_tasks delete cleanup warning:", eomDelErr.message);
+        }
+      }
+      if (resolvedNormKey) {
+        const { error: cfgDelErr } = await sb
+          .from("system_config")
+          .delete()
+          .eq("key", `cash_bank_breakdowns:${resolvedNormKey}`);
+        if (cfgDelErr) {
+          console.warn("cash_bank_breakdowns delete cleanup warning:", cfgDelErr.message);
+        }
+      }
 
       const acId = automationCommanderSheetId || getCanonicalAcSheetId();
       const sheets = await getSheetsClient().catch(() => null);
@@ -794,7 +821,7 @@ export default async function handler(req, res) {
         summary: `Renamed client "${result.oldClientName}" to "${result.newClientName}"`,
         details: result,
         userEmail: sessionUser.email || "Admin",
-      }).catch(() => {});
+      }).catch(() => { });
       return res.status(200).json({ success: true, result });
     }
 

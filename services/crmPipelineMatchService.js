@@ -10,6 +10,7 @@ import { recomputeClientComparisonsInSupabase } from "./masterSyncEngine.js";
 import { updateClientChecklistTask } from "./setupService.js";
 import { logPmaActivity } from "./pmaLogger.js";
 import { resolveMasterSheetIdByClientName } from "./userPermissions.js";
+import { invalidatePmaClientCache } from "./cacheService.js";
 import { sanitizeFormulaInput } from "../utils/helpers.js";
 import {
   findBlankCodePipelineMatches,
@@ -353,6 +354,8 @@ export async function applyBlankCodePipelineMatches({
       console.warn(`[crmPipelineMatchService] Supabase recompute warning for ${cleanClientName}:`, err.message);
     });
   }
+
+  await invalidatePmaClientCache(cleanClientId, supaCtx?.masterSheetId || cleanMasterId || null, ["jobs", "views"]).catch(() => {});
 
   await updateClientChecklistTask(sheets, {
     clientName: cleanClientName,

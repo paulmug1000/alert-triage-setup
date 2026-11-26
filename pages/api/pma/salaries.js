@@ -75,6 +75,16 @@ export default async function handler(req, res) {
         minBypassAgeMs: sessionUser.isAdmin ? 0 : 15000,
       });
 
+      if (!sessionUser.isAdmin && data) {
+        const cleanData = {
+          ...data,
+          fyYears: Array.isArray(data.fyYears)
+            ? data.fyYears.map(({ totalColLetter, ...fyRest }) => fyRest)
+            : data.fyYears,
+        };
+        return res.status(200).json(cleanData);
+      }
+
       return res.status(200).json(data);
     } catch (err) {
       console.error("Error in GET /api/pma/salaries:", err);
@@ -129,6 +139,9 @@ export default async function handler(req, res) {
 
       if (action === "save_amount_override") {
         const { sheetRow, employeeUuid, colLetterStart, amounts } = req.body;
+        if (Array.isArray(amounts) && amounts.length > 500) {
+          return res.status(400).json({ success: false, error: "Too many salary override entries (max 500)." });
+        }
         const result = await saveSalaryAmountOverride({
           masterSheetId,
           clientSheetId,
@@ -144,6 +157,9 @@ export default async function handler(req, res) {
 
       if (action === "save_dividends") {
         const { sheetRow, outgoingItemUuid, deliveryPct, monthlyAmounts, description } = req.body;
+        if (Array.isArray(monthlyAmounts) && monthlyAmounts.length > 500) {
+          return res.status(400).json({ success: false, error: "Too many monthly dividend entries (max 500)." });
+        }
         const result = await saveDividendsData({
           clientSheetId,
           masterSheetId,

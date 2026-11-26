@@ -42,6 +42,7 @@ import { invalidatePmaClientCache } from "./cacheService.js";
 import {
   flushImmediateAndScheduleBackgroundClientRecomputes,
   resolveClientSheetIdFromMaster,
+  resolveSupabaseSheetContext,
 } from "./masterEngineService.js";
 import { logPmaActivity } from "./pmaLogger.js";
 import { sanitizeFormulaInput } from "./userPermissions.js";
@@ -1907,8 +1908,13 @@ export async function pushStarterPlSetup({
     })
   ).catch(() => {});
 
-  if (cleanClientId.startsWith("sb-") || cleanMasterId.startsWith("sb-")) {
-    await flushImmediateAndScheduleBackgroundClientRecomputes(sheets, clientName || cleanMasterId).catch(() => {});
+  const flushCtx = await resolveSupabaseSheetContext({
+    clientName: clientName || "",
+    spreadsheetId: cleanClientId || cleanMasterId,
+  }).catch(() => null);
+  const flushTargetClient = flushCtx?.clientName || clientName || "";
+  if (flushTargetClient) {
+    await flushImmediateAndScheduleBackgroundClientRecomputes(sheets, flushTargetClient).catch(() => {});
   }
   await Promise.allSettled([
     invalidateSalariesCache(cleanMasterId, cleanClientId),
@@ -2055,7 +2061,11 @@ export async function assignStarterPlCategoryMapping({
     );
   }
 
-  await invalidatePmaClientCache(null, cleanMasterId, ["setup", "all"]).catch(() => {});
+  const capCtx = await resolveSupabaseSheetContext({
+    clientName: clientName || "",
+    spreadsheetId: cleanMasterId,
+  }).catch(() => null);
+  await invalidatePmaClientCache(capCtx?.clientSheetId || null, cleanMasterId, ["setup", "all"]).catch(() => {});
   await logPmaActivity(sheets, {
     clientName: clientName || "",
     category: "SETUP",

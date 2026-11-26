@@ -44,14 +44,15 @@ function getDefaultTargetMonths() {
 }
 
 function parseArgs(argv) {
-  let apply = false;
+  let sawApply = false;
+  let sawDryRun = false;
   let force = false;
   let client = "";
   let monthsArg = "";
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
-    if (arg === "--apply") apply = true;
-    else if (arg === "--dry-run") apply = false;
+    if (arg === "--apply") sawApply = true;
+    else if (arg === "--dry-run") sawDryRun = true;
     else if (arg === "--force") force = true;
     else if (arg === "--help" || arg === "-h") return { help: true };
     else if (arg.startsWith("--client=")) client = arg.slice("--client=".length).trim();
@@ -59,6 +60,7 @@ function parseArgs(argv) {
     else if (arg.startsWith("--months=")) monthsArg = arg.slice("--months=".length).trim();
     else if (arg === "--months" && argv[i + 1]) monthsArg = String(argv[++i]).trim();
   }
+  const apply = sawApply && !sawDryRun;
   const targetMonths = monthsArg
     ? monthsArg.split(",").map((s) => s.trim()).filter((s) => /^\d{4}-\d{2}$/.test(s))
     : getDefaultTargetMonths();
@@ -129,7 +131,7 @@ function parseQuickBooksBalanceSheetBankAccounts(reportJson) {
 
 async function fetchClientCashAndKeyInfo(sb, sheets, clientRow) {
   const mode = String(clientRow.client_mode || "sheet").toLowerCase();
-  if (mode === "supabase") {
+  if (mode === "supabase" && !clientRow.grid_storage_retired) {
     const { data: grids } = await sb
       .from("master_sheet_grids")
       .select("tab_name, values_grid, formulas_grid")
@@ -146,7 +148,7 @@ async function fetchClientCashAndKeyInfo(sb, sheets, clientRow) {
   }
 
   const sheetId = clientRow.client_sheet_id;
-  if (!sheetId) return { cashVals: [], cashForms: [], kiVals: [] };
+  if (!sheetId || String(sheetId).startsWith("sb-")) return { cashVals: [], cashForms: [], kiVals: [] };
   const [valResp, formResp] = await Promise.all([
     withRetry(() =>
       sheets.spreadsheets.values.batchGet({
@@ -369,7 +371,7 @@ async function main() {
 
   const { data: allClients, error } = await sb
     .from("clients")
-    .select("client_name, status, client_mode, master_sheet_id, client_sheet_id, metadata")
+    .select("client_name, status, client_mode, grid_storage_retired, sheet_bridge_mode, master_sheet_id, client_sheet_id, metadata")
     .order("client_name", { ascending: true });
 
   if (error) throw new Error(`Failed to fetch clients: ${error.message}`);

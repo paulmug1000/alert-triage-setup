@@ -90,9 +90,12 @@ export default async function handler(req, res) {
     const clientName = statePayload.clientName || clientKey;
     const masterSheetId = statePayload.masterSheetId;
 
-    // 2. Fetch organization metadata
+    // 2. Fetch and strictly verify organization metadata before persisting tokens
     const accountInfo = await getCloseAccountInfo(tokens.accessToken);
-    const orgName = accountInfo?.organizationName || clientName;
+    if (!accountInfo || (!accountInfo.organizationId && !accountInfo.organizationName && !accountInfo.userEmail)) {
+      throw new Error("Close CRM verification failed: unable to read authenticated organization profile.");
+    }
+    const orgName = accountInfo.organizationName || clientName;
 
     // 3. Encrypt and store tokens in Central Vault
     await saveIntegrationTokens({

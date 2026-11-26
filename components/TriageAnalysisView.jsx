@@ -2195,7 +2195,20 @@ export default function TriageAnalysisView({
                     const newAlerts = [...prev];
                     const idx = newAlerts.findIndex(a => a.sheetName === alert.sheetName && a.rowNumber === alert.rowNumber);
                     if (idx !== -1) {
-                      newAlerts[idx] = { ...newAlerts[idx], options: d.options };
+                      const patch = d.updatedAlertPatch || null;
+                      newAlerts[idx] = {
+                        ...newAlerts[idx],
+                        options: d.options,
+                        ...(patch ? {
+                          isDuplicateInvoice: patch.isDuplicateInvoice,
+                          spreadsheetItems: patch.spreadsheetItems,
+                          pulseAmounts: patch.pulseAmounts,
+                          data: {
+                            ...(newAlerts[idx].data || {}),
+                            flags: Array.isArray(patch.liveFlags) ? patch.liveFlags : newAlerts[idx].data?.flags,
+                          },
+                        } : {}),
+                      };
                     }
                     return newAlerts;
                   });

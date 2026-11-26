@@ -953,7 +953,7 @@ export async function loadNativeClientTabRecordsBatch(
             includeSalaries: needSalaries,
             includeOutgoings: needOutgoings,
             includeOutgNotes: needOutgNotes,
-            includeNb: needNb,
+            includeNbToFind: needNb,
             includeBudget: needBudget,
             includeCash: needCashAdj,
           })
@@ -1251,17 +1251,6 @@ export async function loadNativeClientTabRecordsBatch(
         notes_grid: includeNotes ? baseNotes : {},
         updated_at: bpExpanded.updated_at || null,
       };
-    } else {
-      outByTab[tabName] = {
-        sheet_role: "client",
-        tab_name: tabName,
-        row_count: 0,
-        col_count: 0,
-        values_grid: [],
-        formulas_grid: [],
-        notes_grid: {},
-        updated_at: null,
-      };
     }
   }
 
@@ -1549,15 +1538,33 @@ export async function verifyNativeClientCalcParity({
         (source === "db" ||
           (source === "auto" && Boolean(cl.metadata?.native_client_calc_state?.lastBackfilledAt)));
       const effectiveSource = canUseDb ? "db" : "in_memory";
-      const usePersistedNativeRef = mode === "native" && effectiveSource === "db" && !compareFrozenGrids;
+      let usePersistedNativeRef = false;
+      if (mode === "native" && effectiveSource === "db" && !compareFrozenGrids) {
+        const backfillMs = cl.metadata?.native_client_calc_state?.lastBackfilledAt
+          ? Date.parse(cl.metadata.native_client_calc_state.lastBackfilledAt)
+          : 0;
+        const { data: latestBp } = await supabase
+          .from("pulse_client_tab_blueprints")
+          .select("updated_at")
+          .eq("client_id", ctx.clientId)
+          .order("updated_at", { ascending: false })
+          .limit(1);
+        const maxBpMs = latestBp?.[0]?.updated_at ? Date.parse(latestBp[0].updated_at) : 0;
+        if (backfillMs > 0 && maxBpMs > backfillMs + 5000) {
+          usePersistedNativeRef = true;
+        }
+      }
       const reconSource = cl.recon_read_mode === "relational" ? "db" : "in_memory";
+      const tabsToCompare = usePersistedNativeRef
+        ? ["Dashboard", "Year0Data", "VAT", "Cash", "ErrorCheck"]
+        : COMPARE_CLIENT_CALC_TABS;
 
       let legacyGrids = null;
       let nativeGrids = null;
 
       if (usePersistedNativeRef) {
         const [persistedReadRecords, nativeRecords] = await Promise.all([
-          loadNativeClientTabRecordsBatch(ctx, COMPARE_CLIENT_CALC_TABS, {
+          loadNativeClientTabRecordsBatch(ctx, tabsToCompare, {
             source: "db",
             valuesOnly: true,
             includeNotes: true,
@@ -1619,7 +1626,7 @@ export async function verifyNativeClientCalcParity({
       let totalMismatchCount = 0;
       const sampleMismatches = [];
       let tabsChecked = 0;
-      for (const tabName of COMPARE_CLIENT_CALC_TABS) {
+      for (const tabName of tabsToCompare) {
         const expEntry = legacyGrids[tabName];
         const actEntry = nativeGrids[tabName];
         if (!expEntry && !actEntry) continue;

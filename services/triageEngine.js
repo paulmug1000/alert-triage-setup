@@ -5174,6 +5174,210 @@ async function writeOutgoingsExpense(sheets, clientSheetId, outgoingsData) {
   return { sheetRow, colLetter, newValue, prevValue: existingValue, isNewVendor, mode: placementMode, resultingBlocks };
 }
 
+/**
+ * Live-scans Confirmed rows for all slots matching `invoiceNo` and builds updated
+ * duplicate-invoice / spreadsheetItems / pulseAmounts metadata directly from live sheet state.
+ */
+export function scanLiveConfirmedMatchesForInvoice_(invConfirmedRows, invoiceNo, { vatIncluded = 0, totalExclVAT = 0 } = {}) {
+  const normTarget = String(invoiceNo || "").replace(/^#/, "").trim().toLowerCase();
+  if (!Array.isArray(invConfirmedRows) || invConfirmedRows.length < 2 || !normTarget) {
+    return {
+      matchedJobs: [],
+      liveSpreadsheetItems: [],
+      livePulseAmounts: { net: 0, vat: 0, gross: 0 },
+    };
+  }
+
+  const parseAmt = (v) => parseFloat(String(v ?? "0").replace(/[£$€,\s]/g, "")) || 0;
+  const round2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
+  const isRealRef = (ref) => {
+    const r = String(ref || "").trim();
+    return Boolean(r && !isPlaceholderInvoice(r));
+  };
+  const vatRate = totalExclVAT > 0 && vatIncluded > 0 ? vatIncluded / totalExclVAT : 0.2;
+
+  const matchedJobs = [];
+  for (let ri = 1; ri < invConfirmedRows.length; ri++) {
+    const r = invConfirmedRows[ri] || [];
+    const slotDefs = [
+      { slotNum: 1, refIdx: 42, amtIdx: 41, sentIdx: 43, daysIdx: 44, stIdx: 45, colLetter: "AQ" },
+      { slotNum: 2, refIdx: 49, amtIdx: 48, sentIdx: 50, daysIdx: 51, stIdx: 52, colLetter: "AX" },
+      { slotNum: 3, refIdx: 56, amtIdx: 55, sentIdx: 57, daysIdx: 58, stIdx: 59, colLetter: "BE" },
+    ];
+    const rowNum = ri + 1;
+
+    for (const sd of slotDefs) {
+      const rawSlotRef = String(r[sd.refIdx] || "").trim();
+      const normSlotRef = rawSlotRef.replace(/^#/, "").toLowerCase();
+      if (!normSlotRef || normSlotRef !== normTarget) continue;
+
+      // Walk up to parent row for retainer / multi-row jobs
+      let parentRi = ri;
+      if (!String(r[32] || "").trim() && !String(r[0] || "").trim()) {
+        for (let pi = ri - 1; pi >= 1; pi--) {
+          const pr = invConfirmedRows[pi] || [];
+          if (String(pr[32] || "").trim() || String(pr[0] || "").trim()) {
+            parentRi = pi;
+            break;
+          }
+        }
+      }
+
+      const parentRowArr = invConfirmedRows[parentRi] || r;
+      const parentClientLower = String(parentRowArr[0] || "").trim().toLowerCase();
+      const parentJobLower = String(parentRowArr[1] || "").trim().toLowerCase();
+      let otherRealInvoicesCount = 0;
+
+      for (let pi = parentRi; pi < invConfirmedRows.length; pi++) {
+        const cr = invConfirmedRows[pi] || [];
+        const crClient = String(cr[0] || "").trim().toLowerCase();
+        const crJob = String(cr[1] || "").trim().toLowerCase();
+        if (pi !== parentRi && (crClient || crJob) && (crClient !== parentClientLower || crJob !== parentJobLower)) break;
+        if (pi !== parentRi && String(cr[32] || "").trim()) break;
+
+        const crRefs = [
+          { ref: String(cr[42] || "").trim(), rNum: pi + 1, sNum: 1 },
+          { ref: String(cr[49] || "").trim(), rNum: pi + 1, sNum: 2 },
+          { ref: String(cr[56] || "").trim(), rNum: pi + 1, sNum: 3 },
+        ];
+        for (const item of crRefs) {
+          if (item.rNum === rowNum && item.sNum === sd.slotNum) continue;
+          if (isRealRef(item.ref) && item.ref.replace(/^#/, "").toLowerCase() !== normTarget) {
+            otherRealInvoicesCount++;
+          }
+        }
+      }
+
+      const effectiveJobName = String(r[1] || parentRowArr[1] || "").trim();
+      const effectiveClientName = String(r[0] || parentRowArr[0] || "").trim();
+      const projectCode = String(r[2] || parentRowArr[2] || "").trim();
+      const isRetainer = Boolean(
+        isFixedScheduleRetainer(parentRowArr) ||
+        isVariableRetainerRow(parentRowArr) ||
+        /retainer/i.test(String(parentRowArr[35] || ""))
+      );
+      const jobVATYes = String(r[34] || parentRowArr[34] || "").trim().toLowerCase() === "yes";
+      const slotAmtNum = round2(parseAmt(r[sd.amtIdx]));
+      const vatAmount = jobVATYes ? round2(slotAmtNum * vatRate) : 0;
+      const grossAmount = round2(slotAmtNum + vatAmount);
+      const sentDate = String(r[sd.sentIdx] || "").trim();
+      const status = String(r[sd.stIdx] || "").trim();
+      const daysToPay = parseInt(r[sd.daysIdx], 10);
+
+      matchedJobs.push({
+        rowNum,
+        parentRowNum: parentRi + 1,
+        slotNum: sd.slotNum,
+        row: r,
+        parentRow: parentRowArr,
+        jobName: effectiveJobName,
+        clientName: effectiveClientName,
+        projectCode,
+        isRetainer,
+        jobVATYes,
+        isOnlyInvoiceOnJob: otherRealInvoicesCount === 0,
+        slotCols:
+          sd.slotNum === 1
+            ? { ref: `AQ${rowNum}`, amt: `AP${rowNum}`, sent: `AR${rowNum}`, days: `AS${rowNum}`, status: `AT${rowNum}`, rech: `AU${rowNum}`, cm: `AV${rowNum}` }
+            : sd.slotNum === 2
+              ? { ref: `AX${rowNum}`, amt: `AW${rowNum}`, sent: `AY${rowNum}`, days: `AZ${rowNum}`, status: `BA${rowNum}`, rech: `BB${rowNum}`, cm: `BC${rowNum}` }
+              : { ref: `BE${rowNum}`, amt: `BD${rowNum}`, sent: `BF${rowNum}`, days: `BG${rowNum}`, status: `BH${rowNum}`, rech: `BI${rowNum}`, cm: `BJ${rowNum}` },
+        slotAmt: String(r[sd.amtIdx] || "0"),
+        slotAmtNum,
+        vatAmount,
+        grossAmount,
+        sentDate,
+        status,
+        daysToPay,
+        cellRef: `${sd.colLetter}${rowNum}`,
+      });
+    }
+  }
+
+  const liveSpreadsheetItems = matchedJobs.map((m) => ({
+    jobName: m.jobName,
+    clientName: m.clientName,
+    netAmount: m.slotAmtNum,
+    vatAmount: m.vatAmount,
+    grossAmount: m.grossAmount,
+    sentDate: m.sentDate,
+    status: m.status,
+    cellRef: m.cellRef,
+  }));
+
+  const livePulseAmounts = {
+    net: round2(liveSpreadsheetItems.reduce((s, it) => s + (Number(it.netAmount) || 0), 0)),
+    vat: round2(liveSpreadsheetItems.reduce((s, it) => s + (Number(it.vatAmount) || 0), 0)),
+    gross: round2(liveSpreadsheetItems.reduce((s, it) => s + (Number(it.grossAmount) || 0), 0)),
+  };
+
+  return { matchedJobs, liveSpreadsheetItems, livePulseAmounts };
+}
+
+/**
+ * When a duplicate invoice spans 2 distinct jobs (e.g. a retainer job + a standalone extra-revenue job)
+ * and removing the extra job leaves the kept job needing an amount adjustment to match accounting,
+ * generates compound "Delete extra job and adjust invoice amount" option(s).
+ */
+export function buildDeleteExtraJobAndAdjustAmountOptions_({ matchedJobs, invoiceNo, correctAmount, grossAmount }) {
+  if (!Array.isArray(matchedJobs) || matchedJobs.length !== 2 || !(correctAmount > 0)) {
+    return [];
+  }
+  const totalSheetNet = matchedJobs.reduce((sum, j) => sum + (Number(j.slotAmtNum) || 0), 0);
+  const totalSheetGross = matchedJobs.reduce((sum, j) => sum + (Number(j.grossAmount) || 0), 0);
+  if (
+    (grossAmount > 0 && Math.abs(totalSheetGross - grossAmount) < 0.1) ||
+    Math.abs(totalSheetNet - correctAmount) < 0.1
+  ) {
+    return [];
+  }
+
+  const candidatePairs = [];
+  for (let i = 0; i < matchedJobs.length; i++) {
+    const extraJob = matchedJobs[i];
+    const keepJob = matchedJobs[1 - i];
+    if (!extraJob.isOnlyInvoiceOnJob) continue;
+    if (extraJob.parentRowNum === keepJob.parentRowNum) continue;
+    if (Math.abs((Number(keepJob.slotAmtNum) || 0) - correctAmount) < 0.01) continue;
+    candidatePairs.push({ extraJob, keepJob });
+  }
+
+  if (candidatePairs.length === 0) return [];
+
+  // Prefer keeping the retainer or multi-invoice job when both entries are single-invoice jobs
+  const preferredPairs = candidatePairs.filter(({ keepJob }) => keepJob.isRetainer || !keepJob.isOnlyInvoiceOnJob);
+  const finalPairs = preferredPairs.length > 0 ? preferredPairs : candidatePairs;
+  const roundedNewAmount = Math.round(correctAmount * 100) / 100;
+
+  return finalPairs.map(({ extraJob, keepJob }) => ({
+    title: `Delete extra job "${extraJob.jobName || 'Row ' + extraJob.parentRowNum}" and adjust invoice #${invoiceNo} on "${keepJob.jobName || 'Row ' + keepJob.rowNum}" to £${roundedNewAmount.toFixed(2)}`,
+    actionButtonText: "Delete extra job and adjust invoice amount",
+    matchType: "delete_and_update",
+    jobRow: keepJob.rowNum,
+    jobName: keepJob.jobName,
+    clientName: keepJob.clientName,
+    deleteExtraJob: {
+      parentRowNum: extraJob.parentRowNum,
+      jobName: extraJob.jobName,
+      clientName: extraJob.clientName,
+      projectCode: extraJob.projectCode || "",
+    },
+    keepInvoiceTarget: {
+      rowNum: keepJob.rowNum,
+      slotNum: keepJob.slotNum,
+      invoiceNo,
+      amtCell: keepJob.slotCols.amt,
+      refCell: keepJob.slotCols.ref,
+      newAmount: roundedNewAmount,
+    },
+    explanation: `Deletes "${extraJob.jobName || 'Row ' + extraJob.parentRowNum}" (where invoice #${invoiceNo} is the only invoice) and adjusts invoice #${invoiceNo} on "${keepJob.jobName || 'Row ' + keepJob.rowNum}" from £${Number(keepJob.slotAmtNum || 0).toFixed(2)} to £${roundedNewAmount.toFixed(2)} (excl. VAT) to reflect the actual accounting invoice amount.`,
+    recommendedActions: [
+      `Delete extra job "${extraJob.jobName || 'Row ' + extraJob.parentRowNum}" (Row ${extraJob.parentRowNum}) from Confirmed tab`,
+      `write ${roundedNewAmount.toFixed(2)} to ${keepJob.slotCols.amt}`,
+    ],
+  }));
+}
+
 export async function handleAnalyzeAlert(req, res, sheets) {
   // Generate matching options for an alert
   const { alert, sharedData, automationCommanderSheetId = req.body.automationCommanderSheetId } = req.body;
@@ -5246,7 +5450,7 @@ export async function handleAnalyzeAlert(req, res, sheets) {
             (Array.isArray(o.recommendedActions) && o.recommendedActions.some(a => /\bwrite\s+(?:yes|no)\s+to\s+AI\d+\b/i.test(String(a))))
           );
           if (isCachedVatOption && !validCachedOptions.some(o => o.vatScopeChecked === true)) return true;
-          if (isDupInvoice && (!validCachedOptions.some(o => o.matchType === "delete" || String(o.title || "").includes("Clear invoice")) || !validCachedOptions.some(o => o.matchType === "ignore"))) return true;
+          if (isDupInvoice && (!validCachedOptions.some(o => o.matchType === "delete" || o.matchType === "delete_and_update" || String(o.title || "").includes("Clear invoice")) || !validCachedOptions.some(o => o.matchType === "ignore"))) return true;
           const isCrmAlert = alert.type === "crm" || alert.sheetName === "CRMComp" || Boolean(alert.alertType?.startsWith("crm")) || Boolean(alert.flagType?.startsWith("crm"));
           const isCrmMismatch = isCrmAlert && alert.subType === "field_mismatch";
           if (isCrmMismatch && (!opt.actionButtonText || validCachedOptions.length !== 2 || String(opt.actionButtonText).includes("Mark as reviewed") || opt.matchType === "info")) return true;
@@ -7451,91 +7655,74 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
         invConfirmedRows = invConfirmedResp.data.values || [];
       }
 
+      const correctAmount = totalExclVAT > 0 ? totalExclVAT : grossAmount;
+      const {
+        matchedJobs: liveMatchedJobs,
+        liveSpreadsheetItems,
+        livePulseAmounts,
+      } = scanLiveConfirmedMatchesForInvoice_(invConfirmedRows, invoiceNo, { vatIncluded, totalExclVAT });
+
+      const liveIsDuplicateInvoice =
+        invConfirmedRows.length > 1 ? liveMatchedJobs.length > 1 : isDuplicateInvoice;
+
+      const liveFlags = [...invFlags];
+      if (invConfirmedRows.length > 1) {
+        liveFlags[4] = liveIsDuplicateInvoice ? "1" : "0";
+        if (liveMatchedJobs.length > 0) {
+          const liveAmtDiff =
+            Math.abs(livePulseAmounts.net - correctAmount) >= 0.01 &&
+            Math.abs(livePulseAmounts.gross - grossAmount) >= 0.01;
+          liveFlags[2] = liveAmtDiff ? "1" : "0";
+        }
+      }
+
+      const updatedAlertPatch = invConfirmedRows.length > 1
+        ? {
+            isDuplicateInvoice: liveIsDuplicateInvoice,
+            spreadsheetItems: liveSpreadsheetItems,
+            pulseAmounts: livePulseAmounts,
+            liveFlags,
+          }
+        : null;
+
       // ── Branch 1: Duplicate invoice in spreadsheet ──────────────────────
       // Only route to duplicate-removal options if there is an amount conflict or no field-level date/status/client mismatch.
       // When a split or part-paid invoice's tranches already sum to the accounting total (!isInvAmtMismatch)
       // and the alert is for a pay date, status, sent date, or client mismatch, route to Branch 2 so the final/balance tranche is updated.
-      if (isDuplicateInvoice && (isInvAmtMismatch || (!isPayDateMismatch && !isStatusMismatch && !isSentDateMismatch && !isClientMismatch))) {
-        console.log(`  ⚠️ Duplicate invoice in spreadsheet detected for invoice #${invoiceNo}`);
-        const matchedJobs = [];
-        for (let ri = 1; ri < invConfirmedRows.length; ri++) {
-          const r = invConfirmedRows[ri] || [];
-          const ref1 = String(r[42] || "").trim(); // AQ
-          const ref2 = String(r[49] || "").trim(); // AX
-          const ref3 = String(r[56] || "").trim(); // BE
-          const matchingRowSlots = [];
-          if (ref1 === invoiceNo) matchingRowSlots.push(1);
-          if (ref2 === invoiceNo) matchingRowSlots.push(2);
-          if (ref3 === invoiceNo) matchingRowSlots.push(3);
-
-          for (const slotNum of matchingRowSlots) {
-            const rowNum = ri + 1;
-            const jobName = String(r[1] || "").trim();
-            const clientName = String(r[0] || "").trim();
-
-            // Find parent row to check for other invoices across parent + child rows
-            let parentRi = ri;
-            if (!String(r[32] || "").trim() && !String(r[0] || "").trim()) {
-              for (let pi = ri - 1; pi >= 1; pi--) {
-                const pr = invConfirmedRows[pi] || [];
-                if (String(pr[32] || "").trim() || String(pr[0] || "").trim()) { parentRi = pi; break; }
-              }
-            }
-
-            let otherRealInvoicesCount = 0;
-            const parentClient = String(invConfirmedRows[parentRi]?.[0] || "").trim().toLowerCase();
-            const parentJob = String(invConfirmedRows[parentRi]?.[1] || "").trim().toLowerCase();
-            for (let pi = parentRi; pi < invConfirmedRows.length; pi++) {
-              const cr = invConfirmedRows[pi] || [];
-              const crClient = String(cr[0] || "").trim().toLowerCase();
-              const crJob = String(cr[1] || "").trim().toLowerCase();
-              if (pi !== parentRi && (crClient || crJob) && (crClient !== parentClient || crJob !== parentJob)) break;
-              if (pi !== parentRi && String(cr[32] || "").trim()) break;
-
-              const crRefs = [
-                { ref: String(cr[42] || "").trim(), rNum: pi + 1, sNum: 1 },
-                { ref: String(cr[49] || "").trim(), rNum: pi + 1, sNum: 2 },
-                { ref: String(cr[56] || "").trim(), rNum: pi + 1, sNum: 3 }
-              ];
-              for (const item of crRefs) {
-                if (item.rNum === rowNum && item.sNum === slotNum) continue;
-                if (isRealSlotRef(item.ref) && item.ref !== invoiceNo) otherRealInvoicesCount++;
-              }
-            }
-
-            const parentSheetRow = parentRi + 1;
-            const effectiveJobName = jobName || String(invConfirmedRows[parentRi]?.[1] || "").trim();
-            const effectiveClientName = clientName || String(invConfirmedRows[parentRi]?.[0] || "").trim();
-
-            matchedJobs.push({
-              rowNum,
-              parentRowNum: parentSheetRow,
-              slotNum,
-              jobName: effectiveJobName,
-              clientName: effectiveClientName,
-              isOnlyInvoiceOnJob: otherRealInvoicesCount === 0,
-              slotCols: slotNum === 1
-                ? { ref: `AQ${rowNum}`, amt: `AP${rowNum}`, sent: `AR${rowNum}`, days: `AS${rowNum}`, status: `AT${rowNum}`, rech: `AU${rowNum}`, cm: `AV${rowNum}` }
-                : slotNum === 2
-                  ? { ref: `AX${rowNum}`, amt: `AW${rowNum}`, sent: `AY${rowNum}`, days: `AZ${rowNum}`, status: `BA${rowNum}`, rech: `BB${rowNum}`, cm: `BC${rowNum}` }
-                  : { ref: `BE${rowNum}`, amt: `BD${rowNum}`, sent: `BF${rowNum}`, days: `BG${rowNum}`, status: `BH${rowNum}`, rech: `BI${rowNum}`, cm: `BJ${rowNum}` },
-              slotAmt: slotNum === 1 ? String(r[41] || "0") : slotNum === 2 ? String(r[48] || "0") : String(r[55] || "0"),
-            });
-          }
-        }
-
+      if (liveIsDuplicateInvoice && (isInvAmtMismatch || (!isPayDateMismatch && !isStatusMismatch && !isSentDateMismatch && !isClientMismatch))) {
+        console.log(`  ⚠️ Duplicate invoice in spreadsheet detected for invoice #${invoiceNo} (${liveMatchedJobs.length} live matches)`);
+        const matchedJobs = liveMatchedJobs;
         const dupOptions = [];
         let optId = 1;
 
-        // Check if Split Invoice: sum across spreadsheet jobs ≈ gross accounting amount
-        const totalSheetGross = matchedJobs.reduce((sum, j) => sum + (parseFloat(String(j.slotAmt).replace(/[£$€,]/g, "")) || 0), 0);
-        if (matchedJobs.length > 1 && Math.abs(totalSheetGross - grossAmount) < 0.1 && grossAmount > 0) {
+        // Check if Split Invoice: sum across spreadsheet jobs ≈ gross or net accounting amount
+        const totalSheetGross = matchedJobs.reduce((sum, j) => sum + (Number(j.grossAmount) || 0), 0);
+        const totalSheetNet = matchedJobs.reduce((sum, j) => sum + (Number(j.slotAmtNum) || 0), 0);
+        if (
+          matchedJobs.length > 1 &&
+          ((grossAmount > 0 && Math.abs(totalSheetGross - grossAmount) < 0.1) ||
+            (correctAmount > 0 && Math.abs(totalSheetNet - correctAmount) < 0.1))
+        ) {
           dupOptions.push({
             optionId: optId++,
             title: `Accept as split invoice across ${matchedJobs.length} jobs (£${totalSheetGross.toFixed(2)} total)`,
             matchType: "info",
             explanation: `The sum of invoice #${invoiceNo} across all ${matchedJobs.length} spreadsheet jobs (£${totalSheetGross.toFixed(2)}) matches the accounting total (£${grossAmount.toFixed(2)}). Accepting this marks the split as valid and resolved.`,
             actionButtonText: "Accept split invoice",
+          });
+        }
+
+        // Compound option: Delete extra standalone job + adjust kept (e.g. retainer) job invoice amount
+        const deleteAndAdjustOptions = buildDeleteExtraJobAndAdjustAmountOptions_({
+          matchedJobs,
+          invoiceNo,
+          correctAmount,
+          grossAmount,
+        });
+        for (const compoundOpt of deleteAndAdjustOptions) {
+          dupOptions.push({
+            optionId: optId++,
+            ...compoundOpt,
           });
         }
 
@@ -7600,35 +7787,26 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
             alertSummary: dupSummary, cachedOptionsJSON: JSON.stringify(dupOptions), status: "cached",
           });
         }
-        return res.status(200).json({ success: true, options: dupOptions, alertId: alert.rowNumber, previousIgnoreReason });
+        return res.status(200).json({ success: true, options: dupOptions, alertId: alert.rowNumber, previousIgnoreReason, updatedAlertPatch });
       }
 
       // ── Branch 2: Single job search for data mismatches (Amount, VAT, Dates, Status, Client) ──
       let matchedJob = null;
+      let matchedParentJob = null;
       let matchedSlot = null;
       let matchedRowNum = null; // 1-indexed sheet row
 
-      const allInvMatches = [];
-      for (let ri = 1; ri < invConfirmedRows.length; ri++) {
-        const r = invConfirmedRows[ri] || [];
-        const ref1 = String(r[42] || "").trim(); // AQ = Inv1 ref
-        const ref2 = String(r[49] || "").trim(); // AX = Inv2 ref
-        const ref3 = String(r[56] || "").trim(); // BE = Inv3 ref
-        if (ref1 === invoiceNo) allInvMatches.push({ row: r, slot: 1, rowNum: ri + 1, days: parseInt(r[44], 10), status: String(r[45] || "").trim() });
-        if (ref2 === invoiceNo) allInvMatches.push({ row: r, slot: 2, rowNum: ri + 1, days: parseInt(r[51], 10), status: String(r[52] || "").trim() });
-        if (ref3 === invoiceNo) allInvMatches.push({ row: r, slot: 3, rowNum: ri + 1, days: parseInt(r[58], 10), status: String(r[59] || "").trim() });
-      }
-      if (allInvMatches.length > 0) {
-        let chosen = allInvMatches[0];
-        if (allInvMatches.length > 1) {
-          const balMatch = allInvMatches.find(m => m.status.toLowerCase().includes("balance"));
+      if (liveMatchedJobs.length > 0) {
+        let chosen = liveMatchedJobs[0];
+        if (liveMatchedJobs.length > 1) {
+          const balMatch = liveMatchedJobs.find(m => m.status.toLowerCase().includes("balance"));
           if (balMatch) {
             chosen = balMatch;
           } else {
             let maxDays = -Infinity;
-            for (const m of allInvMatches) {
+            for (const m of liveMatchedJobs) {
               if (m.status.toLowerCase().includes("part-paid") && !m.status.toLowerCase().includes("balance")) continue;
-              const dVal = isNaN(m.days) ? -1 : m.days;
+              const dVal = isNaN(m.daysToPay) ? -1 : m.daysToPay;
               if (dVal >= maxDays) {
                 maxDays = dVal;
                 chosen = m;
@@ -7637,13 +7815,15 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
           }
         }
         matchedJob = chosen.row;
-        matchedSlot = chosen.slot;
+        matchedParentJob = chosen.parentRow || chosen.row;
+        matchedSlot = chosen.slotNum;
         matchedRowNum = chosen.rowNum;
       }
 
-      // If not found by invoice number match in AQ/AX/BE, try finding via alert.spreadsheetItems
-      if (!matchedJob && alert.spreadsheetItems && alert.spreadsheetItems.length > 0) {
-        const targetItem = alert.spreadsheetItems.length > 1 ? alert.spreadsheetItems[alert.spreadsheetItems.length - 1] : alert.spreadsheetItems[0];
+      // If not found by invoice number match in AQ/AX/BE, try finding via (updated) spreadsheetItems
+      const fallbackItems = updatedAlertPatch ? liveSpreadsheetItems : (alert.spreadsheetItems || []);
+      if (!matchedJob && fallbackItems.length > 0) {
+        const targetItem = fallbackItems.length > 1 ? fallbackItems[fallbackItems.length - 1] : fallbackItems[0];
         const cellRef = String(targetItem.cellRef || "").trim().toUpperCase();
         const m = cellRef.match(/^([A-Z]+)(\d+)$/);
         if (m) {
@@ -7652,6 +7832,7 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
           if (rNum > 0 && rNum <= invConfirmedRows.length) {
             matchedRowNum = rNum;
             matchedJob = invConfirmedRows[rNum - 1];
+            matchedParentJob = matchedJob;
             if (colLetter === "AP" || colLetter === "AQ") matchedSlot = 1;
             else if (colLetter === "AW" || colLetter === "AX") matchedSlot = 2;
             else if (colLetter === "BD" || colLetter === "BE") matchedSlot = 3;
@@ -7662,14 +7843,14 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
 
       if (matchedJob) {
         const parseAmt = (v) => parseFloat(String(v || "0").replace(/[£$€,\s]/g, "")) || 0;
-        const jobClient = String(matchedJob[0] || "").trim();  // A
-        const jobName = String(matchedJob[1] || "").trim();  // B
-        const jobCode = String(matchedJob[2] || "").trim();  // C
-        const jobRevenue = String(matchedJob[32] || "").trim();  // AG
-        const jobVAT = String(matchedJob[34] || "").trim();  // AI - "Yes" or "No"
-        const jobType = String(matchedJob[35] || "").trim();  // AJ - Project / Retainer
-        const jobStart = String(matchedJob[37] || "").trim();  // AL
-        const jobEnd = String(matchedJob[38] || "").trim();  // AM
+        const jobClient = String(matchedJob[0] || matchedParentJob?.[0] || "").trim();  // A
+        const jobName = String(matchedJob[1] || matchedParentJob?.[1] || "").trim();  // B
+        const jobCode = String(matchedJob[2] || matchedParentJob?.[2] || "").trim();  // C
+        const jobRevenue = String(matchedJob[32] || matchedParentJob?.[32] || "").trim();  // AG
+        const jobVAT = String(matchedJob[34] || matchedParentJob?.[34] || "").trim();  // AI - "Yes" or "No"
+        const jobType = String(matchedJob[35] || matchedParentJob?.[35] || "").trim();  // AJ - Project / Retainer
+        const jobStart = String(matchedJob[37] || matchedParentJob?.[37] || "").trim();  // AL
+        const jobEnd = String(matchedJob[38] || matchedParentJob?.[38] || "").trim();  // AM
         const jobVATYes = jobVAT.toLowerCase() === "yes";
 
         // Slot columns
@@ -7748,8 +7929,8 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
           });
         }
 
-        // 2. Amount mismatch check (never overwrite individual tranche amounts on duplicate/split invoices unless Inv amt mismatch? is flagged)
-        if (isInvAmtMismatch || (!isDuplicateInvoice && Math.abs(curSlotAmt - correctAmount) >= 0.01)) {
+        // 2. Amount mismatch check (never overwrite individual tranche amounts on live duplicate/split invoices unless Inv amt mismatch? is flagged)
+        if (isInvAmtMismatch || (!liveIsDuplicateInvoice && Math.abs(curSlotAmt - correctAmount) >= 0.01)) {
           if (Math.abs(curSlotAmt - correctAmount) >= 0.01) {
             nonVatMismatchNames.push("amount");
             nonVatExplanationParts.push(`Amount: £${correctAmount.toFixed(2)} (excl VAT)`);
@@ -7955,11 +8136,14 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
             }
           }
 
+          const isPureAmountUpdate = mismatchNames.length === 1 && mismatchNames[0] === "amount";
           options = [
             {
               optionId: 1,
-              title: `Update ${mismatchNames.join(", ")} in Pulse for invoice #${invoiceNo} on "${jobName}" (Row ${matchedRowNum})`,
-              actionButtonText: "Update Pulse",
+              title: isPureAmountUpdate
+                ? `Update invoice amount in Pulse to £${correctAmount.toFixed(2)} for invoice #${invoiceNo} on "${jobName}" (Row ${matchedRowNum})`
+                : `Update ${mismatchNames.join(", ")} in Pulse for invoice #${invoiceNo} on "${jobName}" (Row ${matchedRowNum})`,
+              actionButtonText: isPureAmountUpdate ? "Update invoice amount" : "Update Pulse",
               matchType: "existing_job",
               jobRow: matchedRowNum,
               jobName,
@@ -8008,7 +8192,7 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
             alertSummary: mismatchSummary, cachedOptionsJSON: JSON.stringify(options), status: "cached",
           });
         }
-        return res.status(200).json({ success: true, options, alertId: alert.rowNumber, previousIgnoreReason });
+        return res.status(200).json({ success: true, options, alertId: alert.rowNumber, previousIgnoreReason, updatedAlertPatch });
       }
 
       // ── Branch 3: Fallback when invoice row not found in Confirmed tab ──
@@ -9560,6 +9744,176 @@ export async function handleAcceptOption(req, res, sheets, sessionUserArg = null
       ).catch(() => { });
 
       return res.status(200).json({ success: true, message: `Cleared ${rowsToClear.length} row(s) from ${tabName} tab`, cellsWritten: clearRanges.length });
+    }
+
+    // ── DELETE EXTRA JOB + ADJUST KEPT INVOICE AMOUNT ──────────────────────
+    if (option.matchType === "delete_and_update" && option.deleteExtraJob && option.keepInvoiceTarget) {
+      const delExtra = option.deleteExtraJob;
+      const keepInv = option.keepInvoiceTarget;
+      const tabResp = await sheets.spreadsheets.values.get({
+        spreadsheetId: alert.clientId,
+        range: "Confirmed!A1:BJ5000",
+        valueRenderOption: "UNFORMATTED_VALUE",
+      });
+      const tabRows = tabResp.data.values || [];
+
+      const extraParentIdx = resolveVerifiedDeleteParentRowIdx_(tabRows, {
+        optJobRow: parseInt(delExtra.parentRowNum, 10),
+        targetCode: String(delExtra.projectCode || "").trim(),
+        targetClient: String(delExtra.clientName || "").trim(),
+        targetJob: String(delExtra.jobName || "").trim(),
+        tenantName: alert.clientName || "",
+        minJobRow: 2,
+      });
+      if (extraParentIdx === -1) {
+        return res.status(404).json({
+          success: false,
+          error: `Extra job "${delExtra.jobName || "Job"}" was not found in Confirmed tab — it may have already been deleted.`,
+        });
+      }
+
+      const extraParentArr = tabRows[extraParentIdx] || [];
+      const extraClientLower = String(extraParentArr[0] || "").trim().toLowerCase();
+      const extraJobLower = String(extraParentArr[1] || "").trim().toLowerCase();
+      const rowsToClear = [extraParentIdx + 1];
+      for (let ri = extraParentIdx + 1; ri < tabRows.length; ri++) {
+        const r = tabRows[ri] || [];
+        const rc = String(r[0] || "").trim().toLowerCase();
+        const rj = String(r[1] || "").trim().toLowerCase();
+        const hasContent = r.some(c => String(c || "").trim() !== "");
+        const isChild =
+          (!rc && !rj && hasContent) ||
+          (extraClientLower && rc === extraClientLower && rj === extraJobLower);
+        if (!isChild) break;
+        if (!r[32] && !r[17] && !r[33] && !r[37]) {
+          rowsToClear.push(ri + 1);
+        } else {
+          break;
+        }
+      }
+      const rowsToClearSet = new Set(rowsToClear);
+
+      // Verify kept invoice slot outside rowsToClear
+      const normKeepInvNo = String(keepInv.invoiceNo || "").replace(/^#/, "").trim().toLowerCase();
+      const amtColBySlot = { 1: "AP", 2: "AW", 3: "BD" };
+      const refColIdxBySlot = { 1: 42, 2: 49, 3: 56 };
+      let verifiedKeepRow = null;
+      let verifiedKeepSlot = null;
+
+      const prefRow = parseInt(keepInv.rowNum, 10);
+      const prefSlot = parseInt(keepInv.slotNum, 10);
+      if (
+        !isNaN(prefRow) &&
+        prefRow >= 2 &&
+        prefRow <= tabRows.length &&
+        !rowsToClearSet.has(prefRow) &&
+        refColIdxBySlot[prefSlot] !== undefined
+      ) {
+        const cellRef = String(tabRows[prefRow - 1]?.[refColIdxBySlot[prefSlot]] || "").replace(/^#/, "").trim().toLowerCase();
+        if (cellRef === normKeepInvNo) {
+          verifiedKeepRow = prefRow;
+          verifiedKeepSlot = prefSlot;
+        }
+      }
+      if (!verifiedKeepRow) {
+        for (let ri = 1; ri < tabRows.length; ri++) {
+          const rNum = ri + 1;
+          if (rowsToClearSet.has(rNum)) continue;
+          const r = tabRows[ri] || [];
+          for (const sNum of [1, 2, 3]) {
+            const cRef = String(r[refColIdxBySlot[sNum]] || "").replace(/^#/, "").trim().toLowerCase();
+            if (cRef === normKeepInvNo) {
+              verifiedKeepRow = rNum;
+              verifiedKeepSlot = sNum;
+              break;
+            }
+          }
+          if (verifiedKeepRow) break;
+        }
+      }
+      if (!verifiedKeepRow || !verifiedKeepSlot) {
+        return res.status(404).json({
+          success: false,
+          error: `Could not locate invoice #${keepInv.invoiceNo} on the kept job in Confirmed tab.`,
+        });
+      }
+
+      const verifiedAmtCell = `${amtColBySlot[verifiedKeepSlot]}${verifiedKeepRow}`;
+      const newAmountNum = Math.round((Number(keepInv.newAmount) || 0) * 100) / 100;
+      const isJobCosting = isJobCostingStyle({ headers: tabRows[0] || [] });
+      const { clearRanges, restoreData } = buildJobRowClearAndRestorePlan({
+        sheetName: "Confirmed",
+        rowNums: rowsToClear,
+        isJobCosting,
+        includeCopiedCol: true,
+      });
+
+      await sheets.spreadsheets.values.batchClear({
+        spreadsheetId: alert.clientId,
+        requestBody: { ranges: clearRanges },
+        _skipFormulaRecompute: true,
+        _deferBackgroundRecompute: true,
+      });
+      await sheets.spreadsheets.values.batchUpdate({
+        spreadsheetId: alert.clientId,
+        _deferBackgroundRecompute: false,
+        requestBody: {
+          valueInputOption: "USER_ENTERED",
+          data: [
+            ...restoreData,
+            { range: `Confirmed!${verifiedAmtCell}`, values: [[newAmountNum]] },
+          ],
+        },
+      });
+
+      await ensureAlertMemoryTab(sheets, automationCommanderSheetId);
+      const fp2 = alert.fingerprintHash || buildAlertFingerprint(alert);
+      const memRows2 = await queryAlertMemoryTargeted(sheets, automationCommanderSheetId, { hashes: [fp2] });
+      const mr2 = findMemoryRow(memRows2, fp2);
+      const summary2 = alert.summary?.summary || `Invoice ${keepInv.invoiceNo} (Deleted extra job and adjusted amount)`;
+      if (mr2) {
+        await updateAlertMemoryRow(sheets, automationCommanderSheetId, mr2.rowIndex, { ...mr2, status: "accepted" });
+      } else {
+        await appendAlertMemoryRow(sheets, automationCommanderSheetId, {
+          fingerprintHash: fp2, alertType: alert.type || alert.flagType || "invoice",
+          clientName: alert.clientName || "", alertSummary: summary2,
+          cachedOptionsJSON: "", status: "accepted", ignoreReason: "", dataSnapshot: "",
+        });
+      }
+      appendTriageLogBackground_(sheets, automationCommanderSheetId, [
+        new Date().toISOString(),
+        sanitizeFormulaInput(String(alert.type || alert.flagType || "")),
+        sanitizeFormulaInput(`${alert.sheetName}-${alert.rowNumber}`),
+        sanitizeFormulaInput(String(alert.clientName || "")),
+        "",
+        sanitizeFormulaInput(JSON.stringify({ deletedExtraJob: delExtra.jobName, rowsCleared: rowsToClear, adjustedCell: verifiedAmtCell, newAmount: newAmountNum })),
+        "ACCEPTED",
+        sanitizeFormulaInput(String(option.title || ""))
+      ]);
+
+      try {
+        const sessionUser = getSessionUser(req);
+        const canRemoveClient = (cName) => req.isSystemAuthorized || !sessionUser || sessionUser.isAdmin || isUserAuthorizedForClient(sessionUser, cName);
+        const targetIds = [fp2, `${alert.sheetName}-${alert.rowNumber}`, `${alert.flagType || alert.type}-${alert.sheetName}-${alert.rowNumber}`].filter(Boolean);
+        invalidatePrecomputedMemoryCache();
+        prunePrecomputedInBackground_({
+          targetIds,
+          canRemoveClient,
+          label: "handleAcceptOption(delete_and_update)",
+        });
+      } catch (rErr) { }
+
+      await invalidatePmaClientCache(
+        alert.clientId,
+        alert.masterSheetId || alert.masterId || null,
+        ["jobs", "invoices", "outgoings", "retainers", "cash", "views"]
+      ).catch(() => { });
+
+      return res.status(200).json({
+        success: true,
+        message: `Deleted extra job "${delExtra.jobName || 'Row ' + rowsToClear[0]}" and adjusted invoice #${keepInv.invoiceNo} to £${newAmountNum.toFixed(2)}`,
+        cellsWritten: clearRanges.length + 1,
+      });
     }
 
     // ── OUTGOINGS WRITE (expense category match) ─────────────────────────

@@ -1518,20 +1518,20 @@ export async function handleGetOutgoings(req, res, sheets) {
     const payload = forceMode
       ? await fetchFreshFn()
       : (
-          await resolvePortalCache({
-            cacheKey,
-            bypassCache: Boolean(bypassCache),
-            l1TtlSecs: 120,
-            redisTtlSecs: 86400,
-            isValidPayload: (c) =>
-              c &&
-              Array.isArray(c.contractors) &&
-              c.directCostsMode !== undefined &&
-              c.makingUpCos !== undefined &&
-              (c.contractors.length === 0 || c.contractors[0]?.deliveryPct !== undefined),
-            fetchFreshFn,
-          })
-        ).data;
+        await resolvePortalCache({
+          cacheKey,
+          bypassCache: Boolean(bypassCache),
+          l1TtlSecs: 120,
+          redisTtlSecs: 86400,
+          isValidPayload: (c) =>
+            c &&
+            Array.isArray(c.contractors) &&
+            c.directCostsMode !== undefined &&
+            c.makingUpCos !== undefined &&
+            (c.contractors.length === 0 || c.contractors[0]?.deliveryPct !== undefined),
+          fetchFreshFn,
+        })
+      ).data;
 
     const callerUser = getSessionUser(req);
     let responsePayload = payload;
@@ -2386,7 +2386,10 @@ export async function handleGetAllClientJobs(req, res, sheets) {
               bypassCache: Boolean(bypassCache),
             }),
             sbCtx?.jobsMode === "relational"
-              ? getClientRelationalJobsLookup(sbCtx).catch(() => null)
+              ? getClientRelationalJobsLookup(sbCtx).catch(async () => {
+                await new Promise((r) => setTimeout(r, 250));
+                return getClientRelationalJobsLookup(sbCtx).catch(() => null);
+              })
               : Promise.resolve(null),
             initialNotesRanges.length > 0
               ? sheets.spreadsheets

@@ -766,12 +766,22 @@ export function useTriageEngine({
         const newAlerts = [...prev];
         const idx = newAlerts.findIndex(a => a.sheetName === alert.sheetName && a.rowNumber === alert.rowNumber);
         if (idx !== -1) {
+          const patch = data.updatedAlertPatch || null;
           newAlerts[idx] = {
             ...newAlerts[idx],
             options: data.options,
             previousIgnoreReason: formattedPir,
             _liveRecheckedInSession: true,
             ...(data.pipelineChecked ? { _pipelineChecked: true } : {}),
+            ...(patch ? {
+              isDuplicateInvoice: patch.isDuplicateInvoice,
+              spreadsheetItems: patch.spreadsheetItems,
+              pulseAmounts: patch.pulseAmounts,
+              data: {
+                ...(newAlerts[idx].data || {}),
+                flags: Array.isArray(patch.liveFlags) ? patch.liveFlags : newAlerts[idx].data?.flags,
+              },
+            } : {}),
           };
         }
         return newAlerts;

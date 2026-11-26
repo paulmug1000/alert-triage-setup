@@ -8,6 +8,7 @@ import RetainerChangeSendDatesModal from "./RetainerChangeSendDatesModal";
 import NonAdminAlertListView from "./NonAdminAlertListView";
 import JobDetailModal from "./JobDetailModal";
 import OutgoingsDetailModal from "./OutgoingsDetailModal";
+import InvoiceDetailsModal from "./InvoiceDetailsModal";
 import DeleteInvoiceFromPulseModal from "./DeleteInvoiceFromPulseModal";
 import DeleteExpenseFromPulseModal from "./DeleteExpenseFromPulseModal";
 import { useBulkActions } from "../hooks/useBulkActions";
@@ -103,6 +104,7 @@ export default function AlertSelectionView({
   const [partPaidMsg, setPartPaidMsg] = useState({});
   const [viewingJobTarget, setViewingJobTarget] = useState(null);
   const [viewingOutgoingsTarget, setViewingOutgoingsTarget] = useState(null);
+  const [viewingInvoiceDetails, setViewingInvoiceDetails] = useState(null);
   const [deleteInvoiceTarget, setDeleteInvoiceTarget] = useState(null);
   const [deleteExpenseTarget, setDeleteExpenseTarget] = useState(null);
   const [tidyingAlertKey, setTidyingAlertKey] = useState(null);
@@ -117,6 +119,21 @@ export default function AlertSelectionView({
     } else {
       setViewingJobTarget(target);
     }
+  };
+
+  const openInvoiceDetailsFromAlert = (alertObj, invoiceNo, fallbackSummary = {}, initialLineItems = []) => {
+    const cleanNo = String(invoiceNo || "").replace(/^#/, "").trim();
+    if (!cleanNo) return;
+    const cInfo = getClientInfoForAlert(alertObj);
+    const m = alertObj?.metadata || {};
+    setViewingInvoiceDetails({
+      invoiceNo: cleanNo,
+      masterSheetId: cInfo?.masterSheetId || selectedClient?.masterSheetId || m.masterSheetId || alertObj?.masterSheetId || "",
+      clientSheetId: cInfo?.clientSheetId || selectedClient?.clientSheetId || m.clientSheetId || alertObj?.clientSheetId || "",
+      clientName: alertObj?.clientName || cInfo?.clientName || selectedClient?.clientName || "",
+      initialLineItems: Array.isArray(initialLineItems) ? initialLineItems : [],
+      fallbackSummary,
+    });
   };
 
   const { setNavTaskCount, setSnoozedTaskCount, refreshTaskCount } = useTasks();
@@ -1564,8 +1581,66 @@ export default function AlertSelectionView({
             {isAdmin && clientHasManager && ADMIN_ONLY_ALERT_TYPES.has(ft) && <AdminBadge show={clientHasManager} />}
           </div>
           {invNo && (
-            <div style={{ fontSize: "12px", color: "#555", marginTop: "2px", wordBreak: "break-word" }}>
-              Invoice: {String(invNo).startsWith("#") ? invNo : `#${invNo}`}
+            <div style={{ fontSize: "12px", color: "#555", marginTop: "2px", wordBreak: "break-word", display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
+              <span>Invoice: {String(invNo).startsWith("#") ? invNo : `#${invNo}`}</span>
+              <span
+                role="button"
+                tabIndex={0}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  e.preventDefault();
+                  openInvoiceDetailsFromAlert(
+                    alert,
+                    invNo,
+                    {
+                      client: clientName,
+                      jobName: invDesc,
+                      amount: amt,
+                      vatAmount: vatIncluded,
+                      sentDate,
+                      fullyPaidDate: datePaid,
+                      status,
+                      rechargedAmountGbp: detectedRech,
+                    },
+                    Array.isArray(inv.lineItems) ? inv.lineItems : (Array.isArray(alert.invoiceLineItems) ? alert.invoiceLineItems : [])
+                  );
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" || e.key === " ") {
+                    e.stopPropagation();
+                    e.preventDefault();
+                    openInvoiceDetailsFromAlert(
+                      alert,
+                      invNo,
+                      {
+                        client: clientName,
+                        jobName: invDesc,
+                        amount: amt,
+                        vatAmount: vatIncluded,
+                        sentDate,
+                        fullyPaidDate: datePaid,
+                        status,
+                        rechargedAmountGbp: detectedRech,
+                      },
+                      Array.isArray(inv.lineItems) ? inv.lineItems : (Array.isArray(alert.invoiceLineItems) ? alert.invoiceLineItems : [])
+                    );
+                  }
+                }}
+                style={{
+                  pointerEvents: "auto",
+                  padding: "1px 7px",
+                  borderRadius: "5px",
+                  border: "1px solid #cbd5e1",
+                  background: "#ffffff",
+                  color: "#475569",
+                  fontSize: "10.5px",
+                  fontWeight: "600",
+                  cursor: "pointer",
+                  whiteSpace: "nowrap",
+                }}
+              >
+                View details
+              </span>
             </div>
           )}
           {formattedAmt && (
@@ -1830,6 +1905,7 @@ export default function AlertSelectionView({
             freqLabel={freqLabel}
             totalVisibleAlertsCount={totalVisibleAlertsCount}
             onViewJob={handleViewJobOrExpense}
+            onViewInvoiceDetails={openInvoiceDetailsFromAlert}
             onDeleteInvoice={setDeleteInvoiceTarget}
             onDeleteExpense={setDeleteExpenseTarget}
             onTidyJobLayout={handleTidyJobLayout}
@@ -2493,7 +2569,32 @@ export default function AlertSelectionView({
                                                   Draft invoice found nearby
                                                 </div>
                                               )}
-                                              <div><strong>{effectiveMatchCase === "draft" ? "DRAFT invoice found:" : "Invoice found:"}</strong> #{possibleMatchInvoiceNo} for £{parseFloat(possibleMatchAmount || 0).toFixed(2)}, sent {possibleMatchSentDate}</div>
+                                              <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
+                                                <span><strong>{effectiveMatchCase === "draft" ? "DRAFT invoice found:" : "Invoice found:"}</strong> #{possibleMatchInvoiceNo} for £{parseFloat(possibleMatchAmount || 0).toFixed(2)}, sent {possibleMatchSentDate}</span>
+                                                <button
+                                                  type="button"
+                                                  onClick={() => openInvoiceDetailsFromAlert(alert, possibleMatchInvoiceNo, {
+                                                    client: endClientName,
+                                                    jobName,
+                                                    amount: parseFloat(possibleMatchAmount || 0) || 0,
+                                                    sentDate: possibleMatchSentDate || "",
+                                                    status: effectiveMatchCase === "draft" ? "Draft" : "",
+                                                  })}
+                                                  style={{
+                                                    padding: "1px 7px",
+                                                    borderRadius: "5px",
+                                                    border: "1px solid #cbd5e1",
+                                                    background: "#ffffff",
+                                                    color: "#475569",
+                                                    fontSize: "10.5px",
+                                                    fontWeight: "600",
+                                                    cursor: "pointer",
+                                                    whiteSpace: "nowrap",
+                                                  }}
+                                                >
+                                                  View details
+                                                </button>
+                                              </div>
                                               <div>{possibleMatchConfirmedRow ? <>Already attached to Confirmed row {possibleMatchConfirmedRow}</> : <>Not yet attached to any confirmed job in Pulse</>}</div>
                                               {effectiveMatchCase === "changed" && <div style={{ marginTop: "4px" }}>This may mean the retainer value has changed.</div>}
                                               {effectiveMatchCase === "matches" && <div style={{ marginTop: "4px" }}>Matches the expected retainer amount.</div>}
@@ -3234,7 +3335,31 @@ export default function AlertSelectionView({
                                           <div style={{ display: "inline-block", padding: "1px 8px", borderRadius: "4px", fontSize: "11px", fontWeight: "600", marginBottom: "4px", background: "#f0f9ff", color: "#0369a1", border: "1px solid #bae6fd", width: "fit-content" }}>
                                             {md.conflictType === "intra_run_oscillation" ? "Within-run oscillation" : "Multi-run flip-flop"}
                                           </div>
-                                          {md.invoiceNo && <div style={{ marginBottom: "2px" }}><strong>Invoice:</strong> {md.invoiceNo}</div>}
+                                          {md.invoiceNo && (
+                                            <div style={{ marginBottom: "2px", display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
+                                              <span><strong>Invoice:</strong> {md.invoiceNo}</span>
+                                              <button
+                                                type="button"
+                                                onClick={() => openInvoiceDetailsFromAlert(alert, md.invoiceNo, {
+                                                  client: md.endClientName || alert.endClientName || "",
+                                                  jobName: md.jobName || alert.jobName || "",
+                                                })}
+                                                style={{
+                                                  padding: "1px 7px",
+                                                  borderRadius: "5px",
+                                                  border: "1px solid #cbd5e1",
+                                                  background: "#ffffff",
+                                                  color: "#475569",
+                                                  fontSize: "10.5px",
+                                                  fontWeight: "600",
+                                                  cursor: "pointer",
+                                                  whiteSpace: "nowrap",
+                                                }}
+                                              >
+                                                View details
+                                              </button>
+                                            </div>
+                                          )}
                                           {md.fieldName && <div style={{ marginBottom: "2px" }}><strong>Conflicting field:</strong> {md.fieldName}</div>}
                                           {(md.transition1 || md.transition2) && (
                                             <div style={{ marginTop: "4px" }}>
@@ -3328,7 +3453,35 @@ export default function AlertSelectionView({
                                           {jName && !isExp && <div><strong>Job:</strong> {jName}</div>}
                                           {confRow && <div><strong>Confirmed tab row:</strong> {confRow}{slot ? `, Slot ${slot}` : ""}</div>}
                                           {m.cellCoord && <div><strong>Outgoings cell:</strong> {m.cellCoord}</div>}
-                                          {ref && <div><strong>{isExp ? "Expense ID:" : "Invoice ref:"}</strong> {ref}</div>}
+                                          {ref && (
+                                            <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
+                                              <span><strong>{isExp ? "Expense ID:" : "Invoice ref:"}</strong> {ref}</span>
+                                              {!isExp && (
+                                                <button
+                                                  type="button"
+                                                  onClick={() => openInvoiceDetailsFromAlert(alert, ref, {
+                                                    client: clientName,
+                                                    jobName: jName,
+                                                    amount: !isNaN(parsedTotal) && parsedTotal > 0 ? parsedTotal : undefined,
+                                                    sentDate: sendDate || "",
+                                                  })}
+                                                  style={{
+                                                    padding: "1px 7px",
+                                                    borderRadius: "5px",
+                                                    border: "1px solid #cbd5e1",
+                                                    background: "#ffffff",
+                                                    color: "#475569",
+                                                    fontSize: "10.5px",
+                                                    fontWeight: "600",
+                                                    cursor: "pointer",
+                                                    whiteSpace: "nowrap",
+                                                  }}
+                                                >
+                                                  View details
+                                                </button>
+                                              )}
+                                            </div>
+                                          )}
                                           {!isNaN(parsedTotal) && parsedTotal > 0 && (
                                             <div>
                                               <strong>{isExp ? "Total expense amount:" : "Total invoice amount:"}</strong>{" "}
@@ -3899,7 +4052,38 @@ export default function AlertSelectionView({
           target={retainerChangeSendDates}
           automationCommanderSheetId={automationCommanderSheetId}
           onClose={() => setRetainerChangeSendDates(null)}
-          onUpdated={() => loadProactiveAlerts()}
+          onUpdated={async (result) => {
+            const activeTarget = retainerChangeSendDates;
+            const activeAlert = activeTarget?.alert;
+            if (activeAlert?.alertType === "retainer_invoice" && result?.movedIntoFuture) {
+              if (activeAlert.alertKey && automationCommanderSheetId) {
+                try {
+                  const resolutionText = result.updatedExpectedDate
+                    ? `Changed expected retainer send date to ${result.updatedExpectedDate} (moved into the future)`
+                    : "Changed expected retainer send dates into the future";
+                  await fetch("/api/triage", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({
+                      action: "resolve_proactive_alert",
+                      automationCommanderSheetId,
+                      alertKey: activeAlert.alertKey,
+                      clientName: activeTarget.clientName || activeAlert.clientName || selectedClient?.clientName,
+                      sessionId,
+                      alertData: activeAlert,
+                      rowIndex: activeAlert.rowIndex,
+                      resolution: resolutionText,
+                    }),
+                  });
+                } catch (resolveErr) {
+                  console.error("Failed to auto-acknowledge retainer alert after moving send dates:", resolveErr);
+                }
+              }
+              removeResolvedProactiveAlert(activeAlert.alertKey, activeAlert.rowIndex);
+            } else {
+              loadProactiveAlerts();
+            }
+          }}
         />
       )}
 
@@ -3919,6 +4103,16 @@ export default function AlertSelectionView({
           onClose={() => setViewingOutgoingsTarget(null)}
           onDeleted={handleOutgoingsDeleted}
           isAdmin={isAdmin}
+        />
+      )}
+
+      {viewingInvoiceDetails && (
+        <InvoiceDetailsModal
+          isOpen={Boolean(viewingInvoiceDetails)}
+          target={viewingInvoiceDetails}
+          surface="pma"
+          isAdmin={isAdmin}
+          onClose={() => setViewingInvoiceDetails(null)}
         />
       )}
 

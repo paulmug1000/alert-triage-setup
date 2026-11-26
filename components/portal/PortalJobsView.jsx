@@ -41,6 +41,7 @@ import {
 import { parseSplitString, formatSplitString, extractSplitMonths } from "../../services/splitHelper";
 import InvoicesNewJobModal from "../InvoicesNewJobModal";
 import AssignAccountingItemsModal from "../AssignAccountingItemsModal";
+import InvoiceDetailsModal from "../InvoiceDetailsModal";
 import CrmSyncBadge, { CrmSyncIcon } from "../CrmSyncBadge";
 import PlaceholderPill, {
   isAutoPlaceholder,
@@ -185,6 +186,7 @@ export default function PortalJobsView({
   const [crmWarningPrompt, setCrmWarningPrompt] = useState(null); // { type: "duplicate" | "renewal", job }
   const [customModalHeading, setCustomModalHeading] = useState(null);
   const [assignModalType, setAssignModalType] = useState(null); // null | "invoice" | "directCost"
+  const [viewingInvoiceDetails, setViewingInvoiceDetails] = useState(null);
   const [prefetchedCatalogByType, setPrefetchedCatalogByType] = useState({ invoice: null, directCost: null });
   const [varItemMonthFilter, setVarItemMonthFilter] = useState("all");
   const [showVarMonthlyForecasts, setShowVarMonthlyForecasts] = useState(false);
@@ -4085,6 +4087,40 @@ export default function PortalJobsView({
                                       <span>Synced</span>
                                     </span>
                                   )}
+                                  {inv.ref && String(inv.ref).trim() !== "" && (
+                                    <button
+                                      type="button"
+                                      onClick={() =>
+                                        setViewingInvoiceDetails({
+                                          invoiceNo: inv.ref,
+                                          clientSheetId,
+                                          clientName,
+                                          surface: "portal",
+                                          fallbackSummary: {
+                                            client: editingJob.client || "",
+                                            jobName: editingJob.jobName || "",
+                                            amount: inv.totalAmount,
+                                            sentDate: inv.receivedTranches?.[0]?.sendDate || "",
+                                            status: inv.isFullyPaid ? "Paid" : "Part-paid",
+                                            currencyCode: "GBP",
+                                          },
+                                        })
+                                      }
+                                      style={{
+                                        padding: "2px 7px",
+                                        borderRadius: "5px",
+                                        border: "1px solid #cbd5e1",
+                                        background: "#ffffff",
+                                        color: "#475569",
+                                        fontSize: "10.5px",
+                                        fontWeight: 600,
+                                        cursor: "pointer",
+                                        whiteSpace: "nowrap",
+                                      }}
+                                    >
+                                      View details
+                                    </button>
+                                  )}
                                 </div>
                                 <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
                                   {editingJob.rowNumber && (() => {
@@ -4398,6 +4434,41 @@ export default function PortalJobsView({
                                     </svg>
                                     <span>Synced</span>
                                   </span>
+                                )}
+                                {!isPlaceholder && hasRef && (
+                                  <button
+                                    type="button"
+                                    onClick={() =>
+                                      setViewingInvoiceDetails({
+                                        invoiceNo: inv.ref,
+                                        clientSheetId,
+                                        clientName,
+                                        surface: "portal",
+                                        fallbackSummary: {
+                                          client: editingJob.client || "",
+                                          jobName: editingJob.jobName || "",
+                                          amount: parseFloat(stripCurrency(inv.amount)) || 0,
+                                          sentDate: inv.sendDate || "",
+                                          dueDate: calculatePaymentDate(inv.sendDate, inv.days) || "",
+                                          status: currentStatus || "",
+                                          rechargedAmountGbp: parseFloat(stripCurrency(inv.ofWhichRechgd)) || 0,
+                                        },
+                                      })
+                                    }
+                                    style={{
+                                      padding: "2px 7px",
+                                      borderRadius: "5px",
+                                      border: "1px solid #cbd5e1",
+                                      background: "#ffffff",
+                                      color: "#475569",
+                                      fontSize: "10.5px",
+                                      fontWeight: 600,
+                                      cursor: "pointer",
+                                      whiteSpace: "nowrap",
+                                    }}
+                                  >
+                                    View details
+                                  </button>
                                 )}
                                 {editingJob.isVariableRetainerSeries && Array.isArray(editingJob.varMonthForecasts) && editingJob.varMonthForecasts.length > 0 && (
                                   <select
@@ -6309,6 +6380,16 @@ export default function PortalJobsView({
             setNewJobFromInvoice(null);
             if (onRefresh) onRefresh();
           }}
+        />
+      )}
+
+      {viewingInvoiceDetails && (
+        <InvoiceDetailsModal
+          isOpen={Boolean(viewingInvoiceDetails)}
+          target={viewingInvoiceDetails}
+          surface="portal"
+          isAdmin={false}
+          onClose={() => setViewingInvoiceDetails(null)}
         />
       )}
 

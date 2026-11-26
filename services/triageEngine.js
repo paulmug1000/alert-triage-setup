@@ -6733,16 +6733,26 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
             });
             tabRows = tabResp.data.values || [];
           }
-          const codeToFind = (projectCode || crmCode).toLowerCase();
-          const clientToFind = (client || crmClient).toLowerCase();
-          const jobToFind = (jobName || crmJob).toLowerCase();
-          for (let tr = 1; tr < tabRows.length; tr++) {
-            const r = tabRows[tr] || [];
-            const rCode = String(r[2] || "").trim().toLowerCase();
-            const rClient = String(r[0] || "").trim().toLowerCase();
-            const rJob = String(r[1] || "").trim().toLowerCase();
-            if (codeToFind && rCode === codeToFind) { jobRow = tr + 1; break; }
-            if (!codeToFind && rClient === clientToFind && rJob === jobToFind) { jobRow = tr + 1; break; }
+          const codeToFindRaw = (projectCode || crmCode).trim().toLowerCase();
+          const codeToFind = ["-", "n/a", "none"].includes(codeToFindRaw) ? "" : codeToFindRaw;
+          const clientToFind = (client || crmClient).trim().toLowerCase();
+          const jobToFind = (jobName || crmJob).trim().toLowerCase();
+          if (codeToFind) {
+            for (let tr = 1; tr < tabRows.length; tr++) {
+              const rCode = String(tabRows[tr]?.[2] || "").trim().toLowerCase();
+              if (rCode === codeToFind) { jobRow = tr + 1; break; }
+            }
+          }
+          if (!jobRow && (clientToFind || jobToFind)) {
+            for (let tr = 1; tr < tabRows.length; tr++) {
+              const r = tabRows[tr] || [];
+              const rClient = String(r[0] || "").trim().toLowerCase();
+              const rJob = String(r[1] || "").trim().toLowerCase();
+              if (jobToFind && rJob === jobToFind && (rClient === clientToFind || !rClient)) {
+                jobRow = tr + 1;
+                break;
+              }
+            }
           }
 
           const mismatchFields = alert.mismatchFields || [];
@@ -6839,7 +6849,7 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
             title: `Ignore discrepancy (keep Pulse value)`,
             actionButtonText: `Ignore discrepancy`,
             matchType: "ignore",
-            jobRow: jobRow || alert.rowNumber,
+            jobRow: jobRow || null,
             jobName: jobName || crmJob,
             matchingDetails: {
               unmatchedJobSummary: { clientName: client || crmClient, jobName: jobName || crmJob, projectCode: projectCode || crmCode },
@@ -6865,16 +6875,26 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
                 });
                 tabSearchRows = tabSearchResp.data.values || [];
               }
-              const codeToFind2 = (projectCode || "").toLowerCase();
-              const clientToFind2 = (client || "").toLowerCase();
-              const jobToFind2 = (jobName || "").toLowerCase();
-              for (let tr2 = tabName === "Pipeline" ? 5 : 0; tr2 < tabSearchRows.length; tr2++) {
-                const r2 = tabSearchRows[tr2] || [];
-                const rCode2 = String(r2[2] || "").trim().toLowerCase();
-                const rClient2 = String(r2[0] || "").trim().toLowerCase();
-                const rJob2 = String(r2[1] || "").trim().toLowerCase();
-                if (codeToFind2 && rCode2 === codeToFind2) { jobRow = tr2 + 1; break; }
-                if (!codeToFind2 && rClient2 === clientToFind2 && rJob2 === jobToFind2) { jobRow = tr2 + 1; break; }
+              const codeToFindRaw2 = (projectCode || "").trim().toLowerCase();
+              const codeToFind2 = ["-", "n/a", "none"].includes(codeToFindRaw2) ? "" : codeToFindRaw2;
+              const clientToFind2 = (src[0] || "").trim().toLowerCase();
+              const jobToFind2 = (jobName || "").trim().toLowerCase();
+              if (codeToFind2) {
+                for (let tr2 = 1; tr2 < tabSearchRows.length; tr2++) {
+                  const rCode2 = String(tabSearchRows[tr2]?.[2] || "").trim().toLowerCase();
+                  if (rCode2 === codeToFind2) { jobRow = tr2 + 1; break; }
+                }
+              }
+              if (!jobRow && (clientToFind2 || jobToFind2)) {
+                for (let tr2 = 1; tr2 < tabSearchRows.length; tr2++) {
+                  const r2 = tabSearchRows[tr2] || [];
+                  const rClient2 = String(r2[0] || "").trim().toLowerCase();
+                  const rJob2 = String(r2[1] || "").trim().toLowerCase();
+                  if (jobToFind2 && rJob2 === jobToFind2 && (rClient2 === clientToFind2 || (!clientToFind2 && !rClient2))) {
+                    jobRow = tr2 + 1;
+                    break;
+                  }
+                }
               }
             } catch (e) { console.log("  not_found tab search failed:", e.message); }
           }
@@ -6885,7 +6905,7 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
               title: `Ignore discrepancy — "${jobDesc}" is legitimate and intentional`,
               actionButtonText: `Ignore discrepancy`,
               matchType: "ignore",
-              jobRow: jobRow || alert.rowNumber,
+              jobRow: jobRow || null,
               jobName,
               explanation: `Mark this CRM discrepancy as ignored to prevent it recurring. "${jobDesc}" will remain in the ${tabName} tab with no changes made to CRM.`,
               matchingDetails: { unmatchedJobSummary: { clientName: client, jobName, projectCode, revenue, startDate, endDate, likelihood } },
@@ -6899,7 +6919,7 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
               title: `Delete "${jobDesc}" from ${tabName} tab`,
               actionButtonText: `Delete job from ${tabName}`,
               matchType: "delete",
-              jobRow: jobRow || alert.rowNumber,
+              jobRow: jobRow || null,
               jobName,
               explanation: `Remove "${jobDesc}" and all of its associated rows from the ${tabName} tab. Please verify that no real invoices or expenses are linked before accepting.`,
               matchingDetails: { unmatchedJobSummary: { clientName: client, jobName, projectCode, revenue, startDate, endDate, likelihood } },
@@ -7000,18 +7020,29 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
         }
         let jobRow = null;
         let copiedToConf = "";
-        const codeToFind = (shtCode || crmCode).toLowerCase();
-        const clientToFind = (shtClient || crmClient).toLowerCase();
-        const jobToFind = (shtJob || crmJob).toLowerCase();
+        const codeToFindRaw = (shtCode || crmCode).trim().toLowerCase();
+        const codeToFind = ["-", "n/a", "none"].includes(codeToFindRaw) ? "" : codeToFindRaw;
+        const clientToFind = (shtClient || crmClient).trim().toLowerCase();
+        const jobToFind = (shtJob || crmJob).trim().toLowerCase();
 
-        for (let tr = 1; tr < tabRows.length; tr++) {
-          const r = tabRows[tr] || [];
-          const rCode = String(r[2] || "").trim().toLowerCase();
-          const rClient = String(r[0] || "").trim().toLowerCase();
-          const rJob = String(r[1] || "").trim().toLowerCase();
-          // Match by project code first, then client+job
-          if (codeToFind && rCode === codeToFind) { jobRow = tr + 1; copiedToConf = String(r[107] || "").trim(); break; }
-          if (!codeToFind && rClient === clientToFind && rJob === jobToFind) { jobRow = tr + 1; copiedToConf = String(r[107] || "").trim(); break; }
+        if (codeToFind) {
+          for (let tr = 1; tr < tabRows.length; tr++) {
+            const r = tabRows[tr] || [];
+            const rCode = String(r[2] || "").trim().toLowerCase();
+            if (rCode === codeToFind) { jobRow = tr + 1; copiedToConf = String(r[107] || "").trim(); break; }
+          }
+        }
+        if (!jobRow && (clientToFind || jobToFind)) {
+          for (let tr = 1; tr < tabRows.length; tr++) {
+            const r = tabRows[tr] || [];
+            const rClient = String(r[0] || "").trim().toLowerCase();
+            const rJob = String(r[1] || "").trim().toLowerCase();
+            if (jobToFind && rJob === jobToFind && (rClient === clientToFind || !rClient)) {
+              jobRow = tr + 1;
+              copiedToConf = String(r[107] || "").trim();
+              break;
+            }
+          }
         }
 
         const rowRef = jobRow ? ` (${tabName} row ${jobRow})` : "";
@@ -9179,6 +9210,111 @@ function appendTriageLogBackground_(sheets, automationCommanderSheetId, rowValue
   } catch { }
 }
 
+export function resolveVerifiedDeleteParentRowIdx_(tabRows, {
+  optJobRow,
+  targetCode = "",
+  targetClient = "",
+  targetJob = "",
+  tenantName = "",
+  minJobRow = 2,
+} = {}) {
+  if (!Array.isArray(tabRows) || tabRows.length < minJobRow) return -1;
+  const rawCode = String(targetCode || "").trim().toLowerCase();
+  const cleanCode = ["-", "n/a", "none"].includes(rawCode) ? "" : rawCode;
+  const normClient = String(targetClient || "").trim().toLowerCase();
+  const normJob = String(targetJob || "").trim().toLowerCase();
+  const normTenant = String(tenantName || "").trim().toLowerCase();
+
+  const isBlankRow = (r) => {
+    if (!Array.isArray(r)) return true;
+    return (
+      !String(r[0] || "").trim() &&
+      !String(r[1] || "").trim() &&
+      !String(r[2] || "").trim()
+    );
+  };
+
+  const rowMatches = (r, { allowCodeFallbackToName = false, effectiveClient = "" } = {}) => {
+    if (isBlankRow(r)) return false;
+    const rClient = String(r[0] || "").trim().toLowerCase();
+    const rJob = String(r[1] || "").trim().toLowerCase();
+    const rCode = String(r[2] || "").trim().toLowerCase();
+    if (cleanCode && rCode) return rCode === cleanCode;
+    if (cleanCode && !rCode && !allowCodeFallbackToName) return false;
+    if (normJob) {
+      if (normClient) {
+        return rJob === normJob && (rClient === normClient || (!rClient && effectiveClient === normClient));
+      }
+      return rJob === normJob && !rClient;
+    }
+    if (normClient && !normJob) {
+      return rClient === normClient && !rJob;
+    }
+    if (!cleanCode && !normJob && !normClient) return true;
+    return false;
+  };
+
+  // Step 1: Verify optJobRow hint against row identity
+  if (Number.isInteger(optJobRow) && optJobRow >= minJobRow && optJobRow <= tabRows.length) {
+    const row = tabRows[optJobRow - 1] || [];
+    let effectiveClient = "";
+    if (normClient && !String(row[0] || "").trim()) {
+      for (let k = optJobRow - 2; k >= minJobRow - 1; k--) {
+        const c = String(tabRows[k]?.[0] || "").trim();
+        if (c) {
+          effectiveClient = c.toLowerCase();
+          break;
+        }
+      }
+    }
+    if (rowMatches(row, { allowCodeFallbackToName: true, effectiveClient })) {
+      return optJobRow - 1;
+    }
+  }
+
+  // Step 2: Full-tab Pass 1 — exact project code
+  if (cleanCode) {
+    for (let i = minJobRow - 1; i < tabRows.length; i++) {
+      const rCode = String(tabRows[i]?.[2] || "").trim().toLowerCase();
+      if (rCode === cleanCode) return i;
+    }
+  }
+
+  // Step 3: Full-tab Pass 2 — trimmed client + job name
+  if (normJob || normClient) {
+    let lastSeenClient = "";
+    for (let i = minJobRow - 1; i < tabRows.length; i++) {
+      const r = tabRows[i] || [];
+      const rClientRaw = String(r[0] || "").trim();
+      if (rClientRaw) lastSeenClient = rClientRaw.toLowerCase();
+      if (rowMatches(r, { allowCodeFallbackToName: true, effectiveClient: lastSeenClient })) {
+        return i;
+      }
+    }
+    if (normJob && !normClient) {
+      const jobOnlyMatches = [];
+      for (let i = minJobRow - 1; i < tabRows.length; i++) {
+        if (String(tabRows[i]?.[1] || "").trim().toLowerCase() === normJob) {
+          jobOnlyMatches.push(i);
+        }
+      }
+      if (jobOnlyMatches.length === 1) return jobOnlyMatches[0];
+    }
+    if (normJob && normClient && normTenant && normClient === normTenant) {
+      const blankClientMatches = [];
+      for (let i = minJobRow - 1; i < tabRows.length; i++) {
+        const r = tabRows[i] || [];
+        if (!String(r[0] || "").trim() && String(r[1] || "").trim().toLowerCase() === normJob) {
+          blankClientMatches.push(i);
+        }
+      }
+      if (blankClientMatches.length === 1) return blankClientMatches[0];
+    }
+  }
+
+  return -1;
+}
+
 export async function handleAcceptOption(req, res, sheets, sessionUserArg = null) {
   const { alert, option, automationCommanderSheetId } = req.body;
 
@@ -9274,30 +9410,85 @@ export async function handleAcceptOption(req, res, sheets, sessionUserArg = null
 
     // ── DELETE - blank all cells for the job in Pipeline/Confirmed tab ──
     if (option.matchType === "delete") {
-      const tabName = (alert.mode === "Pipeline" || alert.alertType === "crmPipeAppDiscr") ? "Pipeline" : "Confirmed";
+      const isPipelineDelete =
+        alert.mode === "Pipeline" ||
+        alert.alertType === "crmPipeAppDiscr" ||
+        alert.flagType === "crmPipeAppDiscr" ||
+        alert.alertType === "crmPipeDashDiscr" ||
+        alert.flagType === "crmPipeDashDiscr";
+      const tabName = isPipelineDelete ? "Pipeline" : "Confirmed";
       const minJobRow = 2;
-      const jobRowNum = parseInt(option.jobRow, 10);
-      if (!jobRowNum || isNaN(jobRowNum) || jobRowNum < minJobRow) {
-        return res.status(400).json({ success: false, error: "Cannot delete: invalid job row number" });
+      const optJobRow = parseInt(option.jobRow, 10);
+      const sheetData = Array.isArray(alert.data?.sheetData) ? alert.data.sheetData : [];
+      const isDashDiscr = String(alert.alertType || alert.flagType || "").endsWith("DashDiscr");
+      const targetClient = String(
+        option.clientName ||
+        option.matchingDetails?.unmatchedJobSummary?.clientName ||
+        (isDashDiscr ? sheetData[1] : sheetData[0]) ||
+        ""
+      ).trim();
+      const targetJob = String(
+        option.jobName ||
+        option.matchingDetails?.unmatchedJobSummary?.jobName ||
+        (isDashDiscr ? sheetData[2] : sheetData[1]) ||
+        ""
+      ).trim();
+      const targetCode = String(
+        option.matchingDetails?.unmatchedJobSummary?.projectCode ||
+        (isDashDiscr ? sheetData[0] : sheetData[2]) ||
+        ""
+      ).trim();
+
+      const tabResp = await sheets.spreadsheets.values.get({
+        spreadsheetId: alert.clientId,
+        range: `${tabName}!A1:AM5000`,
+        valueRenderOption: "UNFORMATTED_VALUE",
+      });
+      const tabRows = tabResp.data.values || [];
+      const parentRowIdx = resolveVerifiedDeleteParentRowIdx_(tabRows, {
+        optJobRow,
+        targetCode,
+        targetClient,
+        targetJob,
+        tenantName: alert.clientName || "",
+        minJobRow,
+      });
+
+      if (parentRowIdx === -1) {
+        return res.status(404).json({
+          success: false,
+          error: `Job "${option.jobName || targetCode || "Job"}" was not found in ${tabName} tab — it may have already been deleted or moved.`,
+        });
       }
 
-      console.log(`  → Deleting job row(s) from ${tabName} tab, starting at row ${jobRowNum}`);
-      const tabResp = await sheets.spreadsheets.values.batchGet({
-        spreadsheetId: alert.clientId,
-        ranges: [`${tabName}!A1:M1`, `${tabName}!A${jobRowNum}:CR${jobRowNum + 50}`],
-      });
-      const headerRow = tabResp.data.valueRanges?.[0]?.values?.[0] || [];
-      const tabRows = tabResp.data.valueRanges?.[1]?.values || [];
-      const isJobCosting = isJobCostingStyle({ headers: headerRow });
+      const jobRowNum = parentRowIdx + 1;
+      if (!isNaN(optJobRow) && optJobRow !== jobRowNum) {
+        console.log(`  ↪ Stale option.jobRow ${optJobRow} did not match "${targetJob || targetCode}"; verified at ${tabName} row ${jobRowNum}`);
+      } else {
+        console.log(`  → Deleting job row(s) from ${tabName} tab, starting at row ${jobRowNum}`);
+      }
 
-      // Collect parent row + contiguous child rows (blank client/job)
+      const isJobCosting = isJobCostingStyle({ headers: tabRows[0] || [] });
+      const parentRowArr = tabRows[parentRowIdx] || [];
+      const parentClientLower = String(parentRowArr[0] || "").trim().toLowerCase();
+      const parentJobLower = String(parentRowArr[1] || "").trim().toLowerCase();
+
+      // Collect parent row + contiguous child rows
       const rowsToClear = [jobRowNum];
-      for (let ri = 1; ri < tabRows.length; ri++) {
+      for (let ri = parentRowIdx + 1; ri < tabRows.length; ri++) {
         const r = tabRows[ri] || [];
+        const rc = String(r[0] || "").trim().toLowerCase();
+        const rj = String(r[1] || "").trim().toLowerCase();
         const hasContent = r.some(c => String(c || "").trim() !== "");
-        const isChild = !r[0] && !r[1] && hasContent;
+        const isChild =
+          (!rc && !rj && hasContent) ||
+          (parentClientLower && rc === parentClientLower && rj === parentJobLower);
         if (!isChild) break;
-        rowsToClear.push(jobRowNum + ri);
+        if (!r[32] && !(tabName === "Confirmed" && r[17]) && !r[33] && !r[37]) {
+          rowsToClear.push(ri + 1);
+        } else {
+          break;
+        }
       }
       console.log(`  Clearing ${rowsToClear.length} rows: ${rowsToClear.join(", ")}`);
 
@@ -10761,7 +10952,13 @@ export async function handleAcceptOption(req, res, sheets, sessionUserArg = null
               console.log(`\n🗑️ DELETE_JOB for ${alert.clientName}: ${option.jobName}`);
               const sheets = await getSheetsClient();
 
-              const tabName = (alert.alertType || alert.flagType || "") === "crmPipeAppDiscr" ? "Pipeline" : "Confirmed";
+              const isPipelineDelete =
+                alert.mode === "Pipeline" ||
+                alert.alertType === "crmPipeAppDiscr" ||
+                alert.flagType === "crmPipeAppDiscr" ||
+                alert.alertType === "crmPipeDashDiscr" ||
+                alert.flagType === "crmPipeDashDiscr";
+              const tabName = isPipelineDelete ? "Pipeline" : "Confirmed";
               const clientSheetId = alert.clientId;
 
               if (!clientSheetId) {
@@ -10769,58 +10966,65 @@ export async function handleAcceptOption(req, res, sheets, sessionUserArg = null
                 return res.status(400).json({ success: false, error: "Cannot delete: clientSheetId missing from alert - please re-analyse this alert and try again." });
               }
 
-              // Only read cols A:B (client, job), R (recharged), AG (revenue), AH (direct costs), AL (start date - to identify parent vs child)
-              // This is much faster than reading A1:CR2000
+              // Read A1:AM5000 so rows beyond 2000 and moved rows are always found reliably
               const tabResp = await sheets.spreadsheets.values.get({
                 spreadsheetId: clientSheetId,
-                range: `${tabName}!A1:AM2000`,
+                range: `${tabName}!A1:AM5000`,
                 valueRenderOption: "UNFORMATTED_VALUE",
               });
               const tabRows = tabResp.data.values || [];
               console.log(`  Tab read complete, ${tabRows.length} rows`);
 
-              const targetClient = (option.clientName || option.matchingDetails?.unmatchedJobSummary?.clientName || "").trim().toLowerCase();
-              const targetJob = (option.jobName || "").trim().toLowerCase();
-              const targetCode = (option.matchingDetails?.unmatchedJobSummary?.projectCode || "").trim().toLowerCase();
+              const sheetData = Array.isArray(alert.data?.sheetData) ? alert.data.sheetData : [];
+              const isDashDiscr = String(alert.alertType || alert.flagType || "").endsWith("DashDiscr");
+              const targetClient = (
+                option.clientName ||
+                option.matchingDetails?.unmatchedJobSummary?.clientName ||
+                (isDashDiscr ? sheetData[1] : sheetData[0]) ||
+                ""
+              ).trim().toLowerCase();
+              const targetJob = (
+                option.jobName ||
+                option.matchingDetails?.unmatchedJobSummary?.jobName ||
+                (isDashDiscr ? sheetData[2] : sheetData[1]) ||
+                ""
+              ).trim().toLowerCase();
+              const targetCode = (
+                option.matchingDetails?.unmatchedJobSummary?.projectCode ||
+                (isDashDiscr ? sheetData[0] : sheetData[2]) ||
+                ""
+              ).trim().toLowerCase();
 
-              // Pipeline / Confirmed tab: check option.jobRow first
               const minJobRow = 2;
               const optJobRow = parseInt(option.jobRow, 10);
-              let parentRowIdx = -1;
-              if (!isNaN(optJobRow) && optJobRow >= minJobRow && tabRows[optJobRow - 1]) {
-                parentRowIdx = optJobRow - 1;
-                console.log(`  Found parent directly from option.jobRow: ${optJobRow}`);
-              } else {
-                let lastSeenClient = "";
-                for (let i = minJobRow - 1; i < tabRows.length; i++) {
-                  const r = tabRows[i] || [];
-                  const rClientRaw = String(r[0] || "").trim();
-                  const rJob = String(r[1] || "").trim().toLowerCase();
-                  const rCode = String(r[2] || "").trim().toLowerCase();
-                  if (rClientRaw) lastSeenClient = rClientRaw.toLowerCase();
-                  const effectiveClient = rClientRaw ? rClientRaw.toLowerCase() : lastSeenClient;
-                  const clientMatch = effectiveClient === targetClient;
-                  const jobMatch = rJob === targetJob;
-                  const codeMatch = targetCode && rCode === targetCode;
-                  if ((codeMatch || (clientMatch && jobMatch))) {
-                    parentRowIdx = i;
-                    break;
-                  }
-                }
-              }
+              const parentRowIdx = resolveVerifiedDeleteParentRowIdx_(tabRows, {
+                optJobRow,
+                targetCode,
+                targetClient,
+                targetJob,
+                tenantName: alert.clientName || "",
+                minJobRow,
+              });
 
               if (parentRowIdx === -1) {
                 const sample = tabRows.slice(1, 4).map(r => `"${r[0] || ""}/${r[1] || ""}"`).join(", ");
                 return res.status(404).json({
                   success: false,
-                  error: `Job "${option.jobName}" not found in ${tabName} tab - client name or job name may not match exactly. Nearby rows: ${sample}`,
+                  error: `Job "${option.jobName || targetCode || "Job"}" not found in ${tabName} tab - it may have already been deleted or moved. Nearby rows: ${sample}`,
                 });
               }
 
               const parentSheetRow = parentRowIdx + 1;
-              console.log(`  Found parent at row ${parentSheetRow}`);
+              if (!isNaN(optJobRow) && optJobRow !== parentSheetRow) {
+                console.log(`  ↪ Stale option.jobRow ${optJobRow} did not match "${option.jobName || targetCode}"; resolved via full-tab search to row ${parentSheetRow}`);
+              } else {
+                console.log(`  Found verified parent at row ${parentSheetRow}`);
+              }
 
-              // Collect child rows: same client + job, no revenue (32), no recharged expenses (17 on Confirmed), no direct costs (33), no start date (37)
+              // Collect child rows using verified parent row's actual client + job
+              const parentRowArr = tabRows[parentRowIdx] || [];
+              const parentClient = String(parentRowArr[0] || "").trim().toLowerCase();
+              const parentJob = String(parentRowArr[1] || "").trim().toLowerCase();
               const rowsToBlank = [parentRowIdx];
               let ci = parentRowIdx + 1;
               while (ci < tabRows.length) {
@@ -10828,7 +11032,7 @@ export async function handleAcceptOption(req, res, sheets, sessionUserArg = null
                 const nc = String(next[0] || "").trim().toLowerCase();
                 const nj = String(next[1] || "").trim().toLowerCase();
                 const hasContent = next.some(c => String(c || "").trim() !== "");
-                const isChild = (!nc && !nj && hasContent) || (targetClient && nc === targetClient && nj === targetJob);
+                const isChild = (!nc && !nj && hasContent) || (parentClient && nc === parentClient && nj === parentJob);
                 if (isChild && !next[32] && !(tabName === "Confirmed" && next[17]) && !next[33] && !next[37]) {
                   rowsToBlank.push(ci);
                   ci++;
@@ -10923,7 +11127,8 @@ export async function handleAcceptOption(req, res, sheets, sessionUserArg = null
                   jobName: option.jobName,
                   tabName,
                   clientName: alert.clientName,
-                  rowsBlanked: rowsToBlank.length
+                  rowsBlanked: rowsToBlank.length,
+                  rowsBlank: rowNumsToClear,
                 }
               }).catch(e => console.error("PMA log failed:", e));
 

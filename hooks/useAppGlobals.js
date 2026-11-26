@@ -803,3 +803,7 @@ export function useAppGlobals() {
   }
   return context;
 }
+
+export function useOptionalAppGlobals() {
+  return useContext(AppGlobalsContext) || {};
+}

@@ -1968,8 +1968,60 @@ export async function handleChangeRetainerStartDate(req, res, sheets) {
   }
 }
 
+/**
+ * Evaluates whether "Change send dates" moved the overdue retainer send date(s) strictly into the future.
+ */
+export function evaluateRetainerSendDatesMovedIntoFuture(updatedSlotsMeta, expectedByDate, todayDate = new Date()) {
+  if (!Array.isArray(updatedSlotsMeta) || updatedSlotsMeta.length === 0) {
+    return { movedIntoFuture: false, updatedExpectedDate: null };
+  }
+  const todayStart = new Date(todayDate.getFullYear(), todayDate.getMonth(), todayDate.getDate());
+  const todayMs = todayStart.getTime();
+  const expDate = expectedByDate ? retParseSheetDate(expectedByDate) : null;
+
+  if (expDate) {
+    const expY = expDate.getFullYear();
+    const expM = expDate.getMonth();
+    const expD = expDate.getDate();
+
+    const matched =
+      updatedSlotsMeta.find(
+        (s) =>
+          s.prevDate &&
+          s.prevDate.getFullYear() === expY &&
+          s.prevDate.getMonth() === expM &&
+          s.prevDate.getDate() === expD
+      ) ||
+      updatedSlotsMeta.find(
+        (s) => s.prevDate && s.prevDate.getFullYear() === expY && s.prevDate.getMonth() === expM
+      ) ||
+      updatedSlotsMeta.find(
+        (s) => s.newDate && s.newDate.getFullYear() === expY && s.newDate.getMonth() === expM
+      );
+
+    if (matched) {
+      return {
+        movedIntoFuture: matched.newDate.getTime() > todayMs,
+        updatedExpectedDate: matched.formattedDate || null,
+      };
+    }
+  }
+
+  const overduePrevSlots = updatedSlotsMeta.filter((s) => {
+    if (!s.prevDate) return false;
+    const prevStart = new Date(s.prevDate.getFullYear(), s.prevDate.getMonth(), s.prevDate.getDate());
+    return prevStart.getTime() <= todayMs;
+  });
+  const targetSlots = overduePrevSlots.length > 0 ? overduePrevSlots : updatedSlotsMeta;
+
+  return {
+    movedIntoFuture: targetSlots.length > 0 && targetSlots.every((s) => s.newDate.getTime() > todayMs),
+    updatedExpectedDate: targetSlots[0]?.formattedDate || null,
+  };
+}
+
 export async function handleChangeRetainerSendDates(req, res, sheets) {
-  let { clientSheetId, masterSheetId, client, clientName, jobName, parentRowNum, newSendDay, applyTo = "placeholders" } = req.body;
+  let { clientSheetId, masterSheetId, client, clientName, jobName, parentRowNum, newSendDay, applyTo = "placeholders", expectedByDate } = req.body;
   if (!clientSheetId || !jobName || !parentRowNum || newSendDay === undefined || newSendDay === null) {
     return res.status(400).json({ success: false, error: "Missing required fields" });
   }
@@ -2035,6 +2087,7 @@ export async function handleChangeRetainerSendDates(req, res, sheets) {
 
     const batchData = [];
     const slotUpdates = [];
+    const updatedSlotsMeta = [];
     const rowsToProcess = childRows.length > 0 ? childRows : [{ rowNum: parentRowNum, row: parentRow }];
 
     for (let i = 0; i < rowsToProcess.length; i++) {
@@ -2048,6 +2101,8 @@ export async function handleChangeRetainerSendDates(req, res, sheets) {
         continue;
       }
 
+      const prevDate = retParseSheetDate(rowArr[43]);
+
       // Determine month and year for this slot
       let slotYear, slotMonth0;
       if (anchorChildIdx !== -1 && anchorMonthVal !== null && childRows.length > 0) {
@@ -2056,7 +2111,7 @@ export async function handleChangeRetainerSendDates(req, res, sheets) {
         slotYear = Math.floor(schedMonthVal / 12);
         slotMonth0 = ((schedMonthVal % 12) + 12) % 12;
       } else {
-        const rawDate = retParseSheetDate(rowArr[43]);
+        const rawDate = prevDate;
         if (rawDate) {
           slotYear = rawDate.getFullYear();
           slotMonth0 = rawDate.getMonth();
@@ -2083,6 +2138,13 @@ export async function handleChangeRetainerSendDates(req, res, sheets) {
         slotNum: 1,
         sentDate: formattedDate,
       });
+      updatedSlotsMeta.push({
+        rowNum: rNum,
+        prevDate,
+        newDate,
+        formattedDate,
+        isPlaceholder,
+      });
     }
 
     if (batchData.length > 0) {
@@ -2091,6 +2153,11 @@ export async function handleChangeRetainerSendDates(req, res, sheets) {
         requestBody: { valueInputOption: "USER_ENTERED", data: batchData },
       });
     }
+
+    const { movedIntoFuture, updatedExpectedDate } = evaluateRetainerSendDatesMovedIntoFuture(
+      updatedSlotsMeta,
+      expectedByDate
+    );
 
     let tenantClient = req.body.clientName || "";
     if (!tenantClient) {
@@ -2105,12 +2172,12 @@ export async function handleChangeRetainerSendDates(req, res, sheets) {
       category: "RETAINER",
       action: "Retainer Send Dates Changed",
       summary: `Changed expected retainer invoice send dates for ${jobIdentifier} to day ${newSendDay} (${batchData.length} rows updated)`,
-      details: { jobName, endClient, clientName: tenantClient, newSendDay, applyTo, updatedCount: batchData.length }
+      details: { jobName, endClient, clientName: tenantClient, newSendDay, applyTo, updatedCount: batchData.length, movedIntoFuture, updatedExpectedDate }
     }).catch(e => console.error("PMA log failed:", e));
 
     await invalidatePmaClientCache(sheetIdClean, masterSheetId, ["jobs", "invoices", "retainers"]);
 
-    return res.status(200).json({ success: true, updatedCount: batchData.length, slotUpdates });
+    return res.status(200).json({ success: true, updatedCount: batchData.length, slotUpdates, movedIntoFuture, updatedExpectedDate });
   } catch (err) {
     console.error("❌ change_retainer_send_dates error:", err);
     return res.status(500).json({ success: false, error: err.message });

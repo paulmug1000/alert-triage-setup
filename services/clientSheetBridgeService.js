@@ -2006,11 +2006,18 @@ export async function setClientSheetBridgeMode(sheets, clientName, targetMode) {
   const supabase = getSupabaseAdmin();
   if (!supabase) throw new Error("Supabase is not configured.");
 
-  const { data: clientRow, error } = await supabase
+  let { data: clientRow, error } = await supabase
     .from("clients")
-    .select("id, client_name, client_mode, client_sheet_id, metadata")
+    .select("id, client_name, client_mode, client_compute_mode, client_sheet_id, metadata")
     .eq("client_name", clientName)
     .maybeSingle();
+  if (error && String(error.message || "").includes("client_compute_mode")) {
+    ({ data: clientRow, error } = await supabase
+      .from("clients")
+      .select("id, client_name, client_mode, client_sheet_id, metadata")
+      .eq("client_name", clientName)
+      .maybeSingle());
+  }
   if (error || !clientRow) throw new Error(`Client "${clientName}" not found.`);
 
   if (cleanMode !== "off") {
@@ -2025,7 +2032,17 @@ export async function setClientSheetBridgeMode(sheets, clientName, targetMode) {
       .select("id", { count: "exact", head: true })
       .eq("client_name", clientRow.client_name)
       .or("sheet_role.eq.client,and(sheet_role.eq.master,tab_name.like.Client::%)");
-    if (!clientTabCount) {
+    let effectiveClientTabCount = clientTabCount || 0;
+    if (!effectiveClientTabCount) {
+      const { count: blueprintTabCount } = await supabase
+        .from("pulse_client_tab_blueprints")
+        .select("id", { count: "exact", head: true })
+        .eq("client_id", clientRow.id)
+        .then((r) => r)
+        .catch(() => ({ count: 0 }));
+      effectiveClientTabCount = blueprintTabCount || 0;
+    }
+    if (!effectiveClientTabCount) {
       throw new Error(`Run "Push sheet data to Supabase" (Step 4) for "${clientName}" before enabling the Google Sheet bridge.`);
     }
 
@@ -2034,6 +2051,7 @@ export async function setClientSheetBridgeMode(sheets, clientName, targetMode) {
       clientName: clientRow.client_name,
       clientSheetId: clientRow.client_sheet_id,
       clientMode: clientRow.client_mode,
+      clientComputeMode: String(clientRow.client_compute_mode || clientRow.metadata?.client_compute_mode || "grid_gas").trim().toLowerCase(),
     };
     const existingBase = await loadBaselineRecord_(supabase, ctx);
     if (!existingBase.driveVersion || Object.keys(existingBase.tabs || {}).length === 0) {
@@ -2678,14 +2696,24 @@ export async function verifyBridgedClientsParity({
 
   let query = supabase
     .from("clients")
-    .select("id, client_name, status, master_mode, client_mode, jobs_mode, inputs_mode, client_sheet_id, master_sheet_id, metadata")
+    .select("id, client_name, status, master_mode, client_mode, jobs_mode, inputs_mode, client_compute_mode, master_compute_mode, client_sheet_id, master_sheet_id, metadata")
     .order("client_name", { ascending: true });
 
   if (clientName) {
     query = query.eq("client_name", String(clientName).trim());
   }
 
-  const { data: rows, error } = await query;
+  let { data: rows, error } = await query;
+  if (error && (String(error.message || "").includes("client_compute_mode") || String(error.message || "").includes("master_compute_mode"))) {
+    let fbQuery = supabase
+      .from("clients")
+      .select("id, client_name, status, master_mode, client_mode, jobs_mode, inputs_mode, client_sheet_id, master_sheet_id, metadata")
+      .order("client_name", { ascending: true });
+    if (clientName) {
+      fbQuery = fbQuery.eq("client_name", String(clientName).trim());
+    }
+    ({ data: rows, error } = await fbQuery);
+  }
   if (error) throw new Error(`Could not query clients: ${error.message}`);
 
   const targets = (rows || []).filter((c) => {
@@ -2716,6 +2744,8 @@ export async function verifyBridgedClientsParity({
           masterSheetId: c.master_sheet_id,
           clientMode: c.client_mode,
           masterMode: c.master_mode,
+          clientComputeMode: String(c.client_compute_mode || c.metadata?.client_compute_mode || "grid_gas").trim().toLowerCase(),
+          masterComputeMode: String(c.master_compute_mode || c.metadata?.master_compute_mode || "grid_gas").trim().toLowerCase(),
         };
 
         try {

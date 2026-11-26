@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import Spinner from "./Spinner";
 import DeferredSearchInput from "./DeferredSearchInput";
+import InvoiceDetailsModal from "./InvoiceDetailsModal";
 import { getStatusPill, sanitizeSpreadsheetTerms } from "../utils/helpers";
 
 const round2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
@@ -97,6 +98,32 @@ export default function AssignAccountingItemsModal({
   const [saving, setSaving] = useState(false);
   const [actionError, setActionError] = useState("");
   const [overrunPrompt, setOverrunPrompt] = useState(null);
+  const [viewingInvoiceDetails, setViewingInvoiceDetails] = useState(null);
+
+  const openInvoiceDetails = useCallback(
+    (item) => {
+      if (!item?.invoiceNo) return;
+      setViewingInvoiceDetails({
+        invoiceNo: item.invoiceNo,
+        clientSheetId,
+        masterSheetId,
+        clientName,
+        surface,
+        initialLineItems: Array.isArray(item.lineItems) ? item.lineItems : [],
+        fallbackSummary: {
+          client: item.client || item.contactName || "",
+          jobName: item.job || item.assignedJob?.jobName || targetJob?.jobName || "",
+          amount: item.amountOnJob ?? item.amount,
+          sentDate: item.sentDate || item.date || "",
+          dueDate: item.dueDate || "",
+          status: item.status || "",
+          currencyCode: item.currency || "GBP",
+          rechargedAmountGbp: item.detectedRechargedAmount || 0,
+        },
+      });
+    },
+    [clientSheetId, masterSheetId, clientName, surface, targetJob?.jobName]
+  );
 
   const mountedRef = useRef(true);
   useEffect(() => {
@@ -692,6 +719,29 @@ export default function AssignAccountingItemsModal({
           >
             {item.status}
           </span>
+        )}
+
+        {isInvoice && item.invoiceNo && (
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              openInvoiceDetails(item);
+            }}
+            style={{
+              padding: "2px 7px",
+              borderRadius: "5px",
+              border: "1px solid #cbd5e1",
+              background: "#ffffff",
+              color: "#475569",
+              fontSize: "10.5px",
+              fontWeight: 600,
+              cursor: "pointer",
+              whiteSpace: "nowrap",
+            }}
+          >
+            View details
+          </button>
         )}
 
         {!isInvoice && item.expenseCategoryType && (
@@ -1507,6 +1557,16 @@ export default function AssignAccountingItemsModal({
           </div>
         </div>
       </div>
+
+      {viewingInvoiceDetails && (
+        <InvoiceDetailsModal
+          isOpen={Boolean(viewingInvoiceDetails)}
+          target={viewingInvoiceDetails}
+          surface={surface}
+          isAdmin={isAdmin}
+          onClose={() => setViewingInvoiceDetails(null)}
+        />
+      )}
     </div>
   );
 }

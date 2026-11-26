@@ -30,6 +30,7 @@ import {
   buildBaseRawMasterTabsFromBundle,
   buildMasterComparisonSeedGridsFromBundle,
   extractMasterSyncConfigFromGrids,
+  invalidateClientRelationalMasterCache,
 } from "./relationalMasterService.js";
 import {
   preloadClientRelationalInputsBundle,
@@ -329,16 +330,56 @@ export async function syncMasterContextGridsToConfig(ctxOrClientName, partialGri
     partialGrids.PLComp ||
     partialGrids.TimeComp
   ) {
-    const extracted = extractMasterSyncConfigFromGrids({
-      clientId: ctx.clientId,
-      clientName: ctx.clientName,
-      gridsByTab: partialGrids,
-    });
+    const needInvHalf = Boolean(partialGrids.InvAppList) !== Boolean(partialGrids.InvDashList);
+    const needJnlHalf = Boolean(partialGrids.JnlAppList) !== Boolean(partialGrids.DirDashList);
+    let existingCfg = null;
+    if (needInvHalf || needJnlHalf) {
+      const { data: exRow } = await supabase
+        .from("pulse_master_sync_configs")
+        .select("inv_app_list_meta, jnl_app_list_meta")
+        .eq("client_id", ctx.clientId)
+        .maybeSingle();
+      existingCfg = exRow || null;
+    }
+
+    const extracted = extractMasterSyncConfigFromGrids(ctx.clientId, ctx.clientName, partialGrids);
     if (partialGrids.CRMList) patch.crm_list_config = extracted.crm_list_config;
     if (partialGrids.CRMComp) patch.crm_comp_controls = extracted.crm_comp_controls;
-    if (partialGrids.InvAppList || partialGrids.InvDashList) patch.inv_app_list_meta = extracted.inv_app_list_meta;
+    if (partialGrids.InvAppList && partialGrids.InvDashList) {
+      patch.inv_app_list_meta = extracted.inv_app_list_meta;
+    } else if (partialGrids.InvAppList) {
+      const prev = existingCfg?.inv_app_list_meta || {};
+      patch.inv_app_list_meta = {
+        ...extracted.inv_app_list_meta,
+        dashRowCount: prev.dashRowCount || 0,
+        dashHeaderRows: prev.dashHeaderRows || [],
+      };
+    } else if (partialGrids.InvDashList) {
+      const prev = existingCfg?.inv_app_list_meta || {};
+      patch.inv_app_list_meta = {
+        ...prev,
+        dashRowCount: extracted.inv_app_list_meta.dashRowCount,
+        dashHeaderRows: extracted.inv_app_list_meta.dashHeaderRows,
+      };
+    }
     if (partialGrids.InvComp) patch.inv_comp_controls = extracted.inv_comp_controls;
-    if (partialGrids.JnlAppList || partialGrids.DirDashList) patch.jnl_app_list_meta = extracted.jnl_app_list_meta;
+    if (partialGrids.JnlAppList && partialGrids.DirDashList) {
+      patch.jnl_app_list_meta = extracted.jnl_app_list_meta;
+    } else if (partialGrids.JnlAppList) {
+      const prev = existingCfg?.jnl_app_list_meta || {};
+      patch.jnl_app_list_meta = {
+        ...extracted.jnl_app_list_meta,
+        dashRowCount: prev.dashRowCount || 0,
+        dashHeaderRows: prev.dashHeaderRows || [],
+      };
+    } else if (partialGrids.DirDashList) {
+      const prev = existingCfg?.jnl_app_list_meta || {};
+      patch.jnl_app_list_meta = {
+        ...prev,
+        dashRowCount: extracted.jnl_app_list_meta.dashRowCount,
+        dashHeaderRows: extracted.jnl_app_list_meta.dashHeaderRows,
+      };
+    }
     if (partialGrids.DirComp) patch.dir_comp_controls = extracted.dir_comp_controls;
     if (partialGrids.PLComp) patch.pl_comp_meta = extracted.pl_comp_meta;
     if (partialGrids.TimeComp) patch.time_comp_controls = extracted.time_comp_controls;
@@ -350,6 +391,7 @@ export async function syncMasterContextGridsToConfig(ctxOrClientName, partialGri
   if (error) {
     throw new Error(`syncMasterContextGridsToConfig failed (${ctx.clientName}): ${error.message}`);
   }
+  invalidateClientRelationalMasterCache(ctx.clientName);
   invalidateClientNativeMasterCompCache(ctx.clientName);
   return patch;
 }
@@ -828,6 +870,7 @@ export async function verifyNativeMasterComparisonParity({
   clientName = null,
   source = "auto",
   onlyActiveOrShadow = false,
+  compareFrozenGrids = false,
 } = {}) {
   const supabase = getSupabaseAdmin();
   if (!supabase) throw new Error("Supabase is not configured.");
@@ -850,6 +893,7 @@ export async function verifyNativeMasterComparisonParity({
       const ctx = {
         clientId: cl.id,
         clientName: cl.client_name,
+        masterComputeMode: mode,
         reconSheetId: cl.recon_sheet_id || `sb-recon-${String(cl.client_name).toLowerCase()}`,
       };
       const canUseDb =
@@ -858,10 +902,31 @@ export async function verifyNativeMasterComparisonParity({
           (source === "auto" && Boolean(cl.metadata?.native_master_comp_state?.lastBackfilledAt)));
       const effectiveSource = canUseDb ? "db" : "in_memory";
 
-      const [legacyGrids, nativeRes] = await Promise.all([
-        evaluateFreshLegacyMasterComparisons_(supabase, ctx),
-        evaluateNativeMasterComparisonsInMemory(ctx, { source: effectiveSource }),
-      ]);
+      let legacyGrids = null;
+      let nativeRes = null;
+      if (mode === "native" && effectiveSource === "db" && !compareFrozenGrids) {
+        const [{ data: compRows, error: compErr }, freshNative] = await Promise.all([
+          supabase
+            .from("pulse_master_comparisons")
+            .select("comparison_type, rows_grid")
+            .eq("client_id", ctx.clientId),
+          evaluateNativeMasterComparisonsInMemory(ctx, { source: "db" }),
+        ]);
+        if (compErr) throw new Error(`Failed loading pulse_master_comparisons: ${compErr.message}`);
+        legacyGrids = {};
+        for (const [tabName, cType] of Object.entries(MASTER_COMP_TYPE_BY_TAB)) {
+          const hit = (compRows || []).find((r) => r.comparison_type === cType);
+          legacyGrids[tabName] = Array.isArray(hit?.rows_grid) ? hit.rows_grid : [];
+        }
+        nativeRes = freshNative;
+      } else {
+        const [frozenLegacy, freshNative] = await Promise.all([
+          evaluateFreshLegacyMasterComparisons_(supabase, ctx),
+          evaluateNativeMasterComparisonsInMemory(ctx, { source: effectiveSource }),
+        ]);
+        legacyGrids = frozenLegacy;
+        nativeRes = freshNative;
+      }
 
       let totalMismatchCount = 0;
       const sampleMismatches = [];

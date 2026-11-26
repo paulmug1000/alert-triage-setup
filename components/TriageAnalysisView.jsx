@@ -13,6 +13,7 @@ import JobDetailModal from "./JobDetailModal";
 import OutgoingsDetailModal from "./OutgoingsDetailModal";
 import InvoicesNewJobModal from "./InvoicesNewJobModal";
 import PlaceInvoiceModal from "./PlaceInvoiceModal";
+import InvoiceDetailsModal from "./InvoiceDetailsModal";
 
 export default function TriageAnalysisView({
   styles, setScreen, getFlagName, setActiveNav, handleNavTasks,
@@ -50,6 +51,7 @@ export default function TriageAnalysisView({
   const [confirmJobModal, setConfirmJobModal] = useState(null);
   const [viewingJobTarget, setViewingJobTarget] = useState(null);
   const [viewingOutgoingsTarget, setViewingOutgoingsTarget] = useState(null);
+  const [viewingInvoiceDetails, setViewingInvoiceDetails] = useState(null);
   const [isSavingPlacement, setIsSavingPlacement] = useState(false);
   const [outgoingsOptionPrompt, setOutgoingsOptionPrompt] = useState(null);
   const [isCheckingCell, setIsCheckingCell] = useState(false);
@@ -831,7 +833,47 @@ export default function TriageAnalysisView({
               ) : (
                 // Invoice display
                 <>
-                  <div><strong>Invoice:</strong> {alert.summary.invoiceNo}</div>
+                  <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
+                    <span><strong>Invoice:</strong> {alert.summary.invoiceNo}</span>
+                    {alert.summary?.invoiceNo && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setViewingInvoiceDetails({
+                            invoiceNo: alert.summary.invoiceNo,
+                            masterSheetId: clientInfo?.masterSheetId || selectedClient?.masterSheetId || "",
+                            clientSheetId: targetClientSheetId,
+                            clientName: selectedClient?.clientName || clientInfo?.clientName || "",
+                            initialLineItems: Array.isArray(alert.summary?.lineItems)
+                              ? alert.summary.lineItems
+                              : (Array.isArray(alert.invoiceLineItems) ? alert.invoiceLineItems : []),
+                            fallbackSummary: {
+                              client: alert.summary.client || "",
+                              jobName: alert.summary.job || "",
+                              amount: alert.summary.amount,
+                              vatAmount: alert.summary.vatIncluded,
+                              sentDate: alert.summary.sentDate || "",
+                              status: alert.summary.status || "",
+                              rechargedAmountGbp: Number(alert.summary.rechargedAmount || alert.detectedRechargedAmount || 0),
+                            },
+                          });
+                        }}
+                        style={{
+                          padding: "2px 8px",
+                          borderRadius: "5px",
+                          border: "1px solid #cbd5e1",
+                          background: "#ffffff",
+                          color: "#475569",
+                          fontSize: "11px",
+                          fontWeight: "600",
+                          cursor: "pointer",
+                          whiteSpace: "nowrap",
+                        }}
+                      >
+                        View details
+                      </button>
+                    )}
+                  </div>
                   <div><strong>Amount:</strong> £{alert.summary.amount.toFixed(2)}{alert.summary.vatIncluded && alert.summary.vatIncluded > 0 ? " +VAT" : " (no VAT)"}</div>
                   {(alert.summary.rechargedAmount > 0 || alert.detectedRechargedAmount > 0) && (
                     <div>
@@ -2888,6 +2930,16 @@ export default function TriageAnalysisView({
               }
             }}
             isAdmin={isAdmin}
+          />
+        )}
+
+        {viewingInvoiceDetails && (
+          <InvoiceDetailsModal
+            isOpen={Boolean(viewingInvoiceDetails)}
+            target={viewingInvoiceDetails}
+            surface="pma"
+            isAdmin={isAdmin}
+            onClose={() => setViewingInvoiceDetails(null)}
           />
         )}
       </div>

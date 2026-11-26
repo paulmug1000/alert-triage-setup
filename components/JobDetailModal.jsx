@@ -5,6 +5,7 @@ import UnevenSplitModal from "./UnevenSplitModal";
 import InvoicesEditModal from "./InvoicesEditModal";
 import DirectCostsEditModal from "./DirectCostsEditModal";
 import AssignAccountingItemsModal from "./AssignAccountingItemsModal";
+import InvoiceDetailsModal from "./InvoiceDetailsModal";
 import RetainerChangeSendDatesModal from "./RetainerChangeSendDatesModal";
 import InvoiceCostMonthControl from "./InvoiceCostMonthControl";
 import { extractSplitMonths } from "../services/splitHelper";
@@ -203,6 +204,7 @@ export default function JobDetailModal({
   const [invoicesEditSlot, setInvoicesEditSlot] = useState(null);
   const [directCostsEditSlot, setDirectCostsEditSlot] = useState(null);
   const [assignModalType, setAssignModalType] = useState(null);
+  const [viewingInvoiceDetails, setViewingInvoiceDetails] = useState(null);
   const [jobsEditSplit, setJobsEditSplit] = useState(null);
   const [cellNoteModalConfig, setCellNoteModalConfig] = useState(null);
   const [retainerChangeSendDates, setRetainerChangeSendDates] = useState(null);
@@ -232,33 +234,72 @@ export default function JobDetailModal({
       target?.endClientName
     ].filter(Boolean);
 
+    let matched = null;
+    let matchedKeyName = "";
     if (activeClientsMap && Object.keys(activeClientsMap).length > 0) {
       for (const name of candidateNames) {
         const trimmed = String(name).trim();
-        const matched = activeClientsMap[trimmed] || Object.values(activeClientsMap).find((c) => c.clientName?.toLowerCase() === trimmed.toLowerCase());
-        if (matched) {
-          // Guard: If clientSheetId was erroneously populated with the Master Sheet ID, correct it to the actual Client Sheet ID
-          if (matched.masterSheetId && clientSheetId === matched.masterSheetId && matched.clientSheetId) {
-            clientSheetId = matched.clientSheetId;
-          }
-          if (!clientSheetId) {
-            clientSheetId = matched.clientSheetId || matched.sheetId || null;
-          }
-          const cleanClientObj = Object.fromEntries(
-            Object.entries(client || {}).filter(([, v]) => v !== undefined)
-          );
-          client = {
-            ...(matched || {}),
-            ...cleanClientObj,
-            clientSheetId,
-            clientName: matched.clientName || trimmed,
-            splitEnabled: client?.splitEnabled !== undefined ? client.splitEnabled : matched?.splitEnabled,
-          };
+        const trimmedLower = trimmed.toLowerCase();
+        if (activeClientsMap[trimmed]) {
+          matched = activeClientsMap[trimmed];
+          matchedKeyName = matched.clientName || trimmed;
           break;
         }
+        for (const [k, v] of Object.entries(activeClientsMap)) {
+          if (!v || typeof v !== "object") continue;
+          const vNameLower = String(v.clientName || k || "").trim().toLowerCase();
+          if (vNameLower === trimmedLower || String(k).trim().toLowerCase() === trimmedLower) {
+            matched = v;
+            matchedKeyName = v.clientName || k;
+            break;
+          }
+        }
+        if (matched) break;
       }
-    } else if (clientSheetId) {
-      client.clientSheetId = clientSheetId;
+
+      if (!matched && clientSheetId) {
+        for (const [k, v] of Object.entries(activeClientsMap)) {
+          if (!v || typeof v !== "object") continue;
+          if (v.clientSheetId === clientSheetId || v.sheetId === clientSheetId) {
+            matched = v;
+            matchedKeyName = v.clientName || k;
+            break;
+          }
+        }
+      }
+
+      if (matched) {
+        // Guard: If clientSheetId was erroneously populated with the Master Sheet ID, correct it to the actual Client Sheet ID
+        if (matched.masterSheetId && clientSheetId === matched.masterSheetId && matched.clientSheetId) {
+          clientSheetId = matched.clientSheetId;
+        }
+        if (!clientSheetId) {
+          clientSheetId = matched.clientSheetId || matched.sheetId || null;
+        }
+        const cleanClientObj = Object.fromEntries(
+          Object.entries(client || {}).filter(([, v]) => v !== undefined && v !== null && v !== "")
+        );
+        const resolvedMasterSheetId =
+          cleanClientObj.masterSheetId ||
+          target?.masterSheetId ||
+          matched.masterSheetId ||
+          "";
+        client = {
+          ...matched,
+          ...cleanClientObj,
+          clientSheetId,
+          masterSheetId: resolvedMasterSheetId,
+          clientName: cleanClientObj.clientName || matchedKeyName || matched.clientName || "",
+          splitEnabled: client?.splitEnabled !== undefined ? client.splitEnabled : matched?.splitEnabled,
+        };
+      }
+    }
+
+    if (!matched && (clientSheetId || target?.masterSheetId)) {
+      if (clientSheetId) client.clientSheetId = clientSheetId;
+      if (!client.masterSheetId && target?.masterSheetId) {
+        client.masterSheetId = target.masterSheetId;
+      }
       if (!client.clientName && target?.clientName) {
         client.clientName = target.clientName;
       }
@@ -486,13 +527,13 @@ export default function JobDetailModal({
   // Close on Escape key if no sub-modal is open
   useEffect(() => {
     const handleKeyDown = (e) => {
-      if (e.key === "Escape" && isOpen && !invoicesEditSlot && !directCostsEditSlot && !jobsEditSplit && !assignModalType) {
+      if (e.key === "Escape" && isOpen && !invoicesEditSlot && !directCostsEditSlot && !jobsEditSplit && !assignModalType && !viewingInvoiceDetails) {
         handleCloseModal();
       }
     };
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [isOpen, invoicesEditSlot, directCostsEditSlot, jobsEditSplit, assignModalType, handleCloseModal]);
+  }, [isOpen, invoicesEditSlot, directCostsEditSlot, jobsEditSplit, assignModalType, viewingInvoiceDetails, handleCloseModal]);
 
   // Initialize draft invoices from job.rows whenever job loads
   useEffect(() => {
@@ -1433,6 +1474,7 @@ export default function JobDetailModal({
           editSlot={invoicesEditSlot}
           invoicesClient={resolvedClientInfo.client || target.client}
           availableJobs={allJobs}
+          isAdmin={isAdmin}
           hasAccountingIntegration={
             hasAccountingIntegration ||
             Boolean(resolvedClientInfo?.client?.hasAccountingIntegration) ||
@@ -2719,7 +2761,7 @@ export default function JobDetailModal({
                                   onMouseLeave={(e) => { e.currentTarget.style.borderColor = "#bfdbfe"; e.currentTarget.style.background = "#ffffff"; }}
                                 >
                                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "6px" }}>
-                                    <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                                    <div style={{ display: "flex", alignItems: "center", gap: "6px", flexWrap: "wrap" }}>
                                       <span style={{ fontSize: "13px", fontWeight: "700", color: "#0047AB" }}>
                                         #{item.slot.ref}
                                       </span>
@@ -2736,6 +2778,37 @@ export default function JobDetailModal({
                                         <span style={{ fontSize: "10px", color: "#64748b" }}>
                                           ({getRetainerRowMonthLabel(item.row, 0, job)})
                                         </span>
+                                      )}
+                                      {item.slot?.ref && (
+                                        <button
+                                          type="button"
+                                          onClick={(e) => {
+                                            e.stopPropagation();
+                                            setViewingInvoiceDetails({
+                                              invoiceNo: item.slot.ref,
+                                              fallbackSummary: {
+                                                client: item.row?.client || parentRow.client || job.client,
+                                                jobName: item.row?.jobName || parentRow.jobName || job.jobName,
+                                                amount: item.totalAmount,
+                                                sentDate: item.receivedTranches?.[0]?.slot?.sentDate || item.slot?.sentDate || "",
+                                                status: item.isFullyPaid ? "Paid" : "Part-paid",
+                                              },
+                                            });
+                                          }}
+                                          style={{
+                                            padding: "2px 7px",
+                                            borderRadius: "5px",
+                                            border: "1px solid #cbd5e1",
+                                            background: "#ffffff",
+                                            color: "#475569",
+                                            fontSize: "10.5px",
+                                            fontWeight: "600",
+                                            cursor: "pointer",
+                                            whiteSpace: "nowrap",
+                                          }}
+                                        >
+                                          View details
+                                        </button>
                                       )}
                                     </div>
                                     <div style={{ fontSize: "13px", fontWeight: "700", color: "#0f172a" }}>
@@ -2843,7 +2916,7 @@ export default function JobDetailModal({
                                 onMouseLeave={(e) => { e.currentTarget.style.borderColor = "#e2e8f0"; e.currentTarget.style.background = "#ffffff"; }}
                               >
                                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "6px" }}>
-                                  <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                                  <div style={{ display: "flex", alignItems: "center", gap: "6px", flexWrap: "wrap" }}>
                                     {isPlaceholder ? (
                                       <PlaceholderPill isAuto={isAutoPlaceholder(slot.ref)} size="sm" />
                                     ) : slot.ref ? (
@@ -2867,6 +2940,40 @@ export default function JobDetailModal({
                                         <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
                                         <path d="M7 11V7a5 5 0 0 1 10 0v4" />
                                       </svg>
+                                    )}
+
+                                    {!isPlaceholder && slot.ref && String(slot.ref).trim() !== "" && (
+                                      <button
+                                        type="button"
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          setViewingInvoiceDetails({
+                                            invoiceNo: slot.ref,
+                                            fallbackSummary: {
+                                              client: item.row.client || parentRow.client || job.client,
+                                              jobName: item.row.jobName || parentRow.jobName || job.jobName,
+                                              amount: parseFloat(stripCurrency(slot.amount)) || 0,
+                                              sentDate: slot.sentDate || "",
+                                              dueDate: calculatePaymentDate(slot.sentDate, slot.daysToPay || 30) || "",
+                                              status: slot.status || "",
+                                              rechargedAmountGbp: parseFloat(stripCurrency(slot.ofWhichRechgd)) || 0,
+                                            },
+                                          });
+                                        }}
+                                        style={{
+                                          padding: "2px 7px",
+                                          borderRadius: "5px",
+                                          border: "1px solid #cbd5e1",
+                                          background: "#ffffff",
+                                          color: "#475569",
+                                          fontSize: "10.5px",
+                                          fontWeight: "600",
+                                          cursor: "pointer",
+                                          whiteSpace: "nowrap",
+                                        }}
+                                      >
+                                        View details
+                                      </button>
                                     )}
 
                                     <NoteIndicatorButton
@@ -3018,7 +3125,7 @@ export default function JobDetailModal({
                                 onMouseLeave={(e) => { e.currentTarget.style.borderColor = "#e2e8f0"; e.currentTarget.style.background = "#f8fafc"; }}
                               >
                                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                                  <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                                  <div style={{ display: "flex", alignItems: "center", gap: "6px", flexWrap: "wrap" }}>
                                     <span style={{ fontSize: "13px", fontWeight: "700", color: "#0047AB" }}>
                                       #{inv.ref}
                                     </span>
@@ -3032,6 +3139,41 @@ export default function JobDetailModal({
                                         <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
                                         <path d="M7 11V7a5 5 0 0 1 10 0v4" />
                                       </svg>
+                                    )}
+                                    {inv.ref && String(inv.ref).trim() !== "" && (
+                                      <button
+                                        type="button"
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          const parentRow = job.rows?.[0] || job;
+                                          const targetRow = (job.rows || []).find((r) => r.rowNum === inv.rowNum) || parentRow;
+                                          setViewingInvoiceDetails({
+                                            invoiceNo: inv.ref,
+                                            fallbackSummary: {
+                                              client: targetRow.client || parentRow.client || job.client,
+                                              jobName: targetRow.jobName || parentRow.jobName || job.jobName,
+                                              amount: parseFloat(stripCurrency(inv.amount)) || 0,
+                                              sentDate: inv.sentDate || "",
+                                              dueDate: calculatePaymentDate(inv.sentDate, inv.daysToPay || 30) || "",
+                                              status: inv.status || "",
+                                              rechargedAmountGbp: parseFloat(stripCurrency(inv.ofWhichRechgd)) || 0,
+                                            },
+                                          });
+                                        }}
+                                        style={{
+                                          padding: "2px 7px",
+                                          borderRadius: "5px",
+                                          border: "1px solid #cbd5e1",
+                                          background: "#ffffff",
+                                          color: "#475569",
+                                          fontSize: "10.5px",
+                                          fontWeight: "600",
+                                          cursor: "pointer",
+                                          whiteSpace: "nowrap",
+                                        }}
+                                      >
+                                        View details
+                                      </button>
                                     )}
                                   </div>
                                   <div style={{ textAlign: "right" }}>
@@ -3876,6 +4018,17 @@ export default function JobDetailModal({
             if (typeof onSaved === "function") onSaved({ rowNum: parentRow?.rowNum, subModalSaved: true });
             setReloadTrigger((t) => t + 1);
           }}
+        />
+      )}
+
+      {viewingInvoiceDetails && (
+        <InvoiceDetailsModal
+          isOpen={Boolean(viewingInvoiceDetails)}
+          target={viewingInvoiceDetails}
+          invoicesClient={resolvedClientInfo.client || target.client}
+          surface="pma"
+          isAdmin={isAdmin}
+          onClose={() => setViewingInvoiceDetails(null)}
         />
       )}
 

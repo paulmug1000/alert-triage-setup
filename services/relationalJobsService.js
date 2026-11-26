@@ -2150,16 +2150,28 @@ export async function verifyRelationalJobsParity({ clientName = null, source = "
   if (!supabase) throw new Error("Supabase is not configured.");
 
   const schema = await checkPhase2RelationalSchemaStatus();
-  const cols = schema.schemaReady ? "id, client_name, jobs_mode, metadata" : "id, client_name, metadata";
+  const cols = schema.schemaReady ? "id, client_name, jobs_mode, client_compute_mode, metadata" : "id, client_name, metadata";
   let query = supabase.from("clients").select(cols).order("client_name");
   if (clientName) query = query.eq("client_name", clientName);
-  const { data: clients, error } = await query;
+  let { data: clients, error } = await query;
+  if (error && String(error.message || "").includes("client_compute_mode")) {
+    let fbQuery = supabase
+      .from("clients")
+      .select(schema.schemaReady ? "id, client_name, jobs_mode, metadata" : "id, client_name, metadata")
+      .order("client_name");
+    if (clientName) fbQuery = fbQuery.eq("client_name", clientName);
+    ({ data: clients, error } = await fbQuery);
+  }
   if (error) throw new Error(`Failed loading clients: ${error.message}`);
 
   const results = [];
   for (const cl of clients || []) {
     try {
-      const ctx = { clientId: cl.id, clientName: cl.client_name };
+      const ctx = {
+        clientId: cl.id,
+        clientName: cl.client_name,
+        clientComputeMode: String(cl.client_compute_mode || cl.metadata?.client_compute_mode || "grid_gas").trim().toLowerCase(),
+      };
       const [confGrid, pipeGrid] = await Promise.all([
         getOrLoadVirtualTabGrid_(ctx, "client", "Confirmed", null, { includeNotes: true }),
         getOrLoadVirtualTabGrid_(ctx, "client", "Pipeline", null, { includeNotes: true }),

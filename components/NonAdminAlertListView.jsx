@@ -64,6 +64,7 @@ export default function NonAdminAlertListView({
   freqLabel,
   totalVisibleAlertsCount,
   onViewJob,
+  onViewInvoiceDetails,
   onDeleteInvoice,
   onDeleteExpense,
   onTidyJobLayout,
@@ -811,7 +812,34 @@ export default function NonAdminAlertListView({
                                       Draft invoice found nearby
                                     </div>
                                   )}
-                                  <div><strong>{effectiveMatchCase === "draft" ? "DRAFT invoice found:" : "Invoice found:"}</strong> #{possibleMatchInvoiceNo} for £{parseFloat(possibleMatchAmount || 0).toFixed(2)}, sent {possibleMatchSentDate}</div>
+                                  <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
+                                    <span><strong>{effectiveMatchCase === "draft" ? "DRAFT invoice found:" : "Invoice found:"}</strong> #{possibleMatchInvoiceNo} for £{parseFloat(possibleMatchAmount || 0).toFixed(2)}, sent {possibleMatchSentDate}</span>
+                                    {typeof onViewInvoiceDetails === "function" && (
+                                      <button
+                                        type="button"
+                                        onClick={() => onViewInvoiceDetails(alert, possibleMatchInvoiceNo, {
+                                          client: endClientName,
+                                          jobName,
+                                          amount: parseFloat(possibleMatchAmount || 0) || 0,
+                                          sentDate: possibleMatchSentDate || "",
+                                          status: effectiveMatchCase === "draft" ? "Draft" : "",
+                                        })}
+                                        style={{
+                                          padding: "1px 7px",
+                                          borderRadius: "5px",
+                                          border: "1px solid #cbd5e1",
+                                          background: "#ffffff",
+                                          color: "#475569",
+                                          fontSize: "10.5px",
+                                          fontWeight: "600",
+                                          cursor: "pointer",
+                                          whiteSpace: "nowrap",
+                                        }}
+                                      >
+                                        View details
+                                      </button>
+                                    )}
+                                  </div>
                                   <div>{possibleMatchConfirmedRow ? <>Already attached to a confirmed job</> : <>Not yet attached to any confirmed job</>}</div>
                                   {effectiveMatchCase === "changed" && <div style={{ marginTop: "4px" }}>This may mean the retainer value has changed.</div>}
                                   {effectiveMatchCase === "matches" && <div style={{ marginTop: "4px" }}>Matches the expected retainer amount.</div>}
@@ -1528,7 +1556,33 @@ export default function NonAdminAlertListView({
                               <div style={{ display: "inline-block", padding: "1px 8px", borderRadius: "4px", fontSize: "11px", fontWeight: "600", marginBottom: "4px", background: "#f0f9ff", color: "#0369a1", border: "1px solid #bae6fd", width: "fit-content" }}>
                                 {md.conflictType === "intra_run_oscillation" ? "Within-run oscillation" : "Multi-run flip-flop"}
                               </div>
-                              {md.invoiceNo && <div style={{ marginBottom: "2px" }}><strong>Invoice:</strong> {md.invoiceNo}</div>}
+                              {md.invoiceNo && (
+                                <div style={{ marginBottom: "2px", display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
+                                  <span><strong>Invoice:</strong> {md.invoiceNo}</span>
+                                  {typeof onViewInvoiceDetails === "function" && (
+                                    <button
+                                      type="button"
+                                      onClick={() => onViewInvoiceDetails(alert, md.invoiceNo, {
+                                        client: md.endClientName || alert.endClientName || "",
+                                        jobName: md.jobName || alert.jobName || "",
+                                      })}
+                                      style={{
+                                        padding: "1px 7px",
+                                        borderRadius: "5px",
+                                        border: "1px solid #cbd5e1",
+                                        background: "#ffffff",
+                                        color: "#475569",
+                                        fontSize: "10.5px",
+                                        fontWeight: "600",
+                                        cursor: "pointer",
+                                        whiteSpace: "nowrap",
+                                      }}
+                                    >
+                                      View details
+                                    </button>
+                                  )}
+                                </div>
+                              )}
                               {md.fieldName && <div style={{ marginBottom: "2px" }}><strong>Conflicting field:</strong> {md.fieldName}</div>}
                               {md.suggestion && (
                                 <div style={{ marginTop: "4px", color: "#0369a1", fontStyle: "italic" }}>
@@ -1599,7 +1653,35 @@ export default function NonAdminAlertListView({
                             <div style={{ fontSize: "12px", color: "#555", display: "flex", flexDirection: "column", gap: "3px", marginTop: "2px", marginBottom: "4px" }}>
                               {clientName && <div><strong>{isExp ? "Contractor:" : "End client:"}</strong> {clientName}</div>}
                               {jName && !isExp && <div><strong>Job:</strong> {jName}</div>}
-                              {ref && <div><strong>{isExp ? "Expense ID:" : "Invoice ref:"}</strong> {ref}</div>}
+                              {ref && (
+                                <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
+                                  <span><strong>{isExp ? "Expense ID:" : "Invoice ref:"}</strong> {ref}</span>
+                                  {!isExp && typeof onViewInvoiceDetails === "function" && (
+                                    <button
+                                      type="button"
+                                      onClick={() => onViewInvoiceDetails(alert, ref, {
+                                        client: clientName,
+                                        jobName: jName,
+                                        amount: !isNaN(parsedTotal) && parsedTotal > 0 ? parsedTotal : undefined,
+                                        sentDate: sendDate || "",
+                                      })}
+                                      style={{
+                                        padding: "1px 7px",
+                                        borderRadius: "5px",
+                                        border: "1px solid #cbd5e1",
+                                        background: "#ffffff",
+                                        color: "#475569",
+                                        fontSize: "10.5px",
+                                        fontWeight: "600",
+                                        cursor: "pointer",
+                                        whiteSpace: "nowrap",
+                                      }}
+                                    >
+                                      View details
+                                    </button>
+                                  )}
+                                </div>
+                              )}
                               {!isNaN(parsedTotal) && parsedTotal > 0 && (
                                 <div>
                                   <strong>{isExp ? "Total expense amount:" : "Total invoice amount:"}</strong>{" "}

@@ -33,6 +33,7 @@ export default function RetainerChangeSendDatesModal({
   const jobName = target.jobName || target.alert?.jobName || target.alert?.metadata?.jobName || "";
   const endClientName = target.endClientName || target.client || target.alert?.endClientName || target.alert?.metadata?.endClientName || "";
   const parentRowNum = target.confirmedRow || target.rowNum || target.alert?.confirmedRow || target.alert?.metadata?.confirmedRow;
+  const expectedByDate = target.alertMeta?.expectedByDate || target.alert?.expectedByDate || target.alert?.metadata?.expectedByDate || "";
 
   const handlePresetChange = (preset) => {
     setSendDay(preset);
@@ -67,7 +68,8 @@ export default function RetainerChangeSendDatesModal({
           jobName,
           parentRowNum,
           newSendDay: finalDay,
-          applyTo
+          applyTo,
+          expectedByDate
         })
       });
 

@@ -36,7 +36,7 @@ import {
 } from "../../services/systemConfig";
 import {
   handleGetAllClients, handleGetAssignedExpenses, handleMarkExpenseAssigned,
-  handlePruneAssignedExpenses, handleGetOutgoingsInbox, handleGetInvoicesInbox,
+  handlePruneAssignedExpenses, handleGetOutgoingsInbox, handleGetInvoicesInbox, handleGetInvoiceDetails,
   handleCreateOutgoingsVendor, handleUpdateOutgoingsVendor, handleGetOutgoings, handleGetDirectCostsJobs,
   handleGetInvoiceJobs, handleGetAllClientJobs, handleUpdateJobField, handleUpdateJobFields,
   handleAssignExpenseToJob, handleUpdateExpenseSlot, handleAssignInvoiceToJob,
@@ -401,6 +401,7 @@ export default async function handler(req, res) {
       "get_assigned_expenses",
       "get_outgoings_inbox",
       "get_invoices_inbox",
+      "get_invoice_details",
       "get_accounting_catalog",
       "get_outgoings",
       "get_direct_costs_jobs",
@@ -752,6 +753,8 @@ export default async function handler(req, res) {
       return await handleGetOutgoingsInbox(req, res, sheets);
     } else if (action === "get_invoices_inbox") {
       return await handleGetInvoicesInbox(req, res, sheets);
+    } else if (action === "get_invoice_details") {
+      return await handleGetInvoiceDetails(req, res, sheets);
     } else if (action === "create_outgoings_vendor") {
       return await handleCreateOutgoingsVendor(req, res, sheets);
     } else if (action === "update_outgoings_vendor") {

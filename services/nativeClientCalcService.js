@@ -1514,6 +1514,7 @@ export async function verifyNativeClientCalcParity({
   clientName = null,
   source = "auto",
   onlyActiveOrShadow = false,
+  compareFrozenGrids = false,
 } = {}) {
   const supabase = getSupabaseAdmin();
   if (!supabase) throw new Error("Supabase is not configured.");
@@ -1538,6 +1539,7 @@ export async function verifyNativeClientCalcParity({
       const ctx = {
         clientId: cl.id,
         clientName: cl.client_name,
+        clientComputeMode: mode,
         clientSheetId: cl.client_sheet_id,
         masterSheetId: cl.master_sheet_id,
         reconSheetId: cl.recon_sheet_id,
@@ -1547,39 +1549,72 @@ export async function verifyNativeClientCalcParity({
         (source === "db" ||
           (source === "auto" && Boolean(cl.metadata?.native_client_calc_state?.lastBackfilledAt)));
       const effectiveSource = canUseDb ? "db" : "in_memory";
-
-      const rawClientTabs = await loadRawClientTabsFromGrids_(supabase, cl.client_name, {
-        valuesOnly: false,
-      });
-      const legacyGrids = cloneFormulaEntryMap_(rawClientTabs);
-      const nativeRecords = await loadNativeClientTabRecordsBatch(ctx, CORE_CLIENT_TABS, {
-        source: effectiveSource,
-        valuesOnly: false,
-        includeNotes: true,
-        rawGridsOverride: effectiveSource === "in_memory" ? rawClientTabs : null,
-      });
-      const nativeGrids = cloneFormulaEntryMap_(nativeRecords);
-
-      const legacyPreserved = wipeFormulaValuesForRecompute_(legacyGrids);
-      const nativePreserved = wipeFormulaValuesForRecompute_(nativeGrids);
+      const usePersistedNativeRef = mode === "native" && effectiveSource === "db" && !compareFrozenGrids;
       const reconSource = cl.recon_read_mode === "relational" ? "db" : "in_memory";
-      const cashFormulaGrids = [
-        legacyGrids.Cash?.formulas || nativeGrids.Cash?.formulas || [],
-      ];
-      const reconGrids = await extractReferencedReconGrids_(ctx, cashFormulaGrids, {
-        source: reconSource,
-      });
 
-      recalculateClientGrids(legacyGrids, {
-        changedTabs: RECOMPUTE_CHANGED_ROOTS,
-        reconGrids,
-        preservedFormulaValues: legacyPreserved,
-      });
-      recalculateClientGrids(nativeGrids, {
-        changedTabs: RECOMPUTE_CHANGED_ROOTS,
-        reconGrids,
-        preservedFormulaValues: nativePreserved,
-      });
+      let legacyGrids = null;
+      let nativeGrids = null;
+
+      if (usePersistedNativeRef) {
+        const [persistedReadRecords, nativeRecords] = await Promise.all([
+          loadNativeClientTabRecordsBatch(ctx, COMPARE_CLIENT_CALC_TABS, {
+            source: "db",
+            valuesOnly: true,
+            includeNotes: true,
+          }),
+          loadNativeClientTabRecordsBatch(ctx, CORE_CLIENT_TABS, {
+            source: "db",
+            valuesOnly: false,
+            includeNotes: true,
+          }),
+        ]);
+        legacyGrids = cloneFormulaEntryMap_(persistedReadRecords);
+        nativeGrids = cloneFormulaEntryMap_(nativeRecords);
+
+        const nativePreserved = wipeFormulaValuesForRecompute_(nativeGrids);
+        const reconGrids = await extractReferencedReconGrids_(
+          ctx,
+          [nativeGrids.Cash?.formulas || []],
+          { source: reconSource }
+        );
+        recalculateClientGrids(nativeGrids, {
+          changedTabs: RECOMPUTE_CHANGED_ROOTS,
+          reconGrids,
+          preservedFormulaValues: nativePreserved,
+        });
+      } else {
+        const rawClientTabs = await loadRawClientTabsFromGrids_(supabase, cl.client_name, {
+          valuesOnly: false,
+        });
+        legacyGrids = cloneFormulaEntryMap_(rawClientTabs);
+        const nativeRecords = await loadNativeClientTabRecordsBatch(ctx, CORE_CLIENT_TABS, {
+          source: effectiveSource,
+          valuesOnly: false,
+          includeNotes: true,
+          rawGridsOverride: effectiveSource === "in_memory" ? rawClientTabs : null,
+        });
+        nativeGrids = cloneFormulaEntryMap_(nativeRecords);
+
+        const legacyPreserved = wipeFormulaValuesForRecompute_(legacyGrids);
+        const nativePreserved = wipeFormulaValuesForRecompute_(nativeGrids);
+        const cashFormulaGrids = [
+          legacyGrids.Cash?.formulas || nativeGrids.Cash?.formulas || [],
+        ];
+        const reconGrids = await extractReferencedReconGrids_(ctx, cashFormulaGrids, {
+          source: reconSource,
+        });
+
+        recalculateClientGrids(legacyGrids, {
+          changedTabs: RECOMPUTE_CHANGED_ROOTS,
+          reconGrids,
+          preservedFormulaValues: legacyPreserved,
+        });
+        recalculateClientGrids(nativeGrids, {
+          changedTabs: RECOMPUTE_CHANGED_ROOTS,
+          reconGrids,
+          preservedFormulaValues: nativePreserved,
+        });
+      }
 
       let totalMismatchCount = 0;
       const sampleMismatches = [];

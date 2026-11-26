@@ -1,6 +1,6 @@
 import { waitUntil } from "@vercel/functions";
 import { getSheetsClient, getPrimaryRawGoogleClients, withRetry, extractSheetIdFromUrl, colLetterToNum, colIndexToLetter, getSheetGid, getSheetId, applySheetFontFormat } from "./sheetsClient.js";
-import { setMasterSwitch, checkAllGASLocks, fetchJobRowsForDisplay, getToleranceValues, buildInvFromAppMetaMap, lookupInvFromAppMeta } from "./sharedHelpers.js";
+import { setMasterSwitch, checkAllGASLocks, fetchJobRowsForDisplay, getToleranceValues, buildInvFromAppMetaMap, lookupInvFromAppMeta, findInvoiceDetailInInvFromApp, normalizeAccountingInvoiceDbRow, matchInvoiceRowByNumberAndRule } from "./sharedHelpers.js";
 import {
   isPlaceholderInvoice,
   isDraftInvoice,
@@ -32,6 +32,7 @@ import {
   parseVariableRetainerTag,
   formatVariableRetainerTag,
   resolveEditableJobSheetMeta,
+  escapeIlikeExact,
 } from "../utils/helpers.js";
 import { isUserAuthorizedForClient, matchesClientName, sanitizeFormulaInput, getClientManagerClientMap, DEFAULT_AC_SHEET_ID, verifyUserAuthorizedForSheet, resolveClientNameBySheetId, resolveClientSheetIdByClientName, resolveMasterSheetIdByClientName, assertSetupClientSheetBinding, unwrapSheetId, canViewSalariesAndDividends } from "./userPermissions.js";
 export { DEFAULT_AC_SHEET_ID, resolveClientNameBySheetId };
@@ -847,6 +848,224 @@ export async function handleGetInvoicesInbox(req, res, sheets) {
     try { await setMasterSwitch(sheets, extractSheetIdFromUrl(req.body.masterSheetId || req.body.clientSheetId) || req.body.masterSheetId || req.body.clientSheetId, "InvComp", false); } catch (e) { }
     console.error("❌ get_invoices_inbox error:", err);
     return res.status(500).json({ success: false, error: err.message });
+  }
+}
+
+export async function fetchInvoiceDetailsForClient({
+  sheets,
+  masterSheetId = "",
+  clientSheetId = "",
+  clientName = "",
+  invoiceNo = "",
+  bypassCache = false,
+}) {
+  const cleanInvNo = String(invoiceNo || "").replace(/^#/, "").trim();
+  if (!cleanInvNo || cleanInvNo.length > 120) {
+    return { success: false, status: 400, error: "Invalid or missing invoice number." };
+  }
+
+  let masterIdClean = masterSheetId ? unwrapSheetId(extractSheetIdFromUrl(masterSheetId) || masterSheetId) : "";
+  const clientIdClean = clientSheetId ? unwrapSheetId(extractSheetIdFromUrl(clientSheetId) || clientSheetId) : "";
+
+  let sbCtx = null;
+  try {
+    sbCtx = await resolveSupabaseSheetContext({
+      spreadsheetId: masterIdClean || clientIdClean,
+      clientName: String(clientName || "").trim(),
+    });
+    if (!masterIdClean && sbCtx?.masterSheetId) {
+      masterIdClean = unwrapSheetId(extractSheetIdFromUrl(sbCtx.masterSheetId) || sbCtx.masterSheetId);
+    }
+  } catch (_) { }
+
+  const cacheTargetId = masterIdClean || sbCtx?.clientId || clientIdClean;
+  const cacheKey = cacheTargetId ? `pulse:pma:invoice_detail:${cacheTargetId}:${cleanInvNo.toLowerCase()}` : "";
+  if (cacheKey && !bypassCache && bypassCache !== "true") {
+    const cached = await get2TierCache(cacheKey);
+    if (cached && cached.success) {
+      return cached;
+    }
+  }
+
+  // Fast Path: Query relational accounting_invoices table directly by indexed (client_id, invoice_number)
+  if (sbCtx?.clientId && sbCtx.masterReadMode === "relational") {
+    try {
+      const supabase = getSupabaseAdmin();
+      if (supabase) {
+        const selectCols =
+          "external_id, invoice_number, contact_name, reference, description, invoice_type, issue_date, due_date, fully_paid_date, sent_to_contact, status, sub_total, tax_total, total, amount_paid, amount_due, currency_code, currency_rate, recharged_amount, line_items";
+
+        const { data: exactRows, error: exactErr } = await supabase
+          .from("accounting_invoices")
+          .select(selectCols)
+          .eq("client_id", sbCtx.clientId)
+          .eq("record_kind", "invoice")
+          .ilike("invoice_number", escapeIlikeExact(cleanInvNo))
+          .limit(5);
+
+        if (!exactErr) {
+          let matchedRow = Array.isArray(exactRows) && exactRows.length > 0 ? exactRows[0] : null;
+
+          if (!matchedRow) {
+            const cleanNoZeros = cleanInvNo.replace(/^0+(?=\d)/, "") || cleanInvNo;
+            const [suffixRes, cfgRes] = await Promise.all([
+              supabase
+                .from("accounting_invoices")
+                .select(selectCols)
+                .eq("client_id", sbCtx.clientId)
+                .eq("record_kind", "invoice")
+                .ilike("invoice_number", `%${escapeIlikeExact(cleanNoZeros)}`)
+                .limit(25),
+              supabase
+                .from("pulse_master_sync_configs")
+                .select("inv_app_list_meta")
+                .eq("client_id", sbCtx.clientId)
+                .maybeSingle(),
+            ]);
+            if (!suffixRes.error && Array.isArray(suffixRes.data) && suffixRes.data.length > 0) {
+              const invFormatRule = String(cfgRes?.data?.inv_app_list_meta?.headerRows?.[0]?.[5] || "").trim();
+              matchedRow = matchInvoiceRowByNumberAndRule(suffixRes.data, invFormatRule, cleanInvNo);
+            }
+          }
+
+          if (matchedRow) {
+            const detail = normalizeAccountingInvoiceDbRow(matchedRow);
+            const payload = {
+              success: true,
+              foundInAccounting: Boolean(detail),
+              detail: detail || null,
+            };
+            if (cacheKey) await set2TierCache(cacheKey, payload, 60);
+            return payload;
+          }
+
+          const { count } = await supabase
+            .from("accounting_invoices")
+            .select("id", { count: "exact", head: true })
+            .eq("client_id", sbCtx.clientId)
+            .eq("record_kind", "invoice");
+          if ((count || 0) > 0) {
+            const emptyPayload = { success: true, foundInAccounting: false, detail: null };
+            if (cacheKey) await set2TierCache(cacheKey, emptyPayload, 60);
+            return emptyPayload;
+          }
+        }
+      }
+    } catch (relErr) {
+      console.warn(`[invoice-details] Direct relational query fallback for ${clientName || sbCtx.clientName}:`, relErr?.message);
+    }
+  }
+
+  if (!masterIdClean && clientName && sheets) {
+    try {
+      const byName = await resolveMasterSheetIdByClientName(sheets, clientName);
+      if (byName) {
+        masterIdClean = unwrapSheetId(extractSheetIdFromUrl(byName) || byName);
+      }
+    } catch (_) { }
+  }
+
+  if (!masterIdClean && clientIdClean && sheets) {
+    try {
+      const byClientSheet = await resolveMasterSheetIdForClient_(sheets, clientIdClean, clientName);
+      if (byClientSheet) {
+        masterIdClean = unwrapSheetId(extractSheetIdFromUrl(byClientSheet) || byClientSheet);
+      }
+    } catch (_) { }
+  }
+
+  if (!masterIdClean) {
+    return { success: true, foundInAccounting: false, detail: null };
+  }
+
+  const finalCacheKey = `pulse:pma:invoice_detail:${masterIdClean}:${cleanInvNo.toLowerCase()}`;
+  if (finalCacheKey !== cacheKey && !bypassCache && bypassCache !== "true") {
+    const cached = await get2TierCache(finalCacheKey);
+    if (cached && cached.success) {
+      return cached;
+    }
+  }
+
+  // Sheets / Grid fallback: read InvFromApp!A1:S5000 only first (skipping InvAppList evaluation unless needed)
+  const singleResp = await sheets.spreadsheets.values.get({
+    spreadsheetId: masterIdClean,
+    range: "InvFromApp!A1:S5000",
+  });
+  const invFromAppRows = singleResp.data?.values || [];
+  let detail = findInvoiceDetailInInvFromApp(invFromAppRows, "", cleanInvNo);
+
+  if (!detail && invFromAppRows.length > 1) {
+    try {
+      const ruleResp = await sheets.spreadsheets.values.get({
+        spreadsheetId: masterIdClean,
+        range: "InvAppList!F1",
+      });
+      const invFormatRule = String(ruleResp.data?.values?.[0]?.[0] || "").trim();
+      if (invFormatRule) {
+        detail = findInvoiceDetailInInvFromApp(invFromAppRows, invFormatRule, cleanInvNo);
+      }
+    } catch (_) { }
+  }
+
+  const payload = {
+    success: true,
+    foundInAccounting: Boolean(detail),
+    detail: detail || null,
+  };
+  await set2TierCache(finalCacheKey, payload, 60);
+  return payload;
+}
+
+export async function handleGetInvoiceDetails(req, res, sheets) {
+  const input = { ...(req.query || {}), ...(req.body || {}) };
+  const { masterSheetId, clientSheetId, clientName, invoiceNo, bypassCache } = input;
+  const cleanInvNo = String(invoiceNo || "").replace(/^#/, "").trim();
+  if (!cleanInvNo || cleanInvNo.length > 120) {
+    return res.status(400).json({ success: false, error: "Invalid or missing invoice number." });
+  }
+  const masterIdClean = masterSheetId ? unwrapSheetId(extractSheetIdFromUrl(masterSheetId) || masterSheetId) : "";
+  const clientIdClean = clientSheetId ? unwrapSheetId(extractSheetIdFromUrl(clientSheetId) || clientSheetId) : "";
+  if (!masterIdClean && !clientIdClean && !String(clientName || "").trim()) {
+    return res.status(400).json({ success: false, error: "Missing client or workspace identifier." });
+  }
+
+  const sessionUser = getSessionUser(req);
+  if (!sessionUser) {
+    return res.status(401).json({ success: false, error: "Unauthorized: Active session required." });
+  }
+
+  try {
+    const auth = await assertSetupClientSheetBinding(sessionUser, {
+      clientName: clientName || "",
+      masterSheetId: masterIdClean,
+      clientSheetId: clientIdClean,
+      sheets,
+    });
+    if (!auth.authorized) {
+      return res.status(auth.status || 403).json({
+        success: false,
+        error: sessionUser.isAdmin ? (auth.error || "Forbidden") : sanitizeSpreadsheetTerms(auth.error || "Access denied to this client."),
+      });
+    }
+
+    const payload = await fetchInvoiceDetailsForClient({
+      sheets,
+      masterSheetId: masterIdClean,
+      clientSheetId: clientIdClean,
+      clientName: auth.clientName || clientName || "",
+      invoiceNo: cleanInvNo,
+      bypassCache: Boolean(bypassCache && bypassCache !== "false"),
+    });
+    if (!payload.success) {
+      return res.status(payload.status || 400).json({ success: false, error: payload.error });
+    }
+    return res.status(200).json(payload);
+  } catch (err) {
+    console.error("❌ get_invoice_details error:", err);
+    return res.status(500).json({
+      success: false,
+      error: sessionUser?.isAdmin ? (err.message || "Failed to load invoice details.") : sanitizeSpreadsheetTerms(err.message || "Failed to load invoice details."),
+    });
   }
 }
 

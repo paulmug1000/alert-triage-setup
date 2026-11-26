@@ -557,3 +557,347 @@ export function lookupInvFromAppMeta(metaIndex, invoiceNo) {
   }
   return null;
 }
+
+const INV_DETAIL_MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+const INV_DETAIL_MONTHS_MAP = { jan: 0, feb: 1, mar: 2, apr: 3, may: 4, jun: 5, jul: 6, aug: 7, sep: 8, oct: 9, nov: 10, dec: 11 };
+
+function formatInvDetailDate_(rawVal) {
+  if (rawVal === undefined || rawVal === null || rawVal === "") return "";
+  if (typeof rawVal === "number" && rawVal > 20000 && rawVal < 90000) {
+    const utc = new Date(Math.round((rawVal - 25569) * 86400 * 1000));
+    return `${utc.getUTCDate()}-${INV_DETAIL_MONTHS[utc.getUTCMonth()]}-${String(utc.getUTCFullYear()).slice(-2)}`;
+  }
+  const s = String(rawVal).replace(/^'/, "").trim();
+  if (!s) return "";
+  if (/^\d{5}(?:\.\d+)?$/.test(s)) {
+    const num = parseFloat(s);
+    if (num > 20000 && num < 90000) {
+      const utc = new Date(Math.round((num - 25569) * 86400 * 1000));
+      return `${utc.getUTCDate()}-${INV_DETAIL_MONTHS[utc.getUTCMonth()]}-${String(utc.getUTCFullYear()).slice(-2)}`;
+    }
+  }
+  const xeroMatch = s.match(/\/Date\((\d+)/);
+  if (xeroMatch) {
+    const d = new Date(parseInt(xeroMatch[1], 10));
+    if (!isNaN(d.getTime())) {
+      return `${d.getUTCDate()}-${INV_DETAIL_MONTHS[d.getUTCMonth()]}-${String(d.getUTCFullYear()).slice(-2)}`;
+    }
+  }
+  const dmyMatch = s.match(/^(\d{1,2})[-\/]([A-Za-z]{3,})[-\/](\d{2,4})$/);
+  if (dmyMatch) {
+    const mNum = INV_DETAIL_MONTHS_MAP[dmyMatch[2].toLowerCase().slice(0, 3)];
+    if (mNum !== undefined) {
+      const yr = dmyMatch[3].length === 2 ? 2000 + parseInt(dmyMatch[3], 10) : parseInt(dmyMatch[3], 10);
+      const d = new Date(yr, mNum, parseInt(dmyMatch[1], 10));
+      return `${d.getDate()}-${INV_DETAIL_MONTHS[d.getMonth()]}-${String(d.getFullYear()).slice(-2)}`;
+    }
+  }
+  const isoMatch = s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/);
+  if (isoMatch) {
+    const d = new Date(parseInt(isoMatch[1], 10), parseInt(isoMatch[2], 10) - 1, parseInt(isoMatch[3], 10));
+    if (!isNaN(d.getTime())) {
+      return `${d.getDate()}-${INV_DETAIL_MONTHS[d.getMonth()]}-${String(d.getFullYear()).slice(-2)}`;
+    }
+  }
+  const parsed = new Date(s);
+  if (!isNaN(parsed.getTime())) {
+    return `${parsed.getDate()}-${INV_DETAIL_MONTHS[parsed.getMonth()]}-${String(parsed.getFullYear()).slice(-2)}`;
+  }
+  return s;
+}
+
+function parseInvDetailNum_(val, fallback = 0) {
+  if (typeof val === "number") return Number.isFinite(val) ? val : fallback;
+  const s = String(val ?? "").replace(/[£$€,\s]/g, "").trim();
+  if (!s) return fallback;
+  const n = parseFloat(s);
+  return Number.isFinite(n) ? n : fallback;
+}
+
+/**
+ * Finds the full accounting record and line-by-line breakdown for an invoice number
+ * inside InvFromApp!A1:S rows using the optional InvAppList!F1 formatting rule.
+ */
+export function findInvoiceDetailInInvFromApp(invFromAppRows, invFormatRule = "", invoiceNo = "") {
+  if (!Array.isArray(invFromAppRows) || invFromAppRows.length < 2 || !invoiceNo) {
+    return null;
+  }
+  const rawQuery = String(invoiceNo).trim().toLowerCase();
+  const cleanQuery = rawQuery.replace(/^#/, "");
+  if (!cleanQuery) return null;
+  const cleanQueryNoZeros = cleanQuery.replace(/^0+(?=\d)/, "");
+
+  const headers = (invFromAppRows[0] || []).map((h) => String(h || "").trim().toLowerCase().replace(/\s+/g, ""));
+  const findCol = (names, fallbackIdx) => {
+    for (const n of names) {
+      const idx = headers.indexOf(n);
+      if (idx !== -1) return idx;
+    }
+    return fallbackIdx;
+  };
+
+  const cId = findCol(["invoiceid", "id"], 0);
+  const cContact = findCol(["contactname", "client", "customer"], 1);
+  const cInvNo = findCol(["invoicenumber", "invoiceno"], 2);
+  const cRef = findCol(["reference", "ref"], 3);
+  const cType = findCol(["type", "invoicetype"], 4);
+  const cDate = findCol(["date", "issuedate"], 5);
+  const cDue = findCol(["duedate"], 6);
+  const cStatus = findCol(["status"], 7);
+  const cAmtDue = findCol(["amountdue"], 8);
+  const cAmtPaid = findCol(["amountpaid"], 9);
+  const cTotal = findCol(["total", "gross"], 10);
+  const cPaidDate = findCol(["fullypaidondate", "paiddate"], 11);
+  const cSent = findCol(["senttocontact"], 12);
+  const cSub = findCol(["subtotal", "net"], 13);
+  const cTax = findCol(["totaltax", "taxtotal", "vat"], 14);
+  const cCurr = findCol(["currencycode", "currency"], 15);
+  const cRate = findCol(["currencyrate", "rate"], 16);
+  const cRech = findCol(["rechargedamount"], 17);
+  const cLines = findCol(["linebreakdown"], 18);
+
+  const rule = String(invFormatRule || "").trim().toLowerCase();
+  let exactMatchRow = null;
+  let derivedMatchRow = null;
+
+  for (let r = 1; r < invFromAppRows.length; r++) {
+    const row = invFromAppRows[r];
+    if (!Array.isArray(row) || row.length === 0) continue;
+    const rawInvNo = String(row[cInvNo] ?? "").replace(/^'/, "").trim();
+    if (!rawInvNo) continue;
+
+    const lower = rawInvNo.toLowerCase();
+    const strippedHash = lower.replace(/^#/, "");
+    if (lower === rawQuery || strippedHash === cleanQuery) {
+      exactMatchRow = row;
+      break;
+    }
+    if (!derivedMatchRow) {
+      const noZeros = strippedHash.replace(/^0+(?=\d)/, "");
+      if (noZeros === cleanQueryNoZeros) {
+        derivedMatchRow = row;
+        continue;
+      }
+      if (rule === "strippre") {
+        const sp = strippedHash.replace(/^[^-]+-/, "");
+        const spNoZeros = sp.replace(/^0+(?=\d)/, "");
+        if (sp === cleanQuery || spNoZeros === cleanQueryNoZeros) {
+          derivedMatchRow = row;
+          continue;
+        }
+      } else if (rule === "right3" || rule === "right4" || rule === "right5") {
+        const n = parseInt(rule.replace("right", ""), 10);
+        if (n > 0 && strippedHash.length >= n) {
+          const tail = strippedHash.slice(-n);
+          const tailNoZeros = tail.replace(/^0+(?=\d)/, "");
+          if (tail === cleanQuery || tailNoZeros === cleanQueryNoZeros) {
+            derivedMatchRow = row;
+          }
+        }
+      }
+    }
+  }
+
+  const row = exactMatchRow || derivedMatchRow;
+  if (!row) return null;
+
+  const rateRaw = parseInvDetailNum_(row[cRate], 1);
+  const currencyRate = rateRaw > 0 ? rateRaw : 1;
+  const currencyCode = String(row[cCurr] ?? "").replace(/^'/, "").trim().toUpperCase() || "GBP";
+  const round2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
+  const toGbp = (n) => round2((Number(n) || 0) / currencyRate);
+
+  const subTotal = round2(parseInvDetailNum_(row[cSub], 0));
+  const taxTotal = round2(parseInvDetailNum_(row[cTax], 0));
+  const total = round2(parseInvDetailNum_(row[cTotal], 0));
+  const amountPaid = round2(parseInvDetailNum_(row[cAmtPaid], 0));
+  const amountDue = round2(parseInvDetailNum_(row[cAmtDue], 0));
+  const rechargedAmount = Math.max(0, round2(parseInvDetailNum_(row[cRech], 0)));
+
+  const rawBk = String(row[cLines] ?? "").replace(/^'/, "").trim();
+  let lineItems = [];
+  if (rawBk && rawBk.startsWith("[")) {
+    try {
+      const parsed = JSON.parse(rawBk);
+      if (Array.isArray(parsed)) {
+        lineItems = parsed.map((item) => {
+          const nativeAmt = round2(Number(item?.a) || 0);
+          return {
+            description: String(item?.d || "").trim(),
+            amount: nativeAmt,
+            amountGbp: toGbp(nativeAmt),
+            accountCode: String(item?.ac || "").trim(),
+            accountName: String(item?.an || "").trim(),
+            isRecharged: Boolean(item?.r),
+            reason: String(item?.rr || "").trim(),
+          };
+        });
+      }
+    } catch (_) {
+      lineItems = [];
+    }
+  }
+
+  return {
+    invoiceId: String(row[cId] ?? "").replace(/^'/, "").trim(),
+    invoiceNumber: String(row[cInvNo] ?? "").replace(/^'/, "").trim(),
+    contactName: String(row[cContact] ?? "").replace(/^'/, "").trim(),
+    reference: String(row[cRef] ?? "").replace(/^'/, "").trim(),
+    type: String(row[cType] ?? "").replace(/^'/, "").trim() || "ACCREC",
+    issueDate: formatInvDetailDate_(row[cDate]),
+    dueDate: formatInvDetailDate_(row[cDue]),
+    fullyPaidDate: formatInvDetailDate_(row[cPaidDate]),
+    status: String(row[cStatus] ?? "").replace(/^'/, "").trim(),
+    sentToContact: String(row[cSent] ?? "").replace(/^'/, "").trim(),
+    currencyCode,
+    currencyRate,
+    subTotal,
+    taxTotal,
+    total,
+    amountPaid,
+    amountDue,
+    subTotalGbp: toGbp(subTotal),
+    taxTotalGbp: toGbp(taxTotal),
+    totalGbp: toGbp(total),
+    amountPaidGbp: toGbp(amountPaid),
+    amountDueGbp: toGbp(amountDue),
+    rechargedAmount,
+    rechargedAmountGbp: toGbp(rechargedAmount),
+    lineItems,
+    hasLineBreakdown: lineItems.length > 0,
+    lineBreakdownTruncated: lineItems.length >= 25,
+  };
+}
+
+/**
+ * Matches a candidate invoice row from a collection using exact, hash-stripped,
+ * leading-zero, or InvAppList!F1 format rules (`strippre`, `right3`..`right5`).
+ */
+export function matchInvoiceRowByNumberAndRule(rows, invFormatRule = "", invoiceNo = "", getInvNo = (r) => r?.invoice_number) {
+  if (!Array.isArray(rows) || rows.length === 0 || !invoiceNo) return null;
+  const rawQuery = String(invoiceNo).trim().toLowerCase();
+  const cleanQuery = rawQuery.replace(/^#/, "");
+  if (!cleanQuery) return null;
+  const cleanQueryNoZeros = cleanQuery.replace(/^0+(?=\d)/, "");
+  const rule = String(invFormatRule || "").trim().toLowerCase();
+
+  let derivedMatch = null;
+  for (const row of rows) {
+    if (!row) continue;
+    const rawInvNo = String(getInvNo(row) ?? "").replace(/^'/, "").trim();
+    if (!rawInvNo) continue;
+
+    const lower = rawInvNo.toLowerCase();
+    const strippedHash = lower.replace(/^#/, "");
+    if (lower === rawQuery || strippedHash === cleanQuery) {
+      return row;
+    }
+    if (!derivedMatch) {
+      const noZeros = strippedHash.replace(/^0+(?=\d)/, "");
+      if (noZeros === cleanQueryNoZeros) {
+        derivedMatch = row;
+        continue;
+      }
+      if (rule === "strippre") {
+        const sp = strippedHash.replace(/^[^-]+-/, "");
+        const spNoZeros = sp.replace(/^0+(?=\d)/, "");
+        if (sp === cleanQuery || spNoZeros === cleanQueryNoZeros) {
+          derivedMatch = row;
+          continue;
+        }
+      } else if (rule === "right3" || rule === "right4" || rule === "right5") {
+        const n = parseInt(rule.replace("right", ""), 10);
+        if (n > 0 && strippedHash.length >= n) {
+          const tail = strippedHash.slice(-n);
+          const tailNoZeros = tail.replace(/^0+(?=\d)/, "");
+          if (tail === cleanQuery || tailNoZeros === cleanQueryNoZeros) {
+            derivedMatch = row;
+          }
+        }
+      }
+    }
+  }
+  return derivedMatch;
+}
+
+/**
+ * Normalizes a single `public.accounting_invoices` relational database row into the
+ * full invoice detail payload shape used by the UI.
+ */
+export function normalizeAccountingInvoiceDbRow(row) {
+  if (!row || typeof row !== "object") return null;
+  const rateRaw = parseInvDetailNum_(row.currency_rate, 1);
+  const currencyRate = rateRaw > 0 ? rateRaw : 1;
+  const currencyCode = String(row.currency_code ?? "").replace(/^'/, "").trim().toUpperCase() || "GBP";
+  const round2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
+  const toGbp = (n) => round2((Number(n) || 0) / currencyRate);
+
+  const subTotal = round2(parseInvDetailNum_(row.sub_total, 0));
+  const taxTotal = round2(parseInvDetailNum_(row.tax_total, 0));
+  const total = round2(parseInvDetailNum_(row.total, 0));
+  const amountPaid = round2(parseInvDetailNum_(row.amount_paid, 0));
+  const amountDue = round2(parseInvDetailNum_(row.amount_due, 0));
+  const rechargedAmount = Math.max(0, round2(parseInvDetailNum_(row.recharged_amount, 0)));
+
+  let rawLines = row.line_items;
+  if (typeof rawLines === "string") {
+    const trimmed = rawLines.replace(/^'/, "").trim();
+    if (trimmed.startsWith("[")) {
+      try {
+        rawLines = JSON.parse(trimmed);
+      } catch (_) {
+        rawLines = [];
+      }
+    } else {
+      rawLines = [];
+    }
+  }
+
+  const lineItems = Array.isArray(rawLines)
+    ? rawLines.map((item) => {
+        const nativeAmt = round2(Number(item?.a ?? item?.amount ?? 0) || 0);
+        return {
+          description: String(item?.d ?? item?.description ?? "").trim(),
+          amount: nativeAmt,
+          amountGbp:
+            item?.amountGbp !== undefined && item?.a === undefined
+              ? round2(Number(item.amountGbp) || 0)
+              : toGbp(nativeAmt),
+          accountCode: String(item?.ac ?? item?.accountCode ?? "").trim(),
+          accountName: String(item?.an ?? item?.accountName ?? "").trim(),
+          isRecharged: Boolean(item?.r ?? item?.isRecharged),
+          reason: String(item?.rr ?? item?.reason ?? "").trim(),
+        };
+      })
+    : [];
+
+  return {
+    invoiceId: String(row.external_id ?? "").replace(/^'/, "").trim(),
+    invoiceNumber: String(row.invoice_number ?? "").replace(/^'/, "").trim(),
+    contactName: String(row.contact_name ?? "").replace(/^'/, "").trim(),
+    reference: String(row.reference ?? row.description ?? "").replace(/^'/, "").trim(),
+    type: String(row.invoice_type ?? "").replace(/^'/, "").trim() || "ACCREC",
+    issueDate: formatInvDetailDate_(row.issue_date),
+    dueDate: formatInvDetailDate_(row.due_date),
+    fullyPaidDate: formatInvDetailDate_(row.fully_paid_date),
+    status: String(row.status ?? "").replace(/^'/, "").trim(),
+    sentToContact: String(row.sent_to_contact ?? "").replace(/^'/, "").trim(),
+    currencyCode,
+    currencyRate,
+    subTotal,
+    taxTotal,
+    total,
+    amountPaid,
+    amountDue,
+    subTotalGbp: toGbp(subTotal),
+    taxTotalGbp: toGbp(taxTotal),
+    totalGbp: toGbp(total),
+    amountPaidGbp: toGbp(amountPaid),
+    amountDueGbp: toGbp(amountDue),
+    rechargedAmount,
+    rechargedAmountGbp: toGbp(rechargedAmount),
+    lineItems,
+    hasLineBreakdown: lineItems.length > 0,
+    lineBreakdownTruncated: lineItems.length >= 25,
+  };
+}

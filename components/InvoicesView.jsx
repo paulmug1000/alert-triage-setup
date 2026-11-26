@@ -9,6 +9,7 @@ import JobDetailModal from "./JobDetailModal";
 import PlaceholderChoiceModal from "./PlaceholderChoiceModal";
 import PlaceholderPill, { isAutoPlaceholder } from "./PlaceholderPill";
 import PlaceInvoiceModal from "./PlaceInvoiceModal";
+import InvoiceDetailsModal from "./InvoiceDetailsModal";
 import { getJobInvoiceItems } from "../utils/jobItemsHelpers";
 import { useInvoices } from "../hooks/useInvoices";
 import { useAppGlobals } from "../hooks/useAppGlobals";
@@ -118,6 +119,7 @@ export default function InvoicesView({
   const isAdmin = propIsAdmin !== undefined ? propIsAdmin : (!auth.user?.isReadOnly && !!(auth.user?.isAdmin || auth.user?.role === "Admin"));
 
   const { automationCommanderSheetId, allClientsMap, assignedAppIds, setAssignedAppIds, outgoingsPullPendingRef, addAssignedAppId, invalidateCachedClientData } = useAppGlobals();
+  const [viewingInvoiceDetails, setViewingInvoiceDetails] = useState(null);
   const { clientsWithFlags, setClientsWithFlags, setClientAlerts, sessionId } = useTriage();
 
   const removeAssignedInvoiceAlert = (invNo, refNo, clientName) => {
@@ -833,6 +835,15 @@ export default function InvoicesView({
           onClose={() => setPlaceholderChoicePrompt(null)}
         />
       )}
+      {viewingInvoiceDetails && (
+        <InvoiceDetailsModal
+          isOpen={Boolean(viewingInvoiceDetails)}
+          target={viewingInvoiceDetails}
+          invoicesClient={invoicesClient}
+          isAdmin={isAdmin}
+          onClose={() => setViewingInvoiceDetails(null)}
+        />
+      )}
       {invoicesEditSlot && (
         <InvoicesEditModal
           editSlot={invoicesEditSlot}
@@ -1374,17 +1385,52 @@ export default function InvoicesView({
                               </div>
                             )}
                           </div>
-                          <button onClick={e => { e.stopPropagation(); setInvoicesNewJob({ inv }); }}
-                            title="Create new job for this invoice"
-                            style={{
-                              marginTop: "6px", fontSize: "10px", padding: "2px 8px",
-                              background: isPlacing ? "rgba(255,255,255,0.2)" : "#f0f0f0",
-                              border: `1px solid ${isPlacing ? "rgba(255,255,255,0.4)" : "#ccc"}`,
-                              borderRadius: "4px", cursor: "pointer",
-                              color: isPlacing ? "#fff" : "#555", whiteSpace: "nowrap"
-                            }}>
-                            + New job
-                          </button>
+                          <div style={{ display: "flex", gap: "6px", marginTop: "6px", flexWrap: "wrap" }}>
+                            <button
+                              type="button"
+                              onClick={e => {
+                                e.stopPropagation();
+                                setViewingInvoiceDetails({
+                                  invoiceNo: inv.invoiceNo,
+                                  initialLineItems: Array.isArray(inv.lineItems) ? inv.lineItems : [],
+                                  fallbackSummary: {
+                                    client: inv.client,
+                                    jobName: inv.job,
+                                    amount: inv.amount,
+                                    grossAmount: inv.grossAmount,
+                                    vatAmount: inv.vatAmount,
+                                    sentDate: inv.sentDate,
+                                    dueDate: inv.dueDate,
+                                    fullyPaidDate: inv.fullyPaidOn,
+                                    status: inv.status,
+                                    currencyCode: inv.currency,
+                                    rechargedAmountGbp: inv.detectedRechargedAmount || 0,
+                                  },
+                                });
+                              }}
+                              title="View full invoice details and line breakdown"
+                              style={{
+                                fontSize: "10px", padding: "2px 8px",
+                                background: isPlacing ? "rgba(255,255,255,0.22)" : "#ffffff",
+                                border: `1px solid ${isPlacing ? "rgba(255,255,255,0.45)" : "#bfdbfe"}`,
+                                borderRadius: "4px", cursor: "pointer",
+                                color: isPlacing ? "#fff" : "#1d4ed8", fontWeight: "600", whiteSpace: "nowrap"
+                              }}
+                            >
+                              Details
+                            </button>
+                            <button onClick={e => { e.stopPropagation(); setInvoicesNewJob({ inv }); }}
+                              title="Create new job for this invoice"
+                              style={{
+                                fontSize: "10px", padding: "2px 8px",
+                                background: isPlacing ? "rgba(255,255,255,0.2)" : "#f0f0f0",
+                                border: `1px solid ${isPlacing ? "rgba(255,255,255,0.4)" : "#ccc"}`,
+                                borderRadius: "4px", cursor: "pointer",
+                                color: isPlacing ? "#fff" : "#555", whiteSpace: "nowrap"
+                              }}>
+                              + New job
+                            </button>
+                          </div>
                         </div>
                       );
                     })}
@@ -2311,33 +2357,66 @@ export default function InvoicesView({
 
                                   {/* Action */}
                                   <td style={{ padding: "10px 12px", textAlign: "center", whiteSpace: "nowrap" }}>
-                                    <button
-                                      type="button"
-                                      onClick={() => {
-                                        const matchedJob = (invoicesJobs || []).find(j => j.client === inv.client && j.jobName === inv.jobName);
-                                        setInvoicesEditSlot({
-                                          rowNum: inv.rowNum,
-                                          slotNum: inv.slotNum,
-                                          slot: inv.slot,
-                                          jobClient: inv.client,
-                                          jobName: inv.jobName,
-                                          job: matchedJob
-                                        });
-                                      }}
-                                      style={{
-                                        padding: "4px 10px",
-                                        borderRadius: "5px",
-                                        background: "#eff6ff",
-                                        border: "1px solid #bfdbfe",
-                                        color: "#1d4ed8",
-                                        fontSize: "11px",
-                                        fontWeight: "600",
-                                        cursor: "pointer",
-                                      }}
-                                      title="Edit invoice details"
-                                    >
-                                      Edit
-                                    </button>
+                                    <div style={{ display: "inline-flex", alignItems: "center", gap: "6px" }}>
+                                      {!isPlaceholder && inv.invoiceNo && (
+                                        <button
+                                          type="button"
+                                          onClick={() => {
+                                            setViewingInvoiceDetails({
+                                              invoiceNo: inv.invoiceNo,
+                                              fallbackSummary: {
+                                                client: inv.client,
+                                                jobName: inv.jobName,
+                                                amount: inv.amount,
+                                                sentDate: inv.sentDate,
+                                                dueDate: inv.expectedPaymentDate && inv.expectedPaymentDate !== "-" ? inv.expectedPaymentDate : "",
+                                                status: inv.status,
+                                              },
+                                            });
+                                          }}
+                                          style={{
+                                            padding: "4px 10px",
+                                            borderRadius: "5px",
+                                            background: "#ffffff",
+                                            border: "1px solid #cbd5e1",
+                                            color: "#334155",
+                                            fontSize: "11px",
+                                            fontWeight: "600",
+                                            cursor: "pointer",
+                                          }}
+                                          title="View invoice details and line breakdown"
+                                        >
+                                          Details
+                                        </button>
+                                      )}
+                                      <button
+                                        type="button"
+                                        onClick={() => {
+                                          const matchedJob = (invoicesJobs || []).find(j => j.client === inv.client && j.jobName === inv.jobName);
+                                          setInvoicesEditSlot({
+                                            rowNum: inv.rowNum,
+                                            slotNum: inv.slotNum,
+                                            slot: inv.slot,
+                                            jobClient: inv.client,
+                                            jobName: inv.jobName,
+                                            job: matchedJob
+                                          });
+                                        }}
+                                        style={{
+                                          padding: "4px 10px",
+                                          borderRadius: "5px",
+                                          background: "#eff6ff",
+                                          border: "1px solid #bfdbfe",
+                                          color: "#1d4ed8",
+                                          fontSize: "11px",
+                                          fontWeight: "600",
+                                          cursor: "pointer",
+                                        }}
+                                        title="Edit invoice details"
+                                      >
+                                        Edit
+                                      </button>
+                                    </div>
                                   </td>
                                 </tr>
                               );

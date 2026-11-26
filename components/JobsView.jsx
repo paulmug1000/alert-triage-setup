@@ -3911,6 +3911,7 @@ export default function JobsView({
           editSlot={invoicesEditSlot}
           invoicesClient={jobsClient}
           availableJobs={jobsData}
+          isAdmin={isAdmin}
           hasAccountingIntegration={hasAccountingIntegration}
           onClose={() => setInvoicesEditSlot(null)}
           onMarkPullPending={(masterId) => (outgoingsPullPendingRef.current = masterId)}

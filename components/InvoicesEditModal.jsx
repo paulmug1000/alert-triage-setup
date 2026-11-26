@@ -8,6 +8,7 @@ import { useAuth } from "../hooks/useAuth";
 import { useAppGlobals } from "../hooks/useAppGlobals";
 import DateInput from "./DateInput";
 import InvoicesNewJobModal from "./InvoicesNewJobModal";
+import { InvoiceDetailsContent } from "./InvoiceDetailsModal";
 import PlaceholderPill, { isAutoPlaceholder, generatePlaceholderInvoiceRef, generateManualPlaceholderInvoiceRef } from "./PlaceholderPill";
 
 export default function InvoicesEditModal({
@@ -34,6 +35,7 @@ export default function InvoicesEditModal({
   const [saving, setSaving] = useState(false);
   const [confirmingDelete, setConfirmingDelete] = useState(false);
   const [showNewJobModal, setShowNewJobModal] = useState(false);
+  const [viewingDetails, setViewingDetails] = useState(false);
 
   // Accounting integration status and locking
   const hasAccounting = useMemo(() => {
@@ -70,6 +72,8 @@ export default function InvoicesEditModal({
   );
   const isFieldLocked = isLocked || isAutoLocked;
   const isPaid = String(slot?.status || status || "").trim().toLowerCase() === "paid";
+  const displayDetailInvoiceNo = String(slot?.ref || invoiceNo || "").replace(/^#/, "").trim();
+  const canViewDetails = Boolean(!isPlaceholder && !editSlot?.isNewPlaceholder && !editSlot?.createNewRow && displayDetailInvoiceNo);
 
   const fieldLockTitle = isAutoLocked
     ? "Automatic placeholder. Convert to manual placeholder to edit."
@@ -580,13 +584,15 @@ export default function InvoicesEditModal({
   return (
     <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)", zIndex: 1200, display: "flex", alignItems: "center", justifyContent: "center" }}
       onClick={e => { if (e.target === e.currentTarget) close(); }}>
-      <div style={{ background: "#fff", borderRadius: "12px", padding: "24px", width: "min(92vw, 520px)", maxHeight: "88vh", overflowY: "auto", boxShadow: "0 20px 60px rgba(0,0,0,0.3)" }}>
+      <div style={{ background: "#fff", borderRadius: "12px", padding: "24px", width: viewingDetails ? "min(94vw, 680px)" : "min(92vw, 520px)", maxHeight: "88vh", overflowY: "auto", boxShadow: "0 20px 60px rgba(0,0,0,0.3)" }}>
 
         {/* Header */}
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "16px" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "16px", gap: "12px" }}>
           <div>
             <h3 style={{ margin: 0, fontSize: "16px", fontWeight: "700", color: "#1e293b" }}>
-              {movingInvoice ? (
+              {viewingDetails ? (
+                `Invoice details · #${displayDetailInvoiceNo}`
+              ) : movingInvoice ? (
                 `Move invoice #${invoiceNo || slot.ref}`
               ) : editSlot.isNewPlaceholder ? (
                 `${jobName ? `${jobName} · ` : ""}New placeholder`
@@ -602,8 +608,74 @@ export default function InvoicesEditModal({
               </div>
             )}
           </div>
-          <button onClick={close} style={{ background: "none", border: "none", fontSize: "22px", cursor: "pointer", color: "#999" }}>×</button>
+          <div style={{ display: "flex", alignItems: "center", gap: "8px", flexShrink: 0 }}>
+            {viewingDetails && (
+              <button
+                type="button"
+                onClick={() => setViewingDetails(false)}
+                style={{
+                  padding: "5px 10px",
+                  background: "#f8fafc",
+                  border: "1px solid #cbd5e1",
+                  borderRadius: "6px",
+                  cursor: "pointer",
+                  fontSize: "12px",
+                  fontWeight: "600",
+                  color: "#334155",
+                }}
+              >
+                Back to edit
+              </button>
+            )}
+            <button onClick={close} style={{ background: "none", border: "none", fontSize: "22px", cursor: "pointer", color: "#999" }}>×</button>
+          </div>
         </div>
+
+        {!viewingDetails && !movingInvoice && canViewDetails && (
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "space-between",
+              gap: "10px",
+              padding: "8px 12px",
+              marginBottom: "14px",
+              background: "#f8fafc",
+              border: "1px solid #e2e8f0",
+              borderRadius: "8px",
+            }}
+          >
+            <span style={{ fontSize: "12px", color: "#475569" }}>
+              Want to inspect the line-by-line accounting breakdown?
+            </span>
+            <button
+              type="button"
+              onClick={() => setViewingDetails(true)}
+              style={{
+                display: "inline-flex",
+                alignItems: "center",
+                gap: "6px",
+                padding: "5px 11px",
+                background: "#ffffff",
+                border: "1px solid #93c5fd",
+                borderRadius: "6px",
+                color: "#1d4ed8",
+                fontSize: "12px",
+                fontWeight: "600",
+                cursor: "pointer",
+                whiteSpace: "nowrap",
+              }}
+            >
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+                <polyline points="14 2 14 8 20 8" />
+                <line x1="16" y1="13" x2="8" y2="13" />
+                <line x1="16" y1="17" x2="8" y2="17" />
+              </svg>
+              View invoice details
+            </button>
+          </div>
+        )}
 
         {/* RECHARGED EXPENSES TOTAL PROMPT MODAL */}
         {rechargedPrompt && (
@@ -688,8 +760,43 @@ export default function InvoicesEditModal({
           </div>
         )}
 
-        {/* MOVE TO DIFFERENT JOB VIEW */}
-        {movingInvoice ? (
+        {/* INVOICE DETAILS & LINE-BY-LINE BREAKDOWN VIEW */}
+        {viewingDetails ? (
+          <div>
+            <InvoiceDetailsContent
+              invoiceNo={displayDetailInvoiceNo}
+              masterSheetId={invoicesClient?.masterSheetId || job?.masterSheetId}
+              clientSheetId={invoicesClient?.clientSheetId || job?.clientSheetId}
+              clientName={invoicesClient?.clientName || invoicesClient?.name || ""}
+              fallbackSummary={{
+                client: jobClient,
+                jobName,
+                amount: parseFloat(amount) || 0,
+                sentDate,
+                dueDate: slot?.dueDate || calculatePaymentDate(sentDate, daysToPay) || "",
+                status,
+                rechargedAmountGbp: parseFloat(ofWhichRechgd) || 0,
+              }}
+              isAdmin={isAdmin}
+            />
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "8px", marginTop: "18px" }}>
+              <button
+                type="button"
+                onClick={() => setViewingDetails(false)}
+                style={{ padding: "8px 16px", background: "#f8fafc", border: "1px solid #cbd5e1", borderRadius: "6px", cursor: "pointer", fontSize: "13px", fontWeight: "600", color: "#334155" }}
+              >
+                Back to edit
+              </button>
+              <button
+                type="button"
+                onClick={close}
+                style={{ padding: "8px 16px", background: "#f5f5f5", border: "1px solid #ddd", borderRadius: "6px", cursor: "pointer", fontSize: "13px", color: "#334155" }}
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        ) : movingInvoice ? (
           <div>
             <div style={{ fontSize: "13px", color: "#475569", marginBottom: "12px" }}>
               Select a new destination job for invoice <strong>#{invoiceNo || slot.ref}</strong> (£{parseFloat(amount || 0).toFixed(2)}):

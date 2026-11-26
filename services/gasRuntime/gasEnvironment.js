@@ -1811,6 +1811,7 @@ export async function createGasEnvironment({
     scriptProperties: new Map(),
     scriptPropertiesDirty: false,
     scriptCache: new Map(),
+    pendingAutoLogEntries: [],
     recomputeMasterFormulasSync: () => { },
   };
 
@@ -1840,44 +1841,50 @@ export async function createGasEnvironment({
   const isComparisonsOnly = loadTabsMode === "comparisons_only";
   const skipReconMonthly = isComparisonsOnly || includeReconMonthly === false;
   const masterTabsFilter = isComparisonsOnly ? COMPARISON_ONLY_MASTER_TABS : ACTIVE_GAS_MASTER_TABS;
-  const reconQuery = supabase
-    .from("master_sheet_grids")
-    .select("id, sheet_role, tab_name, values_grid, notes_grid, row_count, col_count")
-    .eq("client_name", ctx.clientName)
-    .eq("sheet_role", "recon");
-  const filteredReconQuery = isComparisonsOnly
-    ? reconQuery.eq("tab_name", "PLAdds")
-    : skipReconMonthly
-      ? reconQuery.in("tab_name", ["KeyInfo", "PLAdds"])
-      : reconQuery;
+  const skipInitialGridQueries = ctx.syncOrchestratorMode === "native";
+  let gridRows = [];
+  let y0FormulasGrid = null;
 
-  const [masterGridResp, reconGridResp, y0FormulaResp] = await Promise.all([
-    supabase
+  if (!skipInitialGridQueries) {
+    const reconQuery = supabase
       .from("master_sheet_grids")
       .select("id, sheet_role, tab_name, values_grid, notes_grid, row_count, col_count")
       .eq("client_name", ctx.clientName)
-      .eq("sheet_role", "master")
-      .in("tab_name", masterTabsFilter),
-    filteredReconQuery,
-    skipReconMonthly
-      ? Promise.resolve({ data: null })
-      : supabase
+      .eq("sheet_role", "recon");
+    const filteredReconQuery = isComparisonsOnly
+      ? reconQuery.eq("tab_name", "PLAdds")
+      : skipReconMonthly
+        ? reconQuery.in("tab_name", ["KeyInfo", "PLAdds"])
+        : reconQuery;
+
+    const [masterGridResp, reconGridResp, y0FormulaResp] = await Promise.all([
+      supabase
         .from("master_sheet_grids")
-        .select("formulas_grid")
+        .select("id, sheet_role, tab_name, values_grid, notes_grid, row_count, col_count")
         .eq("client_name", ctx.clientName)
         .eq("sheet_role", "master")
-        .eq("tab_name", "Year0Data")
-        .maybeSingle(),
-  ]);
+        .in("tab_name", masterTabsFilter),
+      filteredReconQuery,
+      skipReconMonthly
+        ? Promise.resolve({ data: null })
+        : supabase
+          .from("master_sheet_grids")
+          .select("formulas_grid")
+          .eq("client_name", ctx.clientName)
+          .eq("sheet_role", "master")
+          .eq("tab_name", "Year0Data")
+          .maybeSingle(),
+    ]);
 
-  if (masterGridResp?.error) {
-    throw new Error(`Failed to load master_sheet_grids for ${ctx.clientName}: ${masterGridResp.error.message}`);
+    if (masterGridResp?.error) {
+      throw new Error(`Failed to load master_sheet_grids for ${ctx.clientName}: ${masterGridResp.error.message}`);
+    }
+    if (reconGridResp?.error) {
+      throw new Error(`Failed to load recon_sheet_grids for ${ctx.clientName}: ${reconGridResp.error.message}`);
+    }
+    gridRows = [...(masterGridResp?.data || []), ...(reconGridResp?.data || [])];
+    y0FormulasGrid = y0FormulaResp?.data?.formulas_grid || null;
   }
-  if (reconGridResp?.error) {
-    throw new Error(`Failed to load recon_sheet_grids for ${ctx.clientName}: ${reconGridResp.error.message}`);
-  }
-  const gridRows = [...(masterGridResp?.data || []), ...(reconGridResp?.data || [])];
-  const y0FormulasGrid = y0FormulaResp?.data?.formulas_grid || null;
 
   const masterSS = new VirtualSpreadsheet({
     id: ctx.masterSheetId || `virtual_master_${ctx.clientName}`,
@@ -2068,6 +2075,38 @@ export async function createGasEnvironment({
       }
     } catch (c6Err) {
       console.warn(`[gasEnvironment] Phase 6C connector state preload warning (${ctx.clientName}):`, c6Err?.message);
+    }
+  }
+
+  // Hydrate AutoLog, GasExecLogs & Master Auxiliary Tabs from Phase 6D relational tables when sync_orchestrator_mode === 'native'
+  if (ctx.syncOrchestratorMode === "native") {
+    try {
+      const {
+        MASTER_AUX_TABS,
+        loadClientAutomationLogGrid,
+        loadClientExecutionLogGrid,
+        loadMasterAuxTabFromConfig,
+      } = await import("../nativeSyncOrchestratorService.js");
+      if (masterTabsFilter.includes("AutoLog")) {
+        const alGrid = await loadClientAutomationLogGrid(ctx, { limit: 2500 });
+        applyRelationalGridToVirtualSS_(masterSS, "AutoLog", alGrid, {});
+      }
+      if (masterTabsFilter.includes("GasExecLogs")) {
+        const exGrid = await loadClientExecutionLogGrid(ctx, { limit: 50 });
+        applyRelationalGridToVirtualSS_(masterSS, "GasExecLogs", exGrid, {});
+      }
+      for (const auxTab of MASTER_AUX_TABS) {
+        if (!masterTabsFilter.includes(auxTab)) continue;
+        const auxRec = await loadMasterAuxTabFromConfig(ctx, auxTab);
+        if (auxRec && Array.isArray(auxRec.values_grid) && auxRec.values_grid.length > 0) {
+          if (auxTab === "Year0Data" && Array.isArray(auxRec.formulas_grid) && auxRec.formulas_grid.length > 0) {
+            y0FormulasGrid = auxRec.formulas_grid;
+          }
+          applyRelationalGridToVirtualSS_(masterSS, auxTab, auxRec.values_grid, {});
+        }
+      }
+    } catch (c6dErr) {
+      console.warn(`[gasEnvironment] Phase 6D state preload warning (${ctx.clientName}):`, c6dErr?.message);
     }
   }
 
@@ -2637,9 +2676,25 @@ export async function createGasEnvironment({
         "CRMExcelCopy",
         "GasScriptProps",
       ]);
+      const NATIVE_SYNC_BYPASS_MASTER_TABS = new Set([
+        "AutoLog",
+        "GasExecLogs",
+        "Year0Data",
+        "RevComp",
+        "StarterPL",
+        "StarterInv",
+        "MgmtRep",
+        "ConfCalcs",
+        "PipeCalcs",
+        "Outgoings",
+        "OutgNotes",
+        "NBtoFind",
+      ]);
       const upserts = [];
       const nativeMasterDirtyTabs = [];
       const nativeConnectorDirtyTabs = [];
+      const nativeSyncDirtyMasterTabs = [];
+      const nativeSyncDirtyReconTabs = [];
       const nowIso = new Date().toISOString();
       const collectUpsert = (sObj, sheetRole) => {
         if (!sObj.dirty) return;
@@ -2671,6 +2726,18 @@ export async function createGasEnvironment({
           sObj.dirty = false;
           return;
         }
+        if (ctx.syncOrchestratorMode === "native") {
+          if (sheetRole === "master" && NATIVE_SYNC_BYPASS_MASTER_TABS.has(sObj.name)) {
+            nativeSyncDirtyMasterTabs.push(sObj.name);
+            sObj.dirty = false;
+            return;
+          }
+          if (sheetRole === "recon") {
+            nativeSyncDirtyReconTabs.push(sObj.name);
+            sObj.dirty = false;
+            return;
+          }
+        }
         const maxC = getGridLastCol(sObj.valuesGrid);
         upserts.push({
           client_id: ctx.clientId,
@@ -2693,31 +2760,69 @@ export async function createGasEnvironment({
         collectUpsert(sObj, "recon");
       }
 
-      for (let i = 0; i < upserts.length; i += 6) {
-        const batch = upserts.slice(i, i + 6);
-        const { error: batchErr } = await supabase
-          .from("master_sheet_grids")
-          .upsert(batch, { onConflict: "client_name,sheet_role,tab_name" });
-        if (batchErr) {
-          await Promise.all(
-            batch.map(async (item) => {
-              const { error: uErr } = await supabase
-                .from("master_sheet_grids")
-                .upsert([item], { onConflict: "client_name,sheet_role,tab_name" });
-              if (uErr) {
-                console.warn(
-                  `[gasEnvironment] Supabase upsert warning for ${ctx.clientName} (${item.tab_name}):`,
-                  uErr.message
-                );
-              }
-            })
-          );
+      if (ctx.syncOrchestratorMode !== "native") {
+        for (let i = 0; i < upserts.length; i += 6) {
+          const batch = upserts.slice(i, i + 6);
+          const { error: batchErr } = await supabase
+            .from("master_sheet_grids")
+            .upsert(batch, { onConflict: "client_name,sheet_role,tab_name" });
+          if (batchErr) {
+            await Promise.all(
+              batch.map(async (item) => {
+                const { error: uErr } = await supabase
+                  .from("master_sheet_grids")
+                  .upsert([item], { onConflict: "client_name,sheet_role,tab_name" });
+                if (uErr) {
+                  console.warn(
+                    `[gasEnvironment] Supabase upsert warning for ${ctx.clientName} (${item.tab_name}):`,
+                    uErr.message
+                  );
+                }
+              })
+            );
+          }
         }
       }
 
       const masterMutatedTabs = upserts.filter((u) => u.sheet_role === "master").map((u) => u.tab_name);
-      const allMasterMutatedTabs = [...new Set([...masterMutatedTabs, ...nativeMasterDirtyTabs, ...nativeConnectorDirtyTabs])];
-      const reconMutatedTabs = upserts.filter((u) => u.sheet_role === "recon").map((u) => u.tab_name);
+      const allMasterMutatedTabs = [...new Set([...masterMutatedTabs, ...nativeMasterDirtyTabs, ...nativeConnectorDirtyTabs, ...nativeSyncDirtyMasterTabs])];
+      const reconMutatedTabs = [...new Set([...upserts.filter((u) => u.sheet_role === "recon").map((u) => u.tab_name), ...nativeSyncDirtyReconTabs])];
+      if (nativeSyncDirtyMasterTabs.length > 0 && ctx.clientId) {
+        try {
+          const {
+            MASTER_AUX_COL_BY_TAB,
+            replaceClientAutomationLogFromGrid,
+            saveMasterAuxTabsToConfig,
+          } = await import("../nativeSyncOrchestratorService.js");
+          if (nativeSyncDirtyMasterTabs.includes("AutoLog")) {
+            const pendingAuto = Array.isArray(envState.pendingAutoLogEntries) ? envState.pendingAutoLogEntries.splice(0) : [];
+            if (pendingAuto.length > 0) {
+              const { insertAutomationLogEntries } = await import("../nativeSyncOrchestratorService.js");
+              await insertAutomationLogEntries(ctx, pendingAuto, { source: "gas_automator" });
+            } else {
+              const alGrid = masterSS.getSheetByName("AutoLog")?.valuesGrid || [];
+              await replaceClientAutomationLogFromGrid(ctx, alGrid);
+            }
+          }
+          const auxPatch = {};
+          for (const tName of nativeSyncDirtyMasterTabs) {
+            if (Object.prototype.hasOwnProperty.call(MASTER_AUX_COL_BY_TAB, tName)) {
+              const sObj = masterSS.getSheetByName(tName);
+              if (sObj) {
+                auxPatch[tName] = { values_grid: sObj.valuesGrid || [], formulas_grid: sObj.formulasGrid || [] };
+              }
+            }
+          }
+          if (Object.keys(auxPatch).length > 0) {
+            await saveMasterAuxTabsToConfig(ctx, auxPatch);
+          }
+        } catch (c6dFlushErr) {
+          console.warn(
+            `[gasEnvironment] Phase 6D native sync flush warning for ${ctx.clientName}:`,
+            c6dFlushErr?.message
+          );
+        }
+      }
       if (nativeConnectorDirtyTabs.length > 0 && ctx.clientId) {
         try {
           const cfgPatch6c = {};
@@ -2827,7 +2932,24 @@ export async function createGasEnvironment({
           const { isManagedReconTab, reconcileClientReconFromGrids } = await import("../relationalReconService.js");
           const phase4ReconTabs = [...new Set(reconMutatedTabs.filter((t) => isManagedReconTab(t)))];
           if (phase4ReconTabs.length > 0) {
-            await reconcileClientReconFromGrids(ctx, phase4ReconTabs).catch((err) => {
+            const recordsOverride = {};
+            if (ctx.syncOrchestratorMode === "native") {
+              for (const rt of phase4ReconTabs) {
+                const sObj = reconSS.getSheetByName(rt);
+                if (sObj) {
+                  recordsOverride[rt] = {
+                    values_grid: sObj.valuesGrid || [],
+                    formulas_grid: sObj.formulasGrid || sObj.valuesGrid || [],
+                    notes_grid: sObj.notesGrid || {},
+                    row_count: (sObj.valuesGrid || []).length,
+                    col_count: getGridLastCol(sObj.valuesGrid || []),
+                  };
+                }
+              }
+            }
+            await reconcileClientReconFromGrids(ctx, phase4ReconTabs, {
+              ...(ctx.syncOrchestratorMode === "native" ? { recordsOverride } : {}),
+            }).catch((err) => {
               console.warn(
                 `[gasEnvironment] Phase 4C relational recon sync warning for ${ctx.clientName}:`,
                 err?.message
@@ -3353,21 +3475,44 @@ export async function createGasEnvironment({
             "PLAdds",
             ...(Array.isArray(resObj?.reconciledMonths) ? resObj.reconciledMonths.map(m => m?.tabName).filter(Boolean) : []),
           ]);
-          const { data: reloadedRows } = await supabase
-            .from("master_sheet_grids")
-            .select("*")
-            .eq("client_name", ctx.clientName)
-            .eq("sheet_role", "recon")
-            .in("tab_name", Array.from(tabsToReload));
-          for (const rRow of reloadedRows || []) {
-            if (Array.isArray(rRow.values_grid)) {
-              const compacted = compactGrid2D(rRow.values_grid);
-              const s = reconSS.getSheetByName(rRow.tab_name) || reconSS.insertSheet(rRow.tab_name);
-              s.valuesGrid = cloneGrid2D(compacted);
-              s.formulasGrid = cloneGrid2D(compacted);
-              s._loadedValuesJson = JSON.stringify(compacted);
-              if (rRow.tab_name === "PLAdds") {
-                envState.masterFormulasDirty = true;
+          if (ctx.reconReadMode === "relational" || ctx.syncOrchestratorMode === "native") {
+            const {
+              preloadClientRelationalReconBundle,
+              reconstructRelationalReconTabFromBundle,
+              invalidateClientRelationalReconCache,
+            } = await import("../relationalReconService.js");
+            invalidateClientRelationalReconCache(ctx.clientName);
+            const rBundle = await preloadClientRelationalReconBundle(ctx, { source: "db" });
+            for (const tName of tabsToReload) {
+              const rRec = reconstructRelationalReconTabFromBundle(rBundle, tName);
+              if (rRec && Array.isArray(rRec.values_grid)) {
+                const compacted = compactGrid2D(rRec.values_grid);
+                const s = reconSS.getSheetByName(tName) || reconSS.insertSheet(tName);
+                s.valuesGrid = cloneGrid2D(compacted);
+                s.formulasGrid = cloneGrid2D(compacted);
+                s._loadedValuesJson = JSON.stringify(compacted);
+                if (tName === "PLAdds") {
+                  envState.masterFormulasDirty = true;
+                }
+              }
+            }
+          } else {
+            const { data: reloadedRows } = await supabase
+              .from("master_sheet_grids")
+              .select("*")
+              .eq("client_name", ctx.clientName)
+              .eq("sheet_role", "recon")
+              .in("tab_name", Array.from(tabsToReload));
+            for (const rRow of reloadedRows || []) {
+              if (Array.isArray(rRow.values_grid)) {
+                const compacted = compactGrid2D(rRow.values_grid);
+                const s = reconSS.getSheetByName(rRow.tab_name) || reconSS.insertSheet(rRow.tab_name);
+                s.valuesGrid = cloneGrid2D(compacted);
+                s.formulasGrid = cloneGrid2D(compacted);
+                s._loadedValuesJson = JSON.stringify(compacted);
+                if (rRow.tab_name === "PLAdds") {
+                  envState.masterFormulasDirty = true;
+                }
               }
             }
           }
@@ -3539,6 +3684,7 @@ export async function createGasEnvironment({
   const Utilities = {
     formatDate: (date, tz, format) => formatGasDate(date, tz, format),
     sleep: async (ms) => {
+      if (ctx.syncOrchestratorMode === "native") return;
       const waitMs = Math.min(Math.max(0, Number(ms) || 0), 5000);
       if (waitMs > 0) await new Promise((r) => setTimeout(r, waitMs));
     },
@@ -3732,6 +3878,8 @@ export async function createGasEnvironment({
     uiAlerts,
     masterSS,
     reconSS,
+    pendingAutoLogEntries: envState.pendingAutoLogEntries,
+    scriptProperties: envState.scriptProperties,
     recomputeMasterFormulasSync: envState.recomputeMasterFormulasSync,
     finalizeExecution: async (finalMeta = {}) => {
       // Clear any B4:I4 GAS locks before final persistence
@@ -3745,7 +3893,7 @@ export async function createGasEnvironment({
         }
       }
 
-      // Persist GAS execution console transcript to virtual `GasExecLogs` tab if applicable
+      // Persist execution console transcript to `pulse_execution_logs` (6D native) or virtual `GasExecLogs` tab
       const fnName = finalMeta?.functionName || executionMeta?.functionName || "";
       const shouldRecord =
         !dryRun &&
@@ -3767,35 +3915,53 @@ export async function createGasEnvironment({
             ? executionLogs.join("\n")
             : `[${execStartedAtIso.slice(11, 23)}] [INFO] Execution completed (${fnName || "GAS runtime"}) with no console output.`;
 
-        let execLogSheet = masterSS.getSheetByName("GasExecLogs");
-        if (!execLogSheet) {
-          execLogSheet = masterSS.insertSheet("GasExecLogs");
+        if (ctx.syncOrchestratorMode === "native" && ctx.clientId) {
+          try {
+            const { insertExecutionLogEntry } = await import("../nativeSyncOrchestratorService.js");
+            await insertExecutionLogEntry(ctx, {
+              timestampDisplay: execStartedAtIso,
+              executedAt: execStartedAtIso,
+              functionName: fnName || "runAgencyAutomator",
+              triggerSource: triggerSrc,
+              durationText: durationSec,
+              status: statusStr,
+              summary: summaryStr,
+              transcript,
+            });
+          } catch (exLogErr) {
+            console.warn(`[gasEnvironment] Phase 6D execution log insert warning (${ctx.clientName}):`, exLogErr?.message);
+          }
+        } else {
+          let execLogSheet = masterSS.getSheetByName("GasExecLogs");
+          if (!execLogSheet) {
+            execLogSheet = masterSS.insertSheet("GasExecLogs");
+          }
+          const headerRow = [
+            "Timestamp",
+            "Function / Sequence",
+            "Trigger Source",
+            "Duration",
+            "Status",
+            "Summary",
+            "Console Transcript",
+          ];
+          const existingRows = Array.isArray(execLogSheet.valuesGrid)
+            ? execLogSheet.valuesGrid.slice(1).filter((r) => Array.isArray(r) && r.some(Boolean))
+            : [];
+          const newEntry = [
+            execStartedAtIso,
+            fnName || "runAgencyAutomator",
+            triggerSrc,
+            durationSec,
+            statusStr,
+            summaryStr,
+            transcript,
+          ];
+          const nextGrid = [headerRow, newEntry, ...existingRows.slice(0, 39)];
+          execLogSheet.valuesGrid = nextGrid;
+          execLogSheet.formulasGrid = cloneGrid2D(nextGrid);
+          execLogSheet.dirty = true;
         }
-        const headerRow = [
-          "Timestamp",
-          "Function / Sequence",
-          "Trigger Source",
-          "Duration",
-          "Status",
-          "Summary",
-          "Console Transcript",
-        ];
-        const existingRows = Array.isArray(execLogSheet.valuesGrid)
-          ? execLogSheet.valuesGrid.slice(1).filter((r) => Array.isArray(r) && r.some(Boolean))
-          : [];
-        const newEntry = [
-          execStartedAtIso,
-          fnName || "runAgencyAutomator",
-          triggerSrc,
-          durationSec,
-          statusStr,
-          summaryStr,
-          transcript,
-        ];
-        const nextGrid = [headerRow, newEntry, ...existingRows.slice(0, 39)];
-        execLogSheet.valuesGrid = nextGrid;
-        execLogSheet.formulasGrid = cloneGrid2D(nextGrid);
-        execLogSheet.dirty = true;
       }
 
       if (envState.scriptPropertiesDirty) {

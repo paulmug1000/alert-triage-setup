@@ -634,24 +634,61 @@ async function runSingleReconReconcilePass_(ctx, tabNames = null, options = {}) 
   const supabase = getSupabaseAdmin();
   if (!supabase) return null;
 
-  const reconRows = [];
-  for (let from = 0; ; from += 500) {
-    const { data, error } = await supabase
-      .from("master_sheet_grids")
-      .select("tab_name, row_count, col_count, values_grid, formulas_grid, notes_grid, updated_at")
-      .eq("client_name", ctx.clientName)
-      .eq("sheet_role", "recon")
-      .order("tab_name", { ascending: true })
-      .range(from, from + 499);
-    if (error) throw new Error(`Failed loading recon grids for ${ctx.clientName}: ${error.message}`);
-    if (!Array.isArray(data) || data.length === 0) break;
-    reconRows.push(...data);
-    if (data.length < 500) break;
-  }
-
+  const recordsOverride =
+    options?.recordsOverride && typeof options.recordsOverride === "object"
+      ? options.recordsOverride
+      : null;
   const byTab = new Map();
-  for (const r of reconRows) {
-    byTab.set(r.tab_name, r);
+  let reconRows = [];
+
+  if (recordsOverride || ctx.syncOrchestratorMode === "native") {
+    const bundle = await preloadClientRelationalReconBundle(ctx, { source: "db" }).catch(() => null);
+    if (bundle) {
+      for (const mKey of bundle.periodByMonth?.keys?.() || []) {
+        const rec = reconstructRelationalReconTabFromBundle(bundle, mKey);
+        if (rec) byTab.set(mKey, rec);
+      }
+      for (const cfgTab of RECON_CONFIG_TABS) {
+        const rec = reconstructRelationalReconTabFromBundle(bundle, cfgTab);
+        if (rec) byTab.set(cfgTab, rec);
+      }
+    }
+    if (recordsOverride) {
+      for (const [tName, ov] of Object.entries(recordsOverride)) {
+        if (!tName || tName === "__proto__" || tName === "constructor" || tName === "prototype") continue;
+        if (!ov || !Array.isArray(ov.values_grid)) continue;
+        byTab.set(tName, {
+          tab_name: tName,
+          row_count: ov.row_count ?? ov.values_grid.length,
+          col_count:
+            ov.col_count ??
+            ov.values_grid.reduce((m, r) => Math.max(m, Array.isArray(r) ? r.length : 0), 0),
+          values_grid: ov.values_grid,
+          formulas_grid: ov.formulas_grid || ov.values_grid,
+          notes_grid: ov.notes_grid || {},
+          updated_at: ov.updated_at || new Date().toISOString(),
+        });
+      }
+    }
+    reconRows = [...byTab.values()];
+  } else {
+    for (let from = 0; ; from += 500) {
+      const { data, error } = await supabase
+        .from("master_sheet_grids")
+        .select("tab_name, row_count, col_count, values_grid, formulas_grid, notes_grid, updated_at")
+        .eq("client_name", ctx.clientName)
+        .eq("sheet_role", "recon")
+        .order("tab_name", { ascending: true })
+        .range(from, from + 499);
+      if (error) throw new Error(`Failed loading recon grids for ${ctx.clientName}: ${error.message}`);
+      if (!Array.isArray(data) || data.length === 0) break;
+      reconRows.push(...data);
+      if (data.length < 500) break;
+    }
+
+    for (const r of reconRows) {
+      byTab.set(r.tab_name, r);
+    }
   }
 
   const targetAllMonths =

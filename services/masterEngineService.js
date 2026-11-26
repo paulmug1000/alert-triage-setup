@@ -447,7 +447,12 @@ export async function resolveSupabaseSheetContext({ spreadsheetId = "", clientNa
         try {
           let { data, error } = await supabase
             .from("clients")
-            .select("id, client_name, normalized_key, master_mode, client_mode, jobs_mode, jobs_read_mode, inputs_mode, inputs_read_mode, master_ingestion_mode, master_read_mode, recon_mode, recon_read_mode, financials_mode, financials_read_mode, client_compute_mode, master_compute_mode, connector_pull_mode, client_sheet_id, master_sheet_id, recon_sheet_id, metadata");
+            .select("id, client_name, normalized_key, master_mode, client_mode, jobs_mode, jobs_read_mode, inputs_mode, inputs_read_mode, master_ingestion_mode, master_read_mode, recon_mode, recon_read_mode, financials_mode, financials_read_mode, client_compute_mode, master_compute_mode, connector_pull_mode, sync_orchestrator_mode, client_sheet_id, master_sheet_id, recon_sheet_id, metadata");
+          if (error && String(error.message || "").includes("sync_orchestrator_mode")) {
+            ({ data, error } = await supabase
+              .from("clients")
+              .select("id, client_name, normalized_key, master_mode, client_mode, jobs_mode, jobs_read_mode, inputs_mode, inputs_read_mode, master_ingestion_mode, master_read_mode, recon_mode, recon_read_mode, financials_mode, financials_read_mode, client_compute_mode, master_compute_mode, connector_pull_mode, client_sheet_id, master_sheet_id, recon_sheet_id, metadata"));
+          }
           if (error && (String(error.message || "").includes("client_compute_mode") || String(error.message || "").includes("master_compute_mode") || String(error.message || "").includes("connector_pull_mode"))) {
             ({ data, error } = await supabase
               .from("clients")
@@ -536,6 +541,7 @@ export async function resolveSupabaseSheetContext({ spreadsheetId = "", clientNa
                 clientComputeMode: String(row.client_compute_mode || row.metadata?.client_compute_mode || "grid_gas").trim().toLowerCase(),
                 masterComputeMode: String(row.master_compute_mode || row.metadata?.master_compute_mode || "grid_gas").trim().toLowerCase(),
                 connectorPullMode: String(row.connector_pull_mode || row.metadata?.connector_pull_mode || "grid_gas").trim().toLowerCase(),
+                syncOrchestratorMode: String(row.sync_orchestrator_mode || row.metadata?.sync_orchestrator_mode || "grid_gas").trim().toLowerCase(),
                 sheetBridgeMode: String(row.metadata?.sheet_bridge_mode || "off").trim().toLowerCase(),
                 clientSheetId: cId,
                 masterSheetId: mId,
@@ -1141,6 +1147,129 @@ export async function getOrLoadVirtualTabGrid_(ctx, sheetRole, tabName, rawSheet
       }
     }
 
+    if (sheetRole === "master" && ctx.syncOrchestratorMode === "native") {
+      try {
+        const {
+          MASTER_AUX_COL_BY_TAB,
+          MASTER_TRANSIENT_CLIENT_MIRROR_TABS,
+          loadClientAutomationLogGrid,
+          loadClientExecutionLogGrid,
+          loadMasterAuxTabFromConfig,
+        } = await import("./nativeSyncOrchestratorService.js");
+        if (tabName === "AutoLog") {
+          const alGrid = await loadClientAutomationLogGrid(ctx, { limit: 2500 });
+          const recOut = {
+            client_id: ctx.clientId,
+            client_name: ctx.clientName,
+            sheet_role: "master",
+            tab_name: "AutoLog",
+            values_grid: alGrid,
+            formulas_grid: alGrid,
+            notes_grid: {},
+            row_count: alGrid.length,
+            col_count: 4,
+            updated_at: new Date().toISOString(),
+          };
+          setGridMemoryCache_(cacheKey, recOut);
+          return recOut;
+        }
+        if (tabName === "GasExecLogs") {
+          const exGrid = await loadClientExecutionLogGrid(ctx, { limit: 50 });
+          const recOut = {
+            client_id: ctx.clientId,
+            client_name: ctx.clientName,
+            sheet_role: "master",
+            tab_name: "GasExecLogs",
+            values_grid: exGrid,
+            formulas_grid: exGrid,
+            notes_grid: {},
+            row_count: exGrid.length,
+            col_count: 7,
+            updated_at: new Date().toISOString(),
+          };
+          setGridMemoryCache_(cacheKey, recOut);
+          return recOut;
+        }
+        if (Object.prototype.hasOwnProperty.call(MASTER_AUX_COL_BY_TAB, tabName)) {
+          const auxRec = await loadMasterAuxTabFromConfig(ctx, tabName);
+          if (auxRec && Array.isArray(auxRec.values_grid)) {
+            const compacted = compactGrid2D(auxRec.values_grid);
+            const recOut = {
+              client_id: ctx.clientId,
+              client_name: ctx.clientName,
+              sheet_role: "master",
+              tab_name: tabName,
+              values_grid: compacted,
+              formulas_grid: Array.isArray(auxRec.formulas_grid) && auxRec.formulas_grid.length > 0 ? auxRec.formulas_grid : compacted,
+              notes_grid: {},
+              row_count: compacted.length,
+              col_count: compacted.reduce((m, r) => Math.max(m, Array.isArray(r) ? r.length : 0), 0),
+              updated_at: new Date().toISOString(),
+            };
+            setGridMemoryCache_(cacheKey, recOut);
+            return recOut;
+          }
+        }
+        if (MASTER_TRANSIENT_CLIENT_MIRROR_TABS.has(tabName)) {
+          if (ctx.clientComputeMode === "native") {
+            const { loadNativeClientTabRecord } = await import("./nativeClientCalcService.js");
+            const cRec = await loadNativeClientTabRecord(ctx, tabName, { source: "db", valuesOnly: true }).catch(() => null);
+            if (cRec && Array.isArray(cRec.values_grid)) {
+              const compacted = compactGrid2D(cRec.values_grid);
+              const recOut = {
+                client_id: ctx.clientId,
+                client_name: ctx.clientName,
+                sheet_role: "master",
+                tab_name: tabName,
+                values_grid: compacted,
+                formulas_grid: compacted,
+                notes_grid: cRec.notes_grid || {},
+                row_count: compacted.length,
+                col_count: compacted.reduce((m, r) => Math.max(m, Array.isArray(r) ? r.length : 0), 0),
+                updated_at: new Date().toISOString(),
+              };
+              setGridMemoryCache_(cacheKey, recOut);
+              return recOut;
+            }
+          }
+        }
+      } catch (c6dLoadErr) {
+        console.warn(`[masterEngineService] Native Phase 6D tab load fallback (${ctx.clientName}/${tabName}):`, c6dLoadErr?.message);
+      }
+    }
+
+    if (sheetRole === "recon" && (ctx.reconReadMode === "relational" || ctx.syncOrchestratorMode === "native")) {
+      try {
+        const {
+          isManagedReconTab,
+          preloadClientRelationalReconBundle,
+          reconstructRelationalReconTabFromBundle,
+        } = await import("./relationalReconService.js");
+        if (isManagedReconTab(tabName)) {
+          const bundle = await preloadClientRelationalReconBundle(ctx, { source: "db" });
+          const rRec = reconstructRelationalReconTabFromBundle(bundle, tabName);
+          if (rRec && Array.isArray(rRec.values_grid)) {
+            const recOut = {
+              client_id: ctx.clientId,
+              client_name: ctx.clientName,
+              sheet_role: "recon",
+              tab_name: tabName,
+              values_grid: compactGrid2D(rRec.values_grid),
+              formulas_grid: compactGrid2D(rRec.formulas_grid || rRec.values_grid),
+              notes_grid: rRec.notes_grid || {},
+              row_count: rRec.row_count || rRec.values_grid.length,
+              col_count: rRec.col_count || 0,
+              updated_at: rRec.updated_at || new Date().toISOString(),
+            };
+            setGridMemoryCache_(cacheKey, recOut);
+            return recOut;
+          }
+        }
+      } catch (relReconLoadErr) {
+        console.warn(`[masterEngineService] Native recon tab load fallback (${ctx.clientName}/${tabName}):`, relReconLoadErr?.message);
+      }
+    }
+
     if (sheetRole === "client") {
       const selectCols = !valuesOnly
         ? "id, client_id, client_name, sheet_role, tab_name, values_grid, formulas_grid, notes_grid, row_count, col_count, updated_at"
@@ -1268,7 +1397,8 @@ async function getVirtualTabGridForWrite_(ctx, sheetRole, tabName, rawSheetsApi 
   const cached = _gridMemoryCache.get(cacheKey);
   const skipGridStalenessCheck =
     (sheetRole === "client" && ctx.clientComputeMode === "native") ||
-    (sheetRole === "master" && ctx.masterComputeMode === "native");
+    (sheetRole === "master" && (ctx.masterComputeMode === "native" || ctx.syncOrchestratorMode === "native")) ||
+    (sheetRole === "recon" && ctx.syncOrchestratorMode === "native");
   if (supabase && cached && !skipGridStalenessCheck && !hasPendingOrInFlightClientRecompute_(ctx.clientName)) {
     try {
       const q = supabase
@@ -1276,7 +1406,7 @@ async function getVirtualTabGridForWrite_(ctx, sheetRole, tabName, rawSheetsApi 
         .select("updated_at")
         .eq("client_name", ctx.clientName);
       let metaRow = null;
-      if (sheetRole === "client") {
+          if (sheetRole === "client") {
         const { data: candidates } = await q
           .in("sheet_role", ["client", "master"])
           .in("tab_name", [String(tabName), `Client::${String(tabName)}`]);
@@ -1709,6 +1839,51 @@ export async function saveVirtualTabGrid_(
       skipConfigUpsert: true,
     });
     return;
+  }
+
+  if (sheetRole === "master" && ctx.syncOrchestratorMode === "native") {
+    const {
+      MASTER_AUX_COL_BY_TAB,
+      MASTER_TRANSIENT_CLIENT_MIRROR_TABS,
+      replaceClientAutomationLogFromGrid,
+      replaceClientExecutionLogsFromGrid,
+      saveMasterAuxTabsToConfig,
+    } = await import("./nativeSyncOrchestratorService.js");
+    if (tabName === "AutoLog") {
+      await replaceClientAutomationLogFromGrid(ctx, compactedValues);
+      return;
+    }
+    if (tabName === "GasExecLogs") {
+      await replaceClientExecutionLogsFromGrid(ctx, compactedValues);
+      return;
+    }
+    if (Object.prototype.hasOwnProperty.call(MASTER_AUX_COL_BY_TAB, tabName)) {
+      await saveMasterAuxTabsToConfig(ctx, {
+        [tabName]: { values_grid: compactedValues, formulas_grid: formulasGrid },
+      });
+      return;
+    }
+    if (MASTER_TRANSIENT_CLIENT_MIRROR_TABS.has(tabName)) {
+      return;
+    }
+  }
+
+  if (sheetRole === "recon" && ctx.syncOrchestratorMode === "native") {
+    const { isManagedReconTab, reconcileClientReconFromGrids } = await import("./relationalReconService.js");
+    if (isManagedReconTab(tabName)) {
+      await reconcileClientReconFromGrids(ctx, [tabName], {
+        recordsOverride: {
+          [tabName]: {
+            values_grid: compactedValues,
+            formulas_grid: formulasGrid || compactedValues,
+            notes_grid: finalNotes,
+            row_count: compactedValues.length,
+            col_count: maxCols,
+          },
+        },
+      });
+      return;
+    }
   }
 
   const { error: upsertErr } = await supabase.from("master_sheet_grids").upsert(payload, {
@@ -3658,7 +3833,7 @@ export async function handleVirtualSheetsCall({
     const isUnformattedReq = params.valueRenderOption === "UNFORMATTED_VALUE";
     const useValuesOnly = !isFormulaReq;
     const byTab = new Map();
-    if (sheetRole === "client") {
+        if (sheetRole === "client") {
       const clientKeyLower = ctx.clientName.toLowerCase();
       const useRelFinancialsBatch =
         params._forceFinancialsReadMode === "relational" ||
@@ -3889,7 +4064,63 @@ export async function handleVirtualSheetsCall({
           console.warn(`[masterEngineService] Relational master batchGet fallback for ${ctx.clientName}:`, relErr?.message);
         }
       }
-      if (sheetRole === "recon" && ctx.reconReadMode === "relational" && !isFormulaReq) {
+      if (sheetRole === "master" && ctx.connectorPullMode === "native") {
+        const c6Tabs = uniqueTabs.filter(
+          (t) =>
+            !byTab.has(t) &&
+            (t === "CRMGoogleBridge" || t === "CRMExcelBridge" || t === "CRMExcelCopy" || t === "GasScriptProps")
+        );
+        if (c6Tabs.length > 0) {
+          try {
+            const { data: cfg6c } = await supabase
+              .from("pulse_master_sync_configs")
+              .select("crm_google_bridge_grid, crm_excel_bridge_grid, crm_excel_copy_grid, script_properties")
+              .eq("client_id", ctx.clientId)
+              .maybeSingle();
+            if (cfg6c) {
+              for (const t of c6Tabs) {
+                let vGrid = [];
+                if (t === "CRMGoogleBridge") vGrid = Array.isArray(cfg6c.crm_google_bridge_grid) ? cfg6c.crm_google_bridge_grid : [];
+                else if (t === "CRMExcelBridge") vGrid = Array.isArray(cfg6c.crm_excel_bridge_grid) ? cfg6c.crm_excel_bridge_grid : [];
+                else if (t === "CRMExcelCopy") vGrid = Array.isArray(cfg6c.crm_excel_copy_grid) ? cfg6c.crm_excel_copy_grid : [];
+                else if (t === "GasScriptProps") {
+                  const sp = cfg6c.script_properties && typeof cfg6c.script_properties === "object" ? cfg6c.script_properties : {};
+                  vGrid = [["Key", "Value"], ...Object.entries(sp).map(([k, v]) => [k, String(v ?? "")])];
+                }
+                const compacted = compactGrid2D(vGrid);
+                const recOut = {
+                  values_grid: compacted,
+                  formulas_grid: compacted,
+                  notes_grid: {},
+                };
+                byTab.set(t, recOut);
+                setGridMemoryCache_(`${clientKeyLower}::master::${t}`, recOut);
+              }
+            }
+          } catch (c6Err) {
+            console.warn(`[masterEngineService] Phase 6C batchGet fallback (${ctx.clientName}):`, c6Err?.message);
+          }
+        }
+      }
+      if (sheetRole === "master" && ctx.syncOrchestratorMode === "native") {
+        try {
+          const {
+            PHASE6D_MASTER_LOG_AND_AUX_TABS,
+          } = await import("./nativeSyncOrchestratorService.js");
+          const c6dTabs = uniqueTabs.filter((t) => !byTab.has(t) && PHASE6D_MASTER_LOG_AND_AUX_TABS.has(t));
+          if (c6dTabs.length > 0) {
+            await Promise.all(
+              c6dTabs.map(async (t) => {
+                const loaded = await getOrLoadVirtualTabGrid_(ctx, "master", t, rawSheetsApi).catch(() => null);
+                if (loaded) byTab.set(t, loaded);
+              })
+            );
+          }
+        } catch (c6dErr) {
+          console.warn(`[masterEngineService] Phase 6D batchGet fallback (${ctx.clientName}):`, c6dErr?.message);
+        }
+      }
+      if (sheetRole === "recon" && (ctx.reconReadMode === "relational" || ctx.syncOrchestratorMode === "native") && !isFormulaReq) {
         try {
           const {
             isManagedReconTab,
@@ -4270,6 +4501,22 @@ export async function handleVirtualSheetsCall({
     }
     const valueInputOption = params.valueInputOption || "USER_ENTERED";
     const parsed = parseA1Range(rangeStr);
+    if (sheetRole === "master" && parsed.tabName === "AutoLog" && ctx.syncOrchestratorMode === "native") {
+      const { insertAutomationLogEntries } = await import("./nativeSyncOrchestratorService.js");
+      const normAppendRows = incomingValues.map((row) =>
+        (Array.isArray(row) ? row : [row]).map((v, cIdx) =>
+          normalizeCellForStorage(sheetRole, "AutoLog", 1, (parsed.startCol0 ?? 0) + cIdx, v, valueInputOption, [], {})
+        )
+      );
+      await insertAutomationLogEntries(ctx, normAppendRows, { source: "values.append" });
+      return {
+        status: 200,
+        data: {
+          spreadsheetId,
+          updates: { updatedRange: rangeStr, updatedRows: incomingValues.length },
+        },
+      };
+    }
     const rec = await getVirtualTabGridForWrite_(ctx, sheetRole, parsed.tabName, rawSheetsApi);
     const baseRow0 = Array.isArray(rec.values_grid) ? rec.values_grid.length : 0;
     if (baseRow0 + incomingValues.length > 50000) {
@@ -4363,7 +4610,7 @@ export async function handleVirtualSheetsCall({
       });
     }
 
-    if (sheetRole === "client") {
+        if (sheetRole === "client") {
       if (params._skipFormulaRecompute) {
         queuePendingClientTabs_(ctx, [...byTabClears.keys()], {
           isSkippedStep: true,
@@ -4422,7 +4669,7 @@ export async function handleVirtualSheetsCall({
       requestedRanges.length > 0 ? new Set(requestedRanges.map((r) => parseA1Range(r).tabName)) : null;
 
     let allTabs = [];
-    if (sheetRole === "client") {
+        if (sheetRole === "client") {
       if (!includeGridData) {
         if (ctx.clientComputeMode === "native") {
           const { data: bpRows } = await supabase
@@ -4533,7 +4780,7 @@ export async function handleVirtualSheetsCall({
       }
     } else {
       let reconResolvedFromSql = false;
-      if (sheetRole === "recon" && ctx.reconReadMode === "relational") {
+      if (sheetRole === "recon" && (ctx.reconReadMode === "relational" || ctx.syncOrchestratorMode === "native")) {
         try {
           const {
             isManagedReconTab,
@@ -4871,7 +5118,7 @@ export async function handleVirtualSheetsCall({
 
     let tabMetaRows = [];
     let usingBlueprintMeta = false;
-    if (sheetRole === "client") {
+        if (sheetRole === "client") {
       if (ctx.clientComputeMode === "native") {
         const { data: bpRows } = await supabase
           .from("pulse_client_tab_blueprints")
@@ -4986,7 +5233,7 @@ export async function handleVirtualSheetsCall({
           nextNotes.__bg_colors = bgColors;
           target.notes_grid = nextNotes;
           dirtyTargets.set(target.tab_name, target);
-          if (sheetRole === "client") {
+              if (sheetRole === "client") {
             if (target.tab_name === "Outgoings") {
               valueChangedClientTabs.add(target.tab_name);
             } else {
@@ -5017,7 +5264,7 @@ export async function handleVirtualSheetsCall({
           if (isNoteOnly) {
             target.notes_grid = nextNotes;
             dirtyTargets.set(target.tab_name, target);
-            if (sheetRole === "client") {
+                if (sheetRole === "client") {
               if (target.tab_name === "Outgoings") {
                 valueChangedClientTabs.add(target.tab_name);
               } else {
@@ -5215,7 +5462,7 @@ export async function handleVirtualSheetsCall({
       );
     }
 
-    if (sheetRole === "client") {
+        if (sheetRole === "client") {
       if (params._skipFormulaRecompute) {
         if (valueChangedClientTabs.size > 0 || dirtyTargets.size > 0) {
           queuePendingClientTabs_(ctx, [...valueChangedClientTabs, ...dirtyTargets.keys()], {
@@ -7048,6 +7295,8 @@ export async function getStage2Status(targetClientName = "APPTEST") {
     phase5FinancialsStats,
     phase6NativeStats,
     phase6ConnectorsStats,
+    phase6SyncStats,
+    execLogClientsResp,
   ] = await Promise.all([
     Promise.all(
       STAGE2_TABLES.map(async (t) => {
@@ -7071,9 +7320,15 @@ export async function getStage2Status(targetClientName = "APPTEST") {
     (() =>
       supabase
         .from("clients")
-        .select("id, client_name, normalized_key, status, master_mode, client_mode, jobs_mode, jobs_read_mode, inputs_mode, inputs_read_mode, master_ingestion_mode, master_read_mode, recon_mode, recon_read_mode, financials_mode, financials_read_mode, client_compute_mode, master_compute_mode, connector_pull_mode, client_sheet_id, master_sheet_id, recon_sheet_id, metadata")
+        .select("id, client_name, normalized_key, status, master_mode, client_mode, jobs_mode, jobs_read_mode, inputs_mode, inputs_read_mode, master_ingestion_mode, master_read_mode, recon_mode, recon_read_mode, financials_mode, financials_read_mode, client_compute_mode, master_compute_mode, connector_pull_mode, sync_orchestrator_mode, client_sheet_id, master_sheet_id, recon_sheet_id, metadata")
         .order("client_name", { ascending: true })
         .then(async (res) => {
+          if (res.error && String(res.error.message || "").includes("sync_orchestrator_mode")) {
+            res = await supabase
+              .from("clients")
+              .select("id, client_name, normalized_key, status, master_mode, client_mode, jobs_mode, jobs_read_mode, inputs_mode, inputs_read_mode, master_ingestion_mode, master_read_mode, recon_mode, recon_read_mode, financials_mode, financials_read_mode, client_compute_mode, master_compute_mode, connector_pull_mode, client_sheet_id, master_sheet_id, recon_sheet_id, metadata")
+              .order("client_name", { ascending: true });
+          }
           if (res.error && (String(res.error.message || "").includes("client_compute_mode") || String(res.error.message || "").includes("master_compute_mode") || String(res.error.message || "").includes("connector_pull_mode"))) {
             res = await supabase
               .from("clients")
@@ -7184,6 +7439,16 @@ export async function getStage2Status(targetClientName = "APPTEST") {
         getPhase6NativeConnectorsOverviewStats()
       )
       .catch(() => null),
+    import("./nativeSyncOrchestratorService.js")
+      .then(({ getPhase6NativeSyncOverviewStats }) =>
+        getPhase6NativeSyncOverviewStats()
+      )
+      .catch(() => null),
+    supabase
+      .from("pulse_execution_logs")
+      .select("client_id")
+      .then((r) => r)
+      .catch(() => ({ data: [] })),
   ]);
 
   const schemaReady = _verifiedStage2SchemaReady || tableResults.every((t) => t.exists);
@@ -7218,6 +7483,9 @@ export async function getStage2Status(targetClientName = "APPTEST") {
       intsByClientId.get(row.client_id).push(String(row.tool || "").trim());
     }
 
+    const execLogClientIds = new Set(
+      (execLogClientsResp?.data || []).map((r) => r.client_id).filter(Boolean)
+    );
     const gridStatsByClient = new Map();
     for (const g of allGrids || []) {
       const cKey = String(g.client_name || "").trim().toUpperCase();
@@ -7257,6 +7525,44 @@ export async function getStage2Status(targetClientName = "APPTEST") {
         });
       } else if (g.tab_name !== "GasExecLogs" && g.tab_name !== "GasScriptProps" && g.tab_name !== "SheetBridgeBaseline") {
         availableTabs.master.push(g);
+      }
+    }
+
+    const targetClientRow = (clientsData || []).find(
+      (c) => String(c.client_name || "").trim().toUpperCase() === String(targetClientName || "").trim().toUpperCase()
+    );
+    const targetSyncMode = String(
+      targetClientRow?.sync_orchestrator_mode || targetClientRow?.metadata?.sync_orchestrator_mode || "grid_gas"
+    ).trim().toLowerCase();
+    if (targetClientRow && targetSyncMode === "native") {
+      if (availableTabs.master.length === 0) {
+        availableTabs.master = CORE_MASTER_TABS
+          .filter((t) => t !== "GasExecLogs" && t !== "GasScriptProps" && t !== "SheetBridgeBaseline")
+          .map((tab_name) => ({
+            sheet_role: "master",
+            tab_name,
+            row_count: null,
+            col_count: null,
+            updated_at: null,
+          }));
+      }
+      if (availableTabs.recon.length === 0) {
+        const { data: rcData } = await supabase
+          .from("pulse_recon_configs")
+          .select("tab_list, updated_at")
+          .eq("client_name", targetClientRow.client_name)
+          .maybeSingle()
+          .catch(() => ({ data: null }));
+        const reconTabs = Array.from(
+          new Set(["KeyInfo", "PLAdds", ...(Array.isArray(rcData?.tab_list) ? rcData.tab_list : [])])
+        ).filter(Boolean);
+        availableTabs.recon = reconTabs.map((tab_name) => ({
+          sheet_role: "recon",
+          tab_name,
+          row_count: null,
+          col_count: null,
+          updated_at: rcData?.updated_at || null,
+        }));
       }
     }
 
@@ -7300,13 +7606,15 @@ export async function getStage2Status(targetClientName = "APPTEST") {
         clientComputeMode: String(c.client_compute_mode || c.metadata?.client_compute_mode || "grid_gas").trim().toLowerCase(),
         masterComputeMode: String(c.master_compute_mode || c.metadata?.master_compute_mode || "grid_gas").trim().toLowerCase(),
         connectorPullMode: String(c.connector_pull_mode || c.metadata?.connector_pull_mode || "grid_gas").trim().toLowerCase(),
+        syncOrchestratorMode: String(c.sync_orchestrator_mode || c.metadata?.sync_orchestrator_mode || "grid_gas").trim().toLowerCase(),
         nativeClientCalcState: c.metadata?.native_client_calc_state || null,
         nativeMasterCompState: c.metadata?.native_master_comp_state || null,
         nativeConnectorsState: c.metadata?.native_connectors_state || null,
+        nativeSyncState: c.metadata?.native_sync_state || null,
         masterTabCount: gs.masterTabCount,
         reconTabCount: gs.reconTabCount,
         clientTabCount: gs.clientTabCount,
-        hasExecLogs: gs.hasExecLogs,
+        hasExecLogs: gs.hasExecLogs || execLogClientIds.has(c.id),
         lastGridUpdatedAt: gs.lastUpdatedAt,
         materializedAt: ki?.client_materialized_at || null,
         accountingTool: ki?.accounting_tool || fallbackAcc,
@@ -7348,6 +7656,9 @@ export async function getStage2Status(targetClientName = "APPTEST") {
   let connectorNativeCount = 0;
   let connectorShadowCount = 0;
   let phase6ConnectorsBackfilledCount = 0;
+  let syncOrchestratorNativeCount = 0;
+  let syncOrchestratorShadowCount = 0;
+  let phase6SyncBackfilledCount = 0;
   for (const c of clientsData || []) {
     if (c?.metadata?.relational_jobs_state?.lastBackfilledAt) backfilledClientsCount++;
     if (String(c?.jobs_mode || c?.metadata?.jobs_mode || "").trim().toLowerCase() === "relational") relationalModeClientsCount++;
@@ -7367,6 +7678,7 @@ export async function getStage2Status(targetClientName = "APPTEST") {
     if (c?.metadata?.native_client_calc_state?.lastBackfilledAt) phase6ClientBackfilledCount++;
     if (c?.metadata?.native_master_comp_state?.lastBackfilledAt) phase6MasterBackfilledCount++;
     if (c?.metadata?.native_connectors_state?.lastBackfilledAt) phase6ConnectorsBackfilledCount++;
+    if (c?.metadata?.native_sync_state?.lastBackfilledAt) phase6SyncBackfilledCount++;
     const cComp = String(c?.client_compute_mode || c?.metadata?.client_compute_mode || "").trim().toLowerCase();
     if (cComp === "native") clientComputeNativeCount++;
     else if (cComp === "shadow") clientComputeShadowCount++;
@@ -7376,6 +7688,9 @@ export async function getStage2Status(targetClientName = "APPTEST") {
     const cPull = String(c?.connector_pull_mode || c?.metadata?.connector_pull_mode || "").trim().toLowerCase();
     if (cPull === "native") connectorNativeCount++;
     else if (cPull === "shadow") connectorShadowCount++;
+    const sOrch = String(c?.sync_orchestrator_mode || c?.metadata?.sync_orchestrator_mode || "").trim().toLowerCase();
+    if (sOrch === "native") syncOrchestratorNativeCount++;
+    else if (sOrch === "shadow") syncOrchestratorShadowCount++;
   }
 
   return {
@@ -7527,6 +7842,23 @@ export async function getStage2Status(targetClientName = "APPTEST") {
         backfilledCount: phase6ConnectorsBackfilledCount,
         connectorNativeCount,
         connectorShadowCount,
+      },
+    phase6NativeSync: phase6SyncStats
+      ? {
+        ...phase6SyncStats,
+        backfilledCount: phase6SyncBackfilledCount,
+        syncOrchestratorNativeCount,
+        syncOrchestratorShadowCount,
+      }
+      : {
+        schemaReady: false,
+        migrationSql: "",
+        totalAutoLogs: 0,
+        totalExecLogs: 0,
+        totalBackfilledConfigs: 0,
+        backfilledCount: phase6SyncBackfilledCount,
+        syncOrchestratorNativeCount,
+        syncOrchestratorShadowCount,
       },
   };
 }

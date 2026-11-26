@@ -13,7 +13,7 @@
  */
 
 import { getSupabaseAdmin } from "./supabaseClient.js";
-import { resolveBrokerTokenInProcess } from "./gasRuntime/gasEnvironment.js";
+import { resolveBrokerTokenInProcess, formatGasDate } from "./gasRuntime/gasEnvironment.js";
 import { dateToSerial, serialToDate } from "./gasRuntime/sheetValueUtils.js";
 import { compactGrid2D } from "./gasRuntime/masterFormulaEngine.js";
 import {
@@ -25,6 +25,7 @@ import {
   projectPLLinesToGrid,
   preloadClientRelationalMasterBundle,
   invalidateClientRelationalMasterCache,
+  reconcileClientMasterIngestionFromGrids,
 } from "./relationalMasterService.js";
 import {
   saveVirtualTabGrid_,
@@ -384,9 +385,9 @@ async function resolveAccountingAuth_(ctx, keyInfoGrid, tool, tokenOverride = nu
     const rawId = String(readKeyInfoCellRaw(keyInfoGrid, cellCoord, "")).trim();
     const resolvedId = String(
       rawId ||
-        (tool === "quickbooks"
-          ? tokenOverride.realmId || tokenOverride.tenantId || ""
-          : tokenOverride.tenantId || tokenOverride.realmId || "")
+      (tool === "quickbooks"
+        ? tokenOverride.realmId || tokenOverride.tenantId || ""
+        : tokenOverride.tenantId || tokenOverride.realmId || "")
     ).trim();
     return {
       accessToken: tokenOverride.accessToken,
@@ -1259,7 +1260,7 @@ export async function pullNativeAccountingInvoices(ctx, options = {}) {
         );
         const savedHeaders =
           Array.isArray(bundle.masterConfig?.inv_from_app_headers) &&
-          bundle.masterConfig.inv_from_app_headers.length > 0
+            bundle.masterConfig.inv_from_app_headers.length > 0
             ? bundle.masterConfig.inv_from_app_headers
             : NATIVE_INVOICE_DEFAULT_HEADERS;
         existingGrid = projectAccountingInvoicesToGrid({
@@ -2028,9 +2029,9 @@ async function fetchQBCostTransactions_({
           const net = Math.round(rawLineNet * creditRatio * 100) / 100;
           const lineTaxCodeId = String(
             line.AccountBasedExpenseLineDetail?.TaxCodeRef?.value ||
-              line.ItemBasedExpenseLineDetail?.TaxCodeRef?.value ||
-              line.TaxCodeRef?.value ||
-              ""
+            line.ItemBasedExpenseLineDetail?.TaxCodeRef?.value ||
+            line.TaxCodeRef?.value ||
+            ""
           ).trim();
 
           let vat = 0;
@@ -2210,20 +2211,20 @@ export async function pullNativeAccountingDirectCosts(ctx, options = {}) {
   const allExpenseData =
     tool === "quickbooks"
       ? await fetchQBCostTransactions_({
-          targetCodes,
-          accessToken: auth.accessToken,
-          realmId: auth.tenantOrRealmId,
-          fetchImpl,
-          sleepImpl,
-        })
+        targetCodes,
+        accessToken: auth.accessToken,
+        realmId: auth.tenantOrRealmId,
+        fetchImpl,
+        sleepImpl,
+      })
       : await fetchXeroCostTransactions_({
-          targetCodes,
-          accessToken: auth.accessToken,
-          tenantId: auth.tenantOrRealmId,
-          timeZone: state.timeZone,
-          fetchImpl,
-          sleepImpl,
-        });
+        targetCodes,
+        accessToken: auth.accessToken,
+        tenantId: auth.tenantOrRealmId,
+        timeZone: state.timeZone,
+        fetchImpl,
+        sleepImpl,
+      });
 
   const transactionData = allExpenseData.filter((row) => {
     const ref = String(row[5] || "").trim().toLowerCase();
@@ -2843,7 +2844,7 @@ export async function updateNativeSingleMonthPL(ctx, targetYear, targetMonth, fr
       );
       const hdrs =
         Array.isArray(bundle.masterConfig?.pl_from_app_headers) &&
-        bundle.masterConfig.pl_from_app_headers.length > 0
+          bundle.masterConfig.pl_from_app_headers.length > 0
           ? bundle.masterConfig.pl_from_app_headers
           : ["Description"];
       existingGrid = projectPLLinesToGrid({ headers: hdrs, records: plRows, sourceTab: "PLFromApp" });
@@ -2952,16 +2953,16 @@ export async function refreshNativeChartOfAccountsDirect(ctx, options = {}) {
   const accounts =
     tool === "quickbooks"
       ? await fetchQBExpenseAccountsList_({
-          accessToken: auth.accessToken,
-          realmId: auth.tenantOrRealmId,
-          fetchImpl,
-        })
+        accessToken: auth.accessToken,
+        realmId: auth.tenantOrRealmId,
+        fetchImpl,
+      })
       : await fetchXeroExpenseAccountsList_({
-          accessToken: auth.accessToken,
-          tenantId: auth.tenantOrRealmId,
-          fetchImpl,
-          sleepImpl,
-        });
+        accessToken: auth.accessToken,
+        tenantId: auth.tenantOrRealmId,
+        fetchImpl,
+        sleepImpl,
+      });
 
   if (!accounts.length) {
     throw new Error("No expense accounts found.");
@@ -2994,5 +2995,551 @@ export async function refreshNativeChartOfAccountsDirect(ctx, options = {}) {
     accountsCount: sanitizedCategories.length,
     categories: sanitizedCategories,
     keyInfoGrid,
+  };
+}
+
+// ============================================================================
+// 5. REVENUE COMPARISON ENGINE (PHASE 6D VERBATIM 2_Internal_Sheet_Logic.gs)
+// ============================================================================
+
+function parseRevCompDateCell_(cellVal) {
+  if (cellVal instanceof Date && !isNaN(cellVal.getTime())) {
+    return new Date(cellVal.getFullYear(), cellVal.getMonth(), 1);
+  }
+  if (typeof cellVal === "number" && cellVal > 25000 && cellVal < 90000) {
+    const d = serialToDate(cellVal);
+    if (d && !isNaN(d.getTime())) {
+      return new Date(d.getUTCFullYear(), d.getUTCMonth(), 1);
+    }
+  }
+  if (typeof cellVal === "string" && cellVal.trim()) {
+    const d = new Date(cellVal.trim());
+    if (!isNaN(d.getTime())) {
+      return new Date(d.getFullYear(), d.getMonth(), 1);
+    }
+  }
+  return null;
+}
+
+function extractDashboardRevenueDataFromMonthlyGrid_(monthlyGrid = [], targetDate) {
+  const limit = Math.min(Array.isArray(monthlyGrid) ? monthlyGrid.length : 0, 3000);
+  const targetYear = targetDate.getFullYear();
+  const targetMonth = targetDate.getMonth();
+
+  const isMatchDate = (cellVal) => {
+    if (cellVal instanceof Date && !isNaN(cellVal.getTime())) {
+      return cellVal.getFullYear() === targetYear && cellVal.getMonth() === targetMonth;
+    }
+    if (typeof cellVal === "number" && cellVal > 30000 && cellVal < 60000) {
+      const d = new Date(Math.round((cellVal - 25569) * 86400 * 1000));
+      return d.getUTCFullYear() === targetYear && d.getUTCMonth() === targetMonth;
+    }
+    return false;
+  };
+
+  const isAnyDate = (cellVal) => {
+    if (cellVal instanceof Date && !isNaN(cellVal.getTime())) return true;
+    if (typeof cellVal === "number" && cellVal > 30000 && cellVal < 60000) return true;
+    return false;
+  };
+
+  let startRowMatch = -1;
+  let nextDateRow = limit;
+
+  for (let i = 0; i < limit; i++) {
+    const cellVal = monthlyGrid[i]?.[0];
+    if (isMatchDate(cellVal)) {
+      startRowMatch = i;
+      break;
+    }
+  }
+
+  if (startRowMatch === -1) {
+    throw new Error(
+      `Target date (${targetYear}-${String(targetMonth + 1).padStart(2, "0")}) not found in Monthly Tab.`
+    );
+  }
+
+  for (let i = startRowMatch + 1; i < limit; i++) {
+    const cellVal = monthlyGrid[i]?.[0];
+    if (isAnyDate(cellVal)) {
+      nextDateRow = i;
+      break;
+    }
+  }
+
+  const dataStart = startRowMatch + 4;
+  const dataEnd = nextDateRow - 3;
+  if (dataStart > dataEnd) return [];
+
+  const extractedBlock = [];
+  for (let i = dataStart; i <= dataEnd; i++) {
+    const rowArr = Array.isArray(monthlyGrid[i]) ? monthlyGrid[i] : [];
+    const rowSlice = [];
+    for (let c = 2; c < 8; c++) {
+      rowSlice.push(rowArr[c] ?? "");
+    }
+    if (rowSlice.some((cell) => String(cell).trim() !== "")) {
+      extractedBlock.push(rowSlice);
+    }
+  }
+
+  return extractedBlock;
+}
+
+async function fetchXeroRevenueByDateDirect_({
+  accessToken,
+  xeroTenantId,
+  startDate,
+  endDate,
+  fetchImpl = null,
+  sleepImpl = defaultSleepMs,
+}) {
+  let allInvoices = [];
+  let page = 1;
+  let keepFetching = true;
+
+  const startY = startDate.getFullYear();
+  const startM = startDate.getMonth() + 1;
+  const startD = startDate.getDate();
+  const endY = endDate.getFullYear();
+  const endM = endDate.getMonth() + 1;
+  const endD = endDate.getDate();
+
+  const whereClause = `Type=="ACCREC" AND Status!="DELETED" AND Status!="VOIDED" AND Date>=DateTime(${startY},${startM},${startD}) AND Date<=DateTime(${endY},${endM},${endD})`;
+  const baseUrl = `https://api.xero.com/api.xro/2.0/Invoices?where=${encodeURIComponent(
+    whereClause
+  )}&statuses=AUTHORISED,PAID,DRAFT,SUBMITTED&order=Date%20DESC`;
+
+  while (keepFetching) {
+    const res = await fetchXeroWithRetry_(
+      `${baseUrl}&page=${page}`,
+      {
+        method: "GET",
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          "xero-tenant-id": xeroTenantId,
+          Accept: "application/json",
+        },
+      },
+      { label: `Xero Revenue Invoices p${page}`, fetchImpl, sleepImpl }
+    );
+    if (!res.ok) {
+      throw new Error(`Xero API Error on Page ${page}: ${res.text}`);
+    }
+    const pageInvoices = res.json?.Invoices || [];
+    if (pageInvoices.length > 0) {
+      allInvoices = allInvoices.concat(pageInvoices);
+      if (pageInvoices.length < 100) {
+        keepFetching = false;
+      } else {
+        page++;
+      }
+    } else {
+      keepFetching = false;
+    }
+    if (page > 20) keepFetching = false;
+  }
+
+  const mappedData = [];
+  for (const inv of allInvoices) {
+    const invDate = parseDateSafe_(inv.DateString || inv.Date);
+    const rawStatus = String(inv.Status || "").toUpperCase();
+    const isApproved = rawStatus === "AUTHORISED" || rawStatus === "PAID";
+    const isDraft = rawStatus === "DRAFT" || rawStatus === "SUBMITTED";
+
+    if (invDate && invDate >= startDate && invDate <= endDate && (isApproved || isDraft)) {
+      const originalTotal = parseFloat(inv.Total) || 0;
+      const credit = parseFloat(inv.AmountCredited) || 0;
+      const effectiveTotal = originalTotal - credit;
+      const ratio = originalTotal > 0 ? effectiveTotal / originalTotal : 1;
+      const fxRate = parseFloat(inv.CurrencyRate) || 1;
+      const lineAmtType = String(inv.LineAmountTypes || "Exclusive").toUpperCase();
+
+      const statusLabel = isDraft
+        ? rawStatus === "SUBMITTED"
+          ? "Awaiting Approval"
+          : "Draft"
+        : rawStatus === "PAID"
+          ? "Paid"
+          : "Authorised";
+
+      if (Array.isArray(inv.LineItems)) {
+        inv.LineItems.forEach((line, index) => {
+          const lineId = `${inv.InvoiceID}-${index + 1}`;
+          let rawLineAmt = parseFloat(line.LineAmount) || 0;
+          if (lineAmtType === "INCLUSIVE") {
+            rawLineAmt -= parseFloat(line.TaxAmount) || 0;
+          }
+          const effectiveLineAmtForeign = rawLineAmt * ratio;
+          const calculatedBaseAmt = effectiveLineAmtForeign / fxRate;
+          const effectiveLineAmtBase = isApproved ? calculatedBaseAmt : 0;
+          const draftAmount = isDraft ? calculatedBaseAmt : 0;
+          const invNumber = inv.InvoiceNumber || (isDraft ? "[Draft]" : "");
+
+          mappedData.push([
+            lineId,
+            inv.Contact?.Name || "Unknown",
+            invNumber,
+            line.Description || (isDraft ? "Draft invoice" : "No Description"),
+            effectiveLineAmtBase,
+            inv.DateString || formatGasDate(invDate, "UTC", "yyyy-MM-dd HH:mm:ss"),
+            statusLabel,
+            draftAmount,
+          ]);
+        });
+      }
+    }
+  }
+
+  return mappedData;
+}
+
+async function fetchQBRevenueByDateDirect_({
+  accessToken,
+  realmId,
+  startDate,
+  endDate,
+  fetchImpl = null,
+  sleepImpl = defaultSleepMs,
+}) {
+  const cleanRealmId = assertValidQBRealmId(realmId);
+  const startStr = formatGasDate(startDate, "UTC", "yyyy-MM-dd");
+  const endStr = formatGasDate(endDate, "UTC", "yyyy-MM-dd");
+  const baseUrl = "https://quickbooks.api.intuit.com";
+
+  let allInvoices = [];
+  let startPosition = 1;
+  const pageSize = 500;
+
+  while (true) {
+    const query = encodeURIComponent(
+      `SELECT * FROM Invoice WHERE TxnDate >= '${startStr}' AND TxnDate <= '${endStr}' STARTPOSITION ${startPosition} MAXRESULTS ${pageSize}`
+    );
+    const url = `${baseUrl}/v3/company/${cleanRealmId}/query?query=${query}`;
+    const res = await connectorFetch(url, {
+      method: "GET",
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        Accept: "application/json",
+      },
+      fetchImpl,
+    });
+    if (!res.ok) {
+      throw new Error(`QB API request failed: ${res.text}`);
+    }
+    const invoicesOnPage = res.json?.QueryResponse?.Invoice || [];
+    if (Array.isArray(invoicesOnPage) && invoicesOnPage.length > 0) {
+      allInvoices = allInvoices.concat(invoicesOnPage);
+      startPosition += invoicesOnPage.length;
+      if (invoicesOnPage.length < pageSize) break;
+    } else {
+      break;
+    }
+    if (typeof sleepImpl === "function") await sleepImpl(200);
+  }
+
+  const mappedData = [];
+  for (const inv of allInvoices) {
+    const originalTotal = parseFloat(inv.TotalAmt) || 0;
+    let totalCredit = 0;
+    if (Array.isArray(inv.LinkedTxn)) {
+      for (const txn of inv.LinkedTxn) {
+        if (txn.TxnType === "CreditMemo") {
+          totalCredit += parseFloat(txn.Amount) || 0;
+        }
+      }
+    }
+    const effectiveTotal = originalTotal - totalCredit;
+    const ratio = originalTotal > 0 ? effectiveTotal / originalTotal : 1;
+    const fxRate = parseFloat(inv.ExchangeRate) || 1;
+
+    if (Array.isArray(inv.Line)) {
+      const validLines = inv.Line.filter((l) => l.DetailType === "SalesItemLineDetail");
+      validLines.forEach((line, index) => {
+        const lineId = `${inv.Id}-${index + 1}`;
+        const originalLineAmtForeign = line.Amount || 0;
+        const effectiveLineAmtForeign = originalLineAmtForeign * ratio;
+        const effectiveLineAmtBase = effectiveLineAmtForeign * fxRate;
+
+        mappedData.push([
+          lineId,
+          inv.CustomerRef?.name || "Unknown",
+          inv.DocNumber,
+          line.Description || "No Description",
+          effectiveLineAmtBase,
+          inv.TxnDate,
+          "Authorised",
+          0,
+        ]);
+      });
+    }
+  }
+
+  return mappedData;
+}
+
+function buildRevCompGridVerbatim_({
+  existingRevCompGrid = [],
+  targetDate,
+  dashboardData = [],
+  appData = [],
+  timeZone = "Europe/London",
+}) {
+  const nextGrid = Array.isArray(existingRevCompGrid)
+    ? existingRevCompGrid.slice(0, 4).map((r) => (Array.isArray(r) ? [...r] : []))
+    : [];
+  while (nextGrid.length < 4) nextGrid.push([]);
+
+  const appTotal = appData.reduce((sum, row) => sum + (parseFloat(row[4]) || 0), 0);
+  const dashTotal = dashboardData.reduce((sum, row) => sum + (parseFloat(row[3]) || 0), 0);
+  const variance = Math.abs(dashTotal - appTotal);
+
+  const summaryBlock = [
+    ["Target Month", formatGasDate(targetDate, timeZone, "MMMM yyyy")],
+    ["Dashboard Revenue", dashTotal],
+    ["Accounting App Revenue", appTotal],
+    ["Variance", variance],
+  ];
+  for (let i = 0; i < summaryBlock.length; i++) {
+    const rIdx = 4 + i;
+    while (nextGrid.length <= rIdx) nextGrid.push([]);
+    nextGrid[rIdx] = [summaryBlock[i][0], summaryBlock[i][1]];
+  }
+  while (nextGrid.length < 9) nextGrid.push([]);
+
+  const clientMap = new Map();
+  const findFuzzyKey = (newClient) => {
+    if (!newClient || String(newClient).trim() === "") return "Unknown Client";
+    const clean = (s) => String(s).toLowerCase().replace(/[^a-z0-9]/g, "");
+    const s1 = clean(newClient);
+    for (const existingClient of clientMap.keys()) {
+      const s2 = clean(existingClient);
+      if (s1.includes(s2) || s2.includes(s1)) return existingClient;
+      const stripSuffixes = (s) => s.replace(/(ltd|limited|inc|llc|corp|company)$/g, "");
+      if (stripSuffixes(s1) === stripSuffixes(s2)) return existingClient;
+    }
+    return String(newClient).trim();
+  };
+
+  for (const row of dashboardData) {
+    const rawClient = row[0];
+    const revenue = parseFloat(row[3]) || 0;
+    const matchedClient = findFuzzyKey(rawClient);
+    if (!clientMap.has(matchedClient)) clientMap.set(matchedClient, { dashRev: 0, appRev: 0 });
+    clientMap.get(matchedClient).dashRev += revenue;
+  }
+
+  for (const row of appData) {
+    const rawClient = row[1];
+    const revenue = parseFloat(row[4]) || 0;
+    const matchedClient = findFuzzyKey(rawClient);
+    if (!clientMap.has(matchedClient)) clientMap.set(matchedClient, { dashRev: 0, appRev: 0 });
+    clientMap.get(matchedClient).appRev += revenue;
+  }
+
+  const comparisonOutput = [["Client", "Dashboard Revenue", "App Revenue", "Difference"]];
+  clientMap.forEach((data, client) => {
+    comparisonOutput.push([client, data.dashRev, data.appRev, data.dashRev - data.appRev]);
+  });
+
+  const sortedOutput = [comparisonOutput[0]].concat(
+    comparisonOutput.slice(1).sort((a, b) => Math.abs(b[3]) - Math.abs(a[3]))
+  );
+
+  if (sortedOutput.length > 1) {
+    const sanitized = sanitizeSheetMatrix_(sortedOutput);
+    for (let i = 0; i < sanitized.length; i++) {
+      nextGrid[9 + i] = sanitized[i];
+    }
+  } else {
+    nextGrid[9] = comparisonOutput[0];
+  }
+
+  return {
+    nextRevCompGrid: normalizeVirtualMasterGrid("RevComp", nextGrid),
+    dashTotal,
+    appTotal,
+    variance,
+  };
+}
+
+/**
+ * Verbatim Phase 6D port of GAS `runRevenueComparison(isHeadless, customTargetMonth)`
+ */
+export async function runNativeRevenueComparisonDirect(ctx, options = {}) {
+  const {
+    sheets = null,
+    customTargetMonth = null,
+    persistToDb = true,
+    fetchImpl = null,
+    sleepImpl = defaultSleepMs,
+    tokenOverride = null,
+    keyInfoOverride = null,
+    monthlyGridOverride = null,
+    revCompGridOverride = null,
+    isHeadless = true,
+    timeZone = "Europe/London",
+  } = options;
+
+  const { keyInfoGrid, cfgRow } = await loadConnectorContextState(ctx, keyInfoOverride);
+
+  let revCompGrid = Array.isArray(revCompGridOverride) ? revCompGridOverride.map((r) => [...r]) : null;
+  if (!Array.isArray(revCompGrid)) {
+    if (ctx?.syncOrchestratorMode === "native" && Array.isArray(cfgRow?.master_rev_comp_grid)) {
+      revCompGrid = cfgRow.master_rev_comp_grid.map((r) => [...r]);
+    } else {
+      const rcRec = await getOrLoadVirtualTabGrid_(ctx, "master", "RevComp", sheets).catch(() => null);
+      revCompGrid = Array.isArray(rcRec?.values_grid) ? rcRec.values_grid.map((r) => [...r]) : [];
+    }
+  }
+
+  let targetDate = null;
+  if (customTargetMonth) {
+    if (customTargetMonth instanceof Date && !isNaN(customTargetMonth.getTime())) {
+      targetDate = new Date(customTargetMonth.getFullYear(), customTargetMonth.getMonth(), 1);
+    } else if (typeof customTargetMonth === "string") {
+      const parts = customTargetMonth.trim().split(/[-/]/);
+      if (parts.length >= 2) {
+        const y = parseInt(parts[0], 10);
+        const m = parseInt(parts[1], 10) - 1;
+        if (!isNaN(y) && !isNaN(m)) {
+          targetDate = new Date(y, m, 1);
+        }
+      }
+    }
+    if (targetDate && !isNaN(targetDate.getTime())) {
+      revCompGrid = patchGrid2DCell(revCompGrid, 2, 3, dateToSerial(targetDate)); // C2
+    }
+  }
+
+  if (!targetDate) {
+    targetDate =
+      parseRevCompDateCell_(revCompGrid[1]?.[2]) || // C2
+      parseRevCompDateCell_(revCompGrid[0]?.[2]) || // C1
+      null;
+  }
+
+  if (!targetDate) {
+    const msg = "Please enter a valid date in C1 or C2 of RevComp.";
+    if (isHeadless) throw new Error(msg);
+    return { success: false, error: msg };
+  }
+
+  targetDate = new Date(targetDate.getFullYear(), targetDate.getMonth(), 1);
+  const endOfMonth = new Date(targetDate.getFullYear(), targetDate.getMonth() + 1, 0);
+
+  let monthlyGrid = Array.isArray(monthlyGridOverride) ? monthlyGridOverride : null;
+  if (!Array.isArray(monthlyGrid)) {
+    if (ctx?.clientComputeMode === "native") {
+      try {
+        const { loadNativeClientTabRecordsBatch } = await import("./nativeClientCalcService.js");
+        const loaded = await loadNativeClientTabRecordsBatch(ctx, ["Monthly"], { source: "db", valuesOnly: true });
+        if (Array.isArray(loaded?.Monthly?.values_grid)) {
+          monthlyGrid = loaded.Monthly.values_grid;
+        }
+      } catch (_) { }
+    }
+    if (!Array.isArray(monthlyGrid)) {
+      if (ctx?.clientMode === "supabase") {
+        const mRec = await getOrLoadVirtualTabGrid_(ctx, "client", "Monthly", sheets, { valuesOnly: true }).catch(() => null);
+        monthlyGrid = Array.isArray(mRec?.values_grid) ? mRec.values_grid : null;
+      }
+      if (!Array.isArray(monthlyGrid) && sheets && ctx?.clientSheetId) {
+        const mResp = await sheets.spreadsheets.values.get({
+          spreadsheetId: ctx.clientSheetId,
+          range: "Monthly!A1:H3000",
+          valueRenderOption: "UNFORMATTED_VALUE",
+          _bypassSupabaseVirtualSheet: ctx.clientMode !== "supabase",
+        });
+        monthlyGrid = mResp?.data?.values || [];
+      }
+    }
+  }
+  if (!Array.isArray(monthlyGrid)) {
+    throw new Error("Sheet 'Monthly' not found on Client Sheet.");
+  }
+
+  const dashboardData = extractDashboardRevenueDataFromMonthlyGrid_(monthlyGrid, targetDate);
+
+  const rawToolName = readKeyInfoCellRaw(keyInfoGrid, "Q4"); // Q4
+  const tool = normalizeAccountingToolName_(rawToolName);
+  if (tool !== "xero" && tool !== "quickbooks") {
+    throw new Error(`Accounting Tool (Q4) is set to "${rawToolName}". Unsupported for revenue sync.`);
+  }
+
+  const auth = await resolveAccountingAuth_(ctx, keyInfoGrid, tool, tokenOverride);
+  if (!auth.tenantOrRealmId) {
+    throw new Error(`Missing ${tool === "quickbooks" ? "Realm ID (KeyInfo!X3)" : "Tenant ID (KeyInfo!X2)"}.`);
+  }
+
+  const appData =
+    tool === "quickbooks"
+      ? await fetchQBRevenueByDateDirect_({
+        accessToken: auth.accessToken,
+        realmId: auth.tenantOrRealmId,
+        startDate: targetDate,
+        endDate: endOfMonth,
+        fetchImpl,
+        sleepImpl,
+      })
+      : await fetchXeroRevenueByDateDirect_({
+        accessToken: auth.accessToken,
+        xeroTenantId: auth.tenantOrRealmId,
+        startDate: targetDate,
+        endDate: endOfMonth,
+        fetchImpl,
+        sleepImpl,
+      });
+
+  const revHeaders = [
+    "Line ID",
+    "Client Name",
+    "Invoice Number",
+    "Description",
+    "Effective Revenue",
+    "Date",
+    "Status",
+    "Draft Amount",
+  ];
+  const rawRevFromApp =
+    appData.length > 0 ? [revHeaders, ...sanitizeSheetMatrix_(appData)] : [revHeaders];
+  const revFromAppGrid = normalizeVirtualMasterGrid("RevFromApp", rawRevFromApp);
+
+  const { nextRevCompGrid, dashTotal, appTotal, variance } = buildRevCompGridVerbatim_({
+    existingRevCompGrid: revCompGrid,
+    targetDate,
+    dashboardData,
+    appData,
+    timeZone,
+  });
+
+  if (persistToDb && ctx?.clientId) {
+    if (ctx.masterIngestionMode === "relational") {
+      await reconcileClientMasterIngestionFromGrids(ctx, ["RevFromApp"], {
+        gridsOverride: { RevFromApp: revFromAppGrid },
+        skipConfigUpsert: true,
+      });
+    }
+    if (ctx.connectorPullMode !== "native") {
+      await saveVirtualTabGrid_(ctx, "master", "RevFromApp", revFromAppGrid, revFromAppGrid, {}).catch(() => { });
+    }
+    if (ctx.syncOrchestratorMode === "native") {
+      await saveConnectorConfigPatch(ctx, { master_rev_comp_grid: nextRevCompGrid });
+    } else {
+      await saveVirtualTabGrid_(ctx, "master", "RevComp", nextRevCompGrid, nextRevCompGrid, {}).catch(() => { });
+    }
+  }
+
+  return {
+    success: true,
+    targetMonth: formatGasDate(targetDate, timeZone, "yyyy-MM"),
+    targetMonthLabel: formatGasDate(targetDate, timeZone, "MMMM yyyy"),
+    dashboardTotal: dashTotal,
+    accountingTotal: appTotal,
+    variance,
+    revFromAppGrid,
+    revCompGrid: nextRevCompGrid,
+    appRowsCount: appData.length,
   };
 }

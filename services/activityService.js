@@ -1154,18 +1154,62 @@ async function fetchSupabaseAutoLogGridsBatch_(canonicalClientNames = []) {
     return { byLowerClientName, failed: true };
   }
   try {
-    const { data, error } = await sb
-      .from("master_sheet_grids")
-      .select("client_name, values_grid, notes_grid")
-      .eq("sheet_role", "master")
-      .eq("tab_name", "AutoLog")
+    let clientRows = [];
+    const { data: cData, error: cErr } = await sb
+      .from("clients")
+      .select("client_name, sync_orchestrator_mode, metadata")
       .in("client_name", names);
-    if (error) {
-      return { byLowerClientName, failed: true, error: error.message };
+    if (cErr && String(cErr.message || "").includes("sync_orchestrator_mode")) {
+      const fb = await sb.from("clients").select("client_name, metadata").in("client_name", names);
+      clientRows = fb.data || [];
+    } else {
+      clientRows = cData || [];
     }
-    for (const row of data || []) {
-      const key = String(row?.client_name || "").trim().toLowerCase();
-      if (key) byLowerClientName.set(key, row);
+
+    const nativeNames = [];
+    const legacyNamesSet = new Set(names);
+    for (const c of clientRows) {
+      const mode = String(c.sync_orchestrator_mode || c.metadata?.sync_orchestrator_mode || "grid_gas").trim().toLowerCase();
+      if (mode === "native" && c.client_name) {
+        nativeNames.push(c.client_name);
+        legacyNamesSet.delete(c.client_name);
+      }
+    }
+
+    if (nativeNames.length > 0) {
+      try {
+        const { loadBatchClientAutomationLogGrids } = await import("./nativeSyncOrchestratorService.js");
+        const relRes = await loadBatchClientAutomationLogGrids(nativeNames, { limitPerClient: 250 });
+        if (!relRes.failed) {
+          for (const [k, row] of relRes.byLowerClientName.entries()) {
+            byLowerClientName.set(k, row);
+          }
+        } else {
+          nativeNames.forEach((n) => legacyNamesSet.add(n));
+        }
+      } catch (_) {
+        nativeNames.forEach((n) => legacyNamesSet.add(n));
+      }
+    }
+
+    const legacyNames = [...legacyNamesSet];
+    if (legacyNames.length > 0) {
+      const { data, error } = await sb
+        .from("master_sheet_grids")
+        .select("client_name, values_grid, notes_grid")
+        .eq("sheet_role", "master")
+        .eq("tab_name", "AutoLog")
+        .in("client_name", legacyNames);
+      if (error) {
+        if (nativeNames.length === 0) {
+          return { byLowerClientName, failed: true, error: error.message };
+        }
+      } else {
+        for (const row of data || []) {
+          const key = String(row?.client_name || "").trim().toLowerCase();
+          if (key) byLowerClientName.set(key, row);
+        }
+      }
     }
     return { byLowerClientName, failed: false };
   } catch (err) {
@@ -1376,10 +1420,10 @@ export async function fetchAllClientsActivity(sheets, clientsList, forceRefresh 
   const supaEnabled = isSupabaseConfigured();
   const contexts = supaEnabled
     ? await Promise.all(
-        clientsList.map((client) =>
-          resolveSupabaseSheetContext({ spreadsheetId: client.masterSheetId, clientName: client.clientName }).catch(() => null)
-        )
+      clientsList.map((client) =>
+        resolveSupabaseSheetContext({ spreadsheetId: client.masterSheetId, clientName: client.clientName }).catch(() => null)
       )
+    )
     : clientsList.map(() => null);
 
   const supabaseMasterItems = [];

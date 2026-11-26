@@ -366,14 +366,46 @@ export async function computeNativeMgmtRepForClient({
   const resolvedClientName = clientName || ctx?.clientName || "";
   const resolvedClientSheetId = clientSheetId || ctx?.clientSheetId;
 
-  // 2. Load Master tabs from Supabase master_sheet_grids (MgmtRep, KeyInfo, Year0Data, TimeComp)
+  // 2. Load Master tabs from relational configs/comparisons when native, else Supabase master_sheet_grids
   const masterGrids = {};
-  if (sb && (resolvedClientName || resolvedClientId)) {
+  if (ctx && (ctx.syncOrchestratorMode === "native" || ctx.masterComputeMode === "native")) {
+    try {
+      if (ctx.masterComputeMode === "native") {
+        const {
+          loadMasterContextTabFromConfig,
+          loadPersistedOrEvaluateMasterComparisonTab,
+        } = await import("./nativeMasterComparisonService.js");
+        const [kiGrid, tcGrid] = await Promise.all([
+          loadMasterContextTabFromConfig(ctx, "KeyInfo"),
+          loadPersistedOrEvaluateMasterComparisonTab(ctx, "TimeComp"),
+        ]);
+        if (Array.isArray(kiGrid) && kiGrid.length > 0) masterGrids.KeyInfo = kiGrid;
+        if (Array.isArray(tcGrid) && tcGrid.length > 0) masterGrids.TimeComp = tcGrid;
+      }
+      if (ctx.syncOrchestratorMode === "native") {
+        const { loadMasterAuxTabFromConfig } = await import("./nativeSyncOrchestratorService.js");
+        const [mgmtRec, y0Rec] = await Promise.all([
+          loadMasterAuxTabFromConfig(ctx, "MgmtRep"),
+          loadMasterAuxTabFromConfig(ctx, "Year0Data"),
+        ]);
+        if (Array.isArray(mgmtRec?.values_grid) && mgmtRec.values_grid.length > 0) {
+          masterGrids.MgmtRep = mgmtRec.values_grid;
+        }
+        if (Array.isArray(y0Rec?.values_grid) && y0Rec.values_grid.length > 0) {
+          masterGrids.Year0Data = y0Rec.values_grid;
+        }
+      }
+    } catch (_) { }
+  }
+  const missingMasterTabs = ["MgmtRep", "KeyInfo", "Year0Data", "TimeComp"].filter(
+    (t) => !Array.isArray(masterGrids[t]) || masterGrids[t].length === 0
+  );
+  if (missingMasterTabs.length > 0 && sb && (resolvedClientName || resolvedClientId) && ctx?.syncOrchestratorMode !== "native") {
     let q = sb
       .from("master_sheet_grids")
       .select("tab_name, values_grid")
       .eq("sheet_role", "master")
-      .in("tab_name", ["MgmtRep", "KeyInfo", "Year0Data", "TimeComp"]);
+      .in("tab_name", missingMasterTabs);
     if (resolvedClientName) q = q.eq("client_name", resolvedClientName);
     else q = q.eq("client_id", resolvedClientId);
 
@@ -1821,20 +1853,25 @@ export async function computeNativeMgmtRepForClient({
 
   // Persist updated MgmtRep virtual grid back to Supabase
   if (persistToSupabase && sb && resolvedClientName) {
-    await sb.from("master_sheet_grids").upsert(
-      {
-        client_id: resolvedClientId,
-        client_name: resolvedClientName,
-        sheet_role: "master",
-        tab_name: "MgmtRep",
-        values_grid: mgmtGrid,
-        formulas_grid: [],
-        row_count: mgmtGrid.length,
-        col_count: mgmtGrid.reduce((max, r) => Math.max(max, Array.isArray(r) ? r.length : 0), 35),
-        updated_at: new Date().toISOString(),
-      },
-      { onConflict: "client_name,sheet_role,tab_name" }
-    );
+    if (ctx?.syncOrchestratorMode === "native") {
+      const { saveMasterAuxTabsToConfig } = await import("./nativeSyncOrchestratorService.js");
+      await saveMasterAuxTabsToConfig(ctx, { MgmtRep: mgmtGrid });
+    } else {
+      await sb.from("master_sheet_grids").upsert(
+        {
+          client_id: resolvedClientId,
+          client_name: resolvedClientName,
+          sheet_role: "master",
+          tab_name: "MgmtRep",
+          values_grid: mgmtGrid,
+          formulas_grid: [],
+          row_count: mgmtGrid.length,
+          col_count: mgmtGrid.reduce((max, r) => Math.max(max, Array.isArray(r) ? r.length : 0), 35),
+          updated_at: new Date().toISOString(),
+        },
+        { onConflict: "client_name,sheet_role,tab_name" }
+      );
+    }
     invalidateMasterEngineCache(resolvedClientName, "master", ["MgmtRep"]);
   }
 

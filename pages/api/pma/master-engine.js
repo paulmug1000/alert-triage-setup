@@ -107,6 +107,13 @@ import {
   verifyNativeConnectorsMockReplayParity,
   setClientConnectorPullMode,
 } from "../../../services/nativeConnectorsParityService.js";
+import {
+  backfillClientNativeSync,
+  backfillAllClientsNativeSync,
+  verifyNativeSyncStateParity,
+  verifyNativeSyncReplayParity,
+  setClientSyncOrchestratorMode,
+} from "../../../services/nativeSyncOrchestratorService.js";
 
 async function refreshPrecomputedAlerts_(sheets, acId) {
   invalidatePrecomputedMemoryCache();
@@ -864,6 +871,58 @@ export default async function handler(req, res) {
         category: "SYSTEM",
         action: "CLIENT_CONNECTOR_PULL_MODE_CHANGED",
         summary: `Switched ${cleanClient} native connector pull mode to "${connectorPullMode}"`,
+        details: updated,
+        userEmail: sessionUser?.email || (isCronAuth ? "System (Scheduled Sync)" : "Admin"),
+      }).catch(() => { });
+      const status = await getStage2Status(cleanClient);
+      return res.status(200).json({ success: true, updated, status });
+    }
+
+    if (action === "backfill_native_sync") {
+      const result = req.body?.allClients
+        ? await backfillAllClientsNativeSync()
+        : await backfillClientNativeSync(cleanClient);
+      const sheets = await getSheetsClient();
+      await logPmaActivity(sheets, {
+        automationCommanderSheetId: acId,
+        clientName: req.body?.allClients ? "ALL CLIENTS" : cleanClient,
+        category: "SYSTEM",
+        action: "NATIVE_SYNC_BACKFILLED",
+        summary: req.body?.allClients
+          ? `Backfilled Phase 6D sync logs and auxiliary state across ${result.clientsProcessed || 0} client(s)`
+          : `Backfilled Phase 6D sync logs and auxiliary state for ${cleanClient}`,
+        details: result,
+        userEmail: sessionUser?.email || (isCronAuth ? "System (Scheduled Sync)" : "Admin"),
+      }).catch(() => { });
+      const status = await getStage2Status(cleanClient);
+      return res.status(200).json({ success: true, result, status });
+    }
+
+    if (action === "verify_native_sync_parity") {
+      const targetClientFilter = req.body?.allClients ? null : cleanClient;
+      const stateReport = await verifyNativeSyncStateParity({ clientName: targetClientFilter });
+      const replayReport = req.body?.includeReplay !== false
+        ? await verifyNativeSyncReplayParity()
+        : null;
+      return res.status(200).json({ success: true, parityReport: stateReport, replayReport });
+    }
+
+    if (action === "set_client_sync_orchestrator_mode") {
+      const syncOrchestratorMode = String(req.body?.syncOrchestratorMode || "").trim().toLowerCase();
+      if (syncOrchestratorMode !== "grid_gas" && syncOrchestratorMode !== "shadow" && syncOrchestratorMode !== "native") {
+        return res.status(400).json({
+          success: false,
+          error: "Invalid syncOrchestratorMode. Expected 'grid_gas', 'shadow', or 'native'.",
+        });
+      }
+      const updated = await setClientSyncOrchestratorMode(cleanClient, syncOrchestratorMode);
+      const sheets = await getSheetsClient();
+      await logPmaActivity(sheets, {
+        automationCommanderSheetId: acId,
+        clientName: cleanClient,
+        category: "SYSTEM",
+        action: "CLIENT_SYNC_ORCHESTRATOR_MODE_CHANGED",
+        summary: `Switched ${cleanClient} native sync orchestrator mode to "${syncOrchestratorMode}"`,
         details: updated,
         userEmail: sessionUser?.email || (isCronAuth ? "System (Scheduled Sync)" : "Admin"),
       }).catch(() => { });

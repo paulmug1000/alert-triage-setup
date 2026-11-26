@@ -152,6 +152,8 @@ export default function DbView({
   const [nativeMasterCompParityReport, setNativeMasterCompParityReport] = useState(null);
   const [nativeConnectorsParityReport, setNativeConnectorsParityReport] = useState(null);
   const [nativeConnectorsMockReport, setNativeConnectorsMockReport] = useState(null);
+  const [nativeSyncParityReport, setNativeSyncParityReport] = useState(null);
+  const [nativeSyncReplayReport, setNativeSyncReplayReport] = useState(null);
   const [accountingInvariantsReport, setAccountingInvariantsReport] = useState(null);
   const [copied0012Sql, setCopied0012Sql] = useState(false);
   const [copied0013Sql, setCopied0013Sql] = useState(false);
@@ -160,6 +162,7 @@ export default function DbView({
   const [copied0016Sql, setCopied0016Sql] = useState(false);
   const [copied0017Sql, setCopied0017Sql] = useState(false);
   const [copied0018Sql, setCopied0018Sql] = useState(false);
+  const [copied0019Sql, setCopied0019Sql] = useState(false);
 
   // Live operation progress & feedback state
   const [activeOp, setActiveOp] = useState(null); // { key, label, startedAt }
@@ -1566,6 +1569,96 @@ export default function DbView({
         return {
           type: "success",
           text: `Switched ${targetClient} connector pull mode to ${nextMode}.`,
+        };
+      }
+    );
+  };
+
+  const handleBackfillNativeSync = (allClients = false, clientOverride = null) => {
+    const targetClient = typeof clientOverride === "string" && clientOverride ? clientOverride : activeClientName;
+    runTrackedOperation(
+      allClients ? "backfill_native_sync_all" : `backfill_native_sync_${targetClient}`,
+      allClients
+        ? "Backfilling Phase 6D sync logs and auxiliary state across all clients..."
+        : `Backfilling Phase 6D sync logs and auxiliary state for ${targetClient}...`,
+      async () => {
+        const res = await fetch("/api/pma/master-engine", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            action: "backfill_native_sync",
+            allClients,
+            clientName: targetClient,
+            automationCommanderSheetId,
+          }),
+        });
+        const data = await res.json();
+        if (!data.success) throw new Error(data.error || "Phase 6D sync backfill failed.");
+        if (data.status) setStage2Data(data.status);
+        const r = data.result || {};
+        return {
+          type: "success",
+          text: allClients
+            ? `Backfilled Phase 6D sync logs and auxiliary tabs for ${r.clientsProcessed || 0} client(s).`
+            : `Backfilled Phase 6D sync logs and auxiliary tabs for ${targetClient}.`,
+        };
+      }
+    );
+  };
+
+  const handleVerifyNativeSyncParity = (allClients = true) => {
+    runTrackedOperation(
+      "native_sync_parity",
+      "Verifying Phase 6D native sync state parity and 6-suite replay...",
+      async () => {
+        const res = await fetch("/api/pma/master-engine", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            action: "verify_native_sync_parity",
+            allClients,
+            clientName: activeClientName,
+            includeReplay: true,
+            automationCommanderSheetId,
+          }),
+        });
+        const data = await res.json();
+        if (!data.success) throw new Error(data.error || "Phase 6D native sync parity check failed.");
+        const r = data.parityReport || {};
+        const rr = data.replayReport || null;
+        setNativeSyncParityReport(r);
+        setNativeSyncReplayReport(rr);
+        const replayFailed = rr ? (rr.suitesFailed || 0) : 0;
+        return {
+          type: (r.errorClientsCount || 0) > 0 || (r.mismatchClientsCount || 0) > 0 || replayFailed > 0 ? "info" : "success",
+          text: `Native sync verified: ${r.matchedClientsCount || 0} of ${r.clientsChecked || 0} client(s) matched${rr ? `, ${rr.suitesPassed || 0}/${rr.suitesTotal || 0} replay suite(s) passed` : ""}.`,
+        };
+      }
+    );
+  };
+
+  const handleSetClientSyncOrchestratorMode = (nextMode, clientOverride = null) => {
+    const targetClient = typeof clientOverride === "string" && clientOverride ? clientOverride : activeClientName;
+    runTrackedOperation(
+      `set_sync_orchestrator_mode_${nextMode}`,
+      `Switching ${targetClient} sync orchestrator mode to ${nextMode}...`,
+      async () => {
+        const res = await fetch("/api/pma/master-engine", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            action: "set_client_sync_orchestrator_mode",
+            clientName: targetClient,
+            syncOrchestratorMode: nextMode,
+            automationCommanderSheetId,
+          }),
+        });
+        const data = await res.json();
+        if (!data.success) throw new Error(data.error || "Could not update sync orchestrator mode.");
+        if (data.status) setStage2Data(data.status);
+        return {
+          type: "success",
+          text: `Switched ${targetClient} sync orchestrator mode to ${nextMode}.`,
         };
       }
     );
@@ -6060,10 +6153,10 @@ export default function DbView({
             >
               <div>
                 <h2 style={{ margin: 0, fontSize: "15px", fontWeight: 700, color: "#0f172a" }}>
-                  Native calculation and master comparison engine (Phase 6A + 6B)
+                  Native calculation, comparison, connector, and sync engine (Phase 6A–6D)
                 </h2>
                 <p style={{ margin: "2px 0 0", fontSize: "12px", color: "#64748b" }}>
-                  Decouples client recalculation and master comparison evaluation from grid blobs using blueprint metadata, persisted comparisons, and Gate 4 SQL accounting invariants.
+                  Decouples client recalculation, master comparisons, connector pulls, and automation sync logs from legacy grid blobs.
                 </p>
               </div>
               <div style={{ display: "flex", alignItems: "center", gap: "6px", flexWrap: "wrap" }}>
@@ -6091,6 +6184,18 @@ export default function DbView({
                 >
                   {stage2Data?.phase6NativeConnectors?.schemaReady ? "Schema ready (0018)" : "Migration 0018 required"}
                 </span>
+                <span
+                  style={{
+                    padding: "3px 9px",
+                    borderRadius: "999px",
+                    fontSize: "11px",
+                    fontWeight: 600,
+                    background: stage2Data?.phase6NativeSync?.schemaReady ? "#dcfce7" : "#fef3c7",
+                    color: stage2Data?.phase6NativeSync?.schemaReady ? "#166534" : "#92400e",
+                  }}
+                >
+                  {stage2Data?.phase6NativeSync?.schemaReady ? "Schema ready (0019)" : "Migration 0019 required"}
+                </span>
                 {stage2Data?.phase6NativeCompute?.schemaReady && (
                   <span
                     style={{
@@ -6102,7 +6207,7 @@ export default function DbView({
                       color: "#1e40af",
                     }}
                   >
-                    {`${stage2Data.phase6NativeCompute.clientComputeNativeCount || 0} native calc · ${stage2Data.phase6NativeCompute.masterComputeNativeCount || 0} native master · ${stage2Data?.phase6NativeConnectors?.connectorNativeCount || 0} native pulls`}
+                    {`${stage2Data.phase6NativeCompute.clientComputeNativeCount || 0} native calc · ${stage2Data.phase6NativeCompute.masterComputeNativeCount || 0} native master · ${stage2Data?.phase6NativeConnectors?.connectorNativeCount || 0} native pulls · ${stage2Data?.phase6NativeSync?.syncNativeCount || 0} native sync`}
                   </span>
                 )}
               </div>
@@ -6198,6 +6303,51 @@ export default function DbView({
               </div>
             )}
 
+            {!stage2Data?.phase6NativeSync?.schemaReady && stage2Data?.phase6NativeSync?.migrationSql && (
+              <div
+                style={{
+                  marginBottom: "12px",
+                  padding: "10px 12px",
+                  borderRadius: "7px",
+                  background: "#fffbeb",
+                  border: "1px solid #fde68a",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                  gap: "10px",
+                  flexWrap: "wrap",
+                  fontSize: "12px",
+                  color: "#92400e",
+                }}
+              >
+                <span>
+                  Run migration 0019 in the Supabase SQL editor to add sync orchestrator mode, pulse_automation_logs, pulse_execution_logs, and master auxiliary config columns.
+                </span>
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (typeof navigator !== "undefined" && navigator.clipboard) {
+                      navigator.clipboard.writeText(stage2Data.phase6NativeSync.migrationSql);
+                      setCopied0019Sql(true);
+                      setTimeout(() => setCopied0019Sql(false), 2500);
+                    }
+                  }}
+                  style={{
+                    padding: "5px 10px",
+                    fontSize: "11.5px",
+                    fontWeight: 600,
+                    borderRadius: "6px",
+                    border: "1px solid #f59e0b",
+                    background: "#ffffff",
+                    color: "#92400e",
+                    cursor: "pointer",
+                  }}
+                >
+                  {copied0019Sql ? "Copied migration 0019 SQL" : "Copy migration 0019 SQL"}
+                </button>
+              </div>
+            )}
+
             {stage2Data?.phase6NativeCompute?.schemaReady && (
               <div
                 style={{
@@ -6216,6 +6366,14 @@ export default function DbView({
                   { label: "6B backfilled clients", value: stage2Data.phase6NativeCompute.masterBackfilledCount || 0 },
                   { label: "Native connectors (6C)", value: stage2Data?.phase6NativeConnectors?.connectorNativeCount || 0 },
                   { label: "6C backfilled clients", value: stage2Data?.phase6NativeConnectors?.backfilledCount || 0 },
+                  ...(stage2Data?.phase6NativeSync?.schemaReady
+                    ? [
+                        { label: "Native sync (6D)", value: stage2Data?.phase6NativeSync?.syncNativeCount || 0 },
+                        { label: "6D backfilled clients", value: stage2Data?.phase6NativeSync?.totalBackfilledConfigs || 0 },
+                        { label: "Automation log rows", value: stage2Data?.phase6NativeSync?.totalAutoLogs || 0 },
+                        { label: "Execution log rows", value: stage2Data?.phase6NativeSync?.totalExecLogs || 0 },
+                      ]
+                    : []),
                 ].map((stat) => (
                   <div
                     key={stat.label}
@@ -6472,6 +6630,79 @@ export default function DbView({
                       : `Switch ${activeClientName} 6C to shadow`}
                 </span>
               </button>
+
+              <button
+                type="button"
+                disabled={!stage2Data?.phase6NativeSync?.schemaReady || isBusy}
+                onClick={() => handleBackfillNativeSync(true)}
+                style={{
+                  ...actionBtnBase,
+                  background: !stage2Data?.phase6NativeSync?.schemaReady ? "#f3f4f6" : "#eff6ff",
+                  borderColor: !stage2Data?.phase6NativeSync?.schemaReady ? "#cbd5e1" : "#93c5fd",
+                  color: !stage2Data?.phase6NativeSync?.schemaReady ? "#9ca3af" : "#1e40af",
+                  cursor: !stage2Data?.phase6NativeSync?.schemaReady ? "not-allowed" : isBusy ? "wait" : "pointer",
+                }}
+              >
+                {activeOp?.key === "backfill_native_sync_all" && (
+                  <Spinner size={11} color="#1e40af" style={{ marginRight: 0 }} />
+                )}
+                <span>{`Backfill 6D sync (${allClients.length})`}</span>
+              </button>
+
+              <button
+                type="button"
+                disabled={!s2Ready || isBusy}
+                onClick={() => handleVerifyNativeSyncParity(true)}
+                style={{
+                  ...actionBtnBase,
+                  background: "#ffffff",
+                  borderColor: "#cbd5e1",
+                  color: "#1e293b",
+                  cursor: !s2Ready ? "not-allowed" : isBusy ? "wait" : "pointer",
+                }}
+              >
+                {activeOp?.key === "native_sync_parity" && (
+                  <Spinner size={11} color="#1e293b" style={{ marginRight: 0 }} />
+                )}
+                <span>Verify 6D sync and replay</span>
+              </button>
+
+              <button
+                type="button"
+                disabled={!stage2Data?.phase6NativeSync?.schemaReady || isBusy}
+                onClick={() => {
+                  const cur = activeClientObj?.syncOrchestratorMode || "grid_gas";
+                  const next = cur === "grid_gas" ? "shadow" : cur === "shadow" ? "native" : "grid_gas";
+                  handleSetClientSyncOrchestratorMode(next, activeClientName);
+                }}
+                style={{
+                  ...actionBtnBase,
+                  background: !stage2Data?.phase6NativeSync?.schemaReady
+                    ? "#f3f4f6"
+                    : activeClientObj?.syncOrchestratorMode === "native"
+                      ? "#fef2f2"
+                      : "#f0fdf4",
+                  borderColor: !stage2Data?.phase6NativeSync?.schemaReady
+                    ? "#cbd5e1"
+                    : activeClientObj?.syncOrchestratorMode === "native"
+                      ? "#fecaca"
+                      : "#86efac",
+                  color: !stage2Data?.phase6NativeSync?.schemaReady
+                    ? "#9ca3af"
+                    : activeClientObj?.syncOrchestratorMode === "native"
+                      ? "#b91c1c"
+                      : "#166534",
+                  cursor: !stage2Data?.phase6NativeSync?.schemaReady ? "not-allowed" : isBusy ? "wait" : "pointer",
+                }}
+              >
+                <span>
+                  {activeClientObj?.syncOrchestratorMode === "native"
+                    ? `Revert ${activeClientName} 6D to grid_gas`
+                    : activeClientObj?.syncOrchestratorMode === "shadow"
+                      ? `Switch ${activeClientName} 6D to native`
+                      : `Switch ${activeClientName} 6D to shadow`}
+                </span>
+              </button>
             </div>
 
             {nativeClientCalcParityReport && (
@@ -6650,6 +6881,69 @@ export default function DbView({
                     </span>
                   ))}
                   {(nativeConnectorsParityReport?.results || []).map((r) => (
+                    <span
+                      key={r.clientName}
+                      title={r.error || JSON.stringify(r.sampleMismatches || [])}
+                      style={{
+                        padding: "2px 8px",
+                        borderRadius: "999px",
+                        fontSize: "10.5px",
+                        fontWeight: 600,
+                        background: r.error || !r.matched ? "#fee2e2" : "#dbeafe",
+                        color: r.error || !r.matched ? "#991b1b" : "#1e40af",
+                      }}
+                    >
+                      {`${r.clientName}: ${r.matched ? "State matched" : r.error || `${r.mismatchCount} diff(s)`}`}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {(nativeSyncParityReport || nativeSyncReplayReport) && (
+              <div
+                style={{
+                  marginTop: "10px",
+                  padding: "10px 12px",
+                  borderRadius: "7px",
+                  background: "#f8fafc",
+                  border: `1px solid ${(nativeSyncParityReport?.mismatchClientsCount || 0) > 0 || (nativeSyncReplayReport?.suitesFailed || 0) > 0 ? "#fde68a" : "#bbf7d0"}`,
+                  fontSize: "11.5px",
+                }}
+              >
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "6px" }}>
+                  <strong style={{ color: "#0f172a" }}>
+                    {`Phase 6D native sync parity — ${nativeSyncParityReport?.matchedClientsCount || 0} of ${nativeSyncParityReport?.clientsChecked || 0} client(s) · ${nativeSyncReplayReport?.suitesPassed || 0}/${nativeSyncReplayReport?.suitesTotal || 0} replay suite(s)`}
+                  </strong>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setNativeSyncParityReport(null);
+                      setNativeSyncReplayReport(null);
+                    }}
+                    style={{ padding: "2px 7px", fontSize: "11px", borderRadius: "4px", border: "1px solid #cbd5e1", background: "#ffffff", cursor: "pointer" }}
+                  >
+                    Hide
+                  </button>
+                </div>
+                <div style={{ display: "flex", flexWrap: "wrap", gap: "6px" }}>
+                  {(nativeSyncReplayReport?.suites || []).map((s) => (
+                    <span
+                      key={s.id}
+                      title={JSON.stringify(s.diffs || [])}
+                      style={{
+                        padding: "2px 8px",
+                        borderRadius: "999px",
+                        fontSize: "10.5px",
+                        fontWeight: 600,
+                        background: s.matched ? "#dcfce7" : "#fee2e2",
+                        color: s.matched ? "#166534" : "#991b1b",
+                      }}
+                    >
+                      {`Suite ${s.id} (${s.name}): ${s.matched ? "Matched" : `${s.diffs?.length || 0} diff(s)`}`}
+                    </span>
+                  ))}
+                  {(nativeSyncParityReport?.results || []).map((r) => (
                     <span
                       key={r.clientName}
                       title={r.error || JSON.stringify(r.sampleMismatches || [])}

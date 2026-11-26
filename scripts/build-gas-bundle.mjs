@@ -114,6 +114,10 @@ function buildBundle() {
     "refreshAccountingToolChartOfAccounts",
     "fetchSingleMonthPLReport_",
     "updateSingleMonthPLInSheet_",
+    "runRevenueComparison",
+  ]);
+  const NATIVE_SYNC_HOOKABLE_FUNCS = new Set([
+    "writeToAutoLog",
   ]);
 
   // 3. Compute fixed-point transitive closure of async functions
@@ -156,6 +160,13 @@ function buildBundle() {
   const markedFuncStarts = new Set();
 
   for (const { name, node } of allNamedFuncs) {
+    if (NATIVE_SYNC_HOOKABLE_FUNCS.has(name) && node.body?.type === "BlockStatement") {
+      insertions.push({
+        pos: node.body.start + 1,
+        text: ` if (env?.nativeConnectorHooks?.${name}) { const _syncHookRes = env.nativeConnectorHooks.${name}(Array.prototype.slice.call(arguments)); if (_syncHookRes !== undefined) return _syncHookRes; }`,
+        order: 4,
+      });
+    }
     if (!asyncFuncNames.has(name)) continue;
     if (!node.async && !markedFuncStarts.has(node.start)) {
       markedFuncStarts.add(node.start);

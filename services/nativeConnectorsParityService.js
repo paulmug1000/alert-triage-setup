@@ -129,12 +129,19 @@ export async function backfillClientNativeConnectors(clientName) {
 
   const supabase = getSupabaseAdmin();
   const tabsToRead = ["KeyInfo", "CRMGoogleBridge", "CRMExcelBridge", "CRMExcelCopy", "GasScriptProps"];
-  const { data: gridRows, error: gridErr } = await supabase
-    .from("master_sheet_grids")
-    .select("tab_name, values_grid")
-    .eq("client_name", ctx.clientName)
-    .eq("sheet_role", "master")
-    .in("tab_name", tabsToRead);
+  const [{ data: gridRows, error: gridErr }, { data: existingCfg }] = await Promise.all([
+    supabase
+      .from("master_sheet_grids")
+      .select("tab_name, values_grid")
+      .eq("client_name", ctx.clientName)
+      .eq("sheet_role", "master")
+      .in("tab_name", tabsToRead),
+    supabase
+      .from("pulse_master_sync_configs")
+      .select("master_key_info_grid")
+      .eq("client_id", ctx.clientId)
+      .maybeSingle(),
+  ]);
 
   if (gridErr) throw new Error(`Failed loading master_sheet_grids for ${ctx.clientName}: ${gridErr.message}`);
 
@@ -143,7 +150,12 @@ export async function backfillClientNativeConnectors(clientName) {
     byTab.set(r.tab_name, compactGrid2D(r.values_grid || []));
   }
 
-  const kiGrid = byTab.get("KeyInfo") || [];
+  const kiGrid =
+    ctx.masterComputeMode === "native" &&
+    Array.isArray(existingCfg?.master_key_info_grid) &&
+    existingCfg.master_key_info_grid.length > 0
+      ? compactGrid2D(existingCfg.master_key_info_grid)
+      : (byTab.get("KeyInfo") || []);
   const coaList = [];
   for (let r = 1; r < kiGrid.length; r++) {
     const val = String(kiGrid[r]?.[48] ?? "").trim(); // AW2:AW...

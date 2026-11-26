@@ -43,6 +43,7 @@ import {
   fetchNativeSingleMonthPLReport,
   updateNativeSingleMonthPL,
   refreshNativeChartOfAccountsDirect,
+  runNativeRevenueComparisonDirect,
 } from "./nativeAccountingPullService.js";
 import { pullNativeCrmDeals } from "./nativeCrmPullService.js";
 import { dateToSerial } from "./gasRuntime/sheetValueUtils.js";
@@ -62,12 +63,14 @@ function syncNativePullGridToVirtualSheet_(env, tabName, nextGrid, markDirty = f
 }
 
 function attachNativeConnectorHooksToEnv_(env, ctx, dryRun = false) {
-  if (!env || !ctx || ctx.connectorPullMode !== "native") return;
+  if (!env || !ctx || (ctx.connectorPullMode !== "native" && ctx.syncOrchestratorMode !== "native")) return;
   const persistToDb = !dryRun;
   const getKiOverride = () => env.masterSS?.getSheetByName("KeyInfo")?.valuesGrid || null;
   const getPropsObj = () => Object.fromEntries((env.scriptProperties || new Map()).entries());
 
-  env.nativeConnectorHooks = {
+  const hooks = {};
+  if (ctx.connectorPullMode === "native") {
+    Object.assign(hooks, {
     PullInvoicesBasedOn: async (_args, rt) => {
       try {
         const res = await pullNativeAccountingInvoices(ctx, {
@@ -221,7 +224,79 @@ function attachNativeConnectorHooksToEnv_(env, ctx, dryRun = false) {
       env.recomputeMasterFormulasSync?.();
       return res;
     },
-  };
+    });
+  }
+
+  if (ctx.syncOrchestratorMode === "native") {
+    hooks.runRevenueComparison = async (args, rt) => {
+      try {
+        const res = await runNativeRevenueComparisonDirect(ctx, {
+          sheets: env.sheets || null,
+          customTargetMonth: args?.[1] || null,
+          persistToDb,
+          keyInfoOverride: getKiOverride(),
+        });
+        if (!res?.success) {
+          rt?.setLastConnectorError?.(res?.error || "Native revenue comparison failed");
+          return res;
+        }
+        if (res.revFromAppGrid) {
+          syncNativePullGridToVirtualSheet_(env, "RevFromApp", res.revFromAppGrid, dryRun);
+        }
+        if (res.revCompGrid) {
+          syncNativePullGridToVirtualSheet_(env, "RevComp", res.revCompGrid, dryRun);
+        }
+        env.recomputeMasterFormulasSync?.();
+        return {
+          success: true,
+          targetMonth: res.targetMonth,
+          targetMonthLabel: res.targetMonthLabel,
+          dashboardTotal: res.dashboardTotal,
+          accountingTotal: res.accountingTotal,
+          variance: res.variance,
+        };
+      } catch (err) {
+        rt?.setLastConnectorError?.(err.message);
+        throw err;
+      }
+    };
+
+    hooks.writeToAutoLog = (args) => {
+      try {
+        if (!env.masterSS) return;
+        let logSheet = env.masterSS.getSheetByName("AutoLog");
+        if (!logSheet) {
+          logSheet = env.masterSS.insertSheet("AutoLog");
+          logSheet.getRange("A1:D1").setValues([["Timestamp", "Category", "Summary", "Details"]]);
+        }
+        const tz = env.masterSS.getSpreadsheetTimeZone?.() || "Europe/London";
+        const tsStr = formatGasDate(new Date(), tz, "dd-MMM-yy HH:mm");
+        const cleanCat = String(args?.[0] || "GENERAL").toUpperCase();
+        const cleanSummary = String(args?.[1] || "");
+        let cleanDetails = args?.[2]
+          ? (typeof args[2] === "object" ? JSON.stringify(args[2], null, 2) : String(args[2]))
+          : "";
+        if (cleanDetails.length > 45000) {
+          cleanDetails = cleanDetails.slice(0, 45000) + "\n... [TRUNCATED]";
+        }
+        logSheet.insertRowAfter(1);
+        logSheet.getRange(2, 1, 1, 4).setValues([[tsStr, cleanCat, cleanSummary, cleanDetails]]);
+        if (logSheet.getLastRow() > 2500) {
+          logSheet.deleteRows(2501, logSheet.getLastRow() - 2500);
+        }
+        if (persistToDb && Array.isArray(env.pendingAutoLogEntries)) {
+          const rawTsCell = logSheet?.valuesGrid?.[1]?.[0] ?? tsStr;
+          env.pendingAutoLogEntries.push([rawTsCell, cleanCat, cleanSummary, cleanDetails]);
+        }
+        return true;
+      } catch (err) {
+        globalThis.console.warn?.(`[AutoLog hook warning] ${err?.message || err}`);
+        return true;
+      }
+    };
+  }
+
+  env.nativeConnectorHooks = hooks;
 }
 
 /**
@@ -993,6 +1068,36 @@ export async function runNativeRevenueComparison(sheets, clientName, customTarge
   const ctx = await resolveSupabaseSheetContext({ clientName });
   if (!ctx) throw new Error(`Client "${clientName}" not found.`);
 
+  if (ctx.syncOrchestratorMode === "native") {
+    const startedAtMs = Date.now();
+    const res = await runNativeRevenueComparisonDirect(ctx, {
+      sheets,
+      customTargetMonth,
+      persistToDb: true,
+    });
+    try {
+      const { insertExecutionLogEntry } = await import("./nativeSyncOrchestratorService.js");
+      await insertExecutionLogEntry(ctx, {
+        executedAt: new Date().toISOString(),
+        functionName: "runRevenueComparison",
+        triggerSource: "Manual (PMA)",
+        durationText: ((Date.now() - startedAtMs) / 1000).toFixed(2) + "s",
+        status: res?.success === false ? "Completed with warnings" : "Completed",
+        summary: `Revenue comparison (${res?.targetMonthLabel || customTargetMonth || "latest"})`,
+        transcript: `[INFO] Native revenue comparison finished (variance=${res?.variance ?? 0})`,
+      });
+    } catch (_) { }
+    return {
+      success: Boolean(res?.success !== false),
+      targetMonth: res?.targetMonth ?? customTargetMonth,
+      targetMonthLabel: res?.targetMonthLabel,
+      dashboardTotal: res?.dashboardTotal ?? 0,
+      accountingTotal: res?.accountingTotal ?? 0,
+      variance: res?.variance ?? 0,
+      ...(res?.error ? { error: res.error } : {}),
+    };
+  }
+
   const env = await createGasEnvironment({
     ctx,
     sheets,
@@ -1073,6 +1178,15 @@ function appendAutoLogPreflightError_(env, autoLogError) {
     autoLogError.summary,
     autoLogError.details,
   ]]);
+  if (Array.isArray(env.pendingAutoLogEntries)) {
+    const rawTsCell = logSheet?.valuesGrid?.[1]?.[0] ?? tsStr;
+    env.pendingAutoLogEntries.push([
+      rawTsCell,
+      autoLogError.category,
+      autoLogError.summary,
+      autoLogError.details,
+    ]);
+  }
 }
 
 /**
@@ -1448,16 +1562,28 @@ export async function dispatchDueNativeMasterSyncs({
   }
 
   try {
-    const [{ data: schedRows }, { data: clientRows }, { data: dcaRows }, { data: nativeSyncCfgRows }, { data: setupStateRows }] = await Promise.all([
-      supabase.from("sync_schedules").select("*"),
-      supabase
+    let clientsResp = await supabase
+      .from("clients")
+      .select("id, client_name, status, metadata, client_mode, master_mode, client_compute_mode, master_compute_mode, sync_orchestrator_mode, master_sheet_id, client_sheet_id, recon_sheet_id");
+    if (clientsResp.error && /sync_orchestrator_mode|42703/i.test(String(clientsResp.error.message || ""))) {
+      clientsResp = await supabase
         .from("clients")
-        .select("id, client_name, status, metadata, client_mode, master_mode, client_compute_mode, master_compute_mode, master_sheet_id, client_sheet_id, recon_sheet_id"),
-      supabase
-        .from("master_sheet_grids")
-        .select("client_name, values_grid")
-        .eq("sheet_role", "master")
-        .eq("tab_name", "DataChgAlert"),
+        .select("id, client_name, status, metadata, client_mode, master_mode, client_compute_mode, master_compute_mode, master_sheet_id, client_sheet_id, recon_sheet_id");
+    }
+    const clientRows = clientsResp?.data || [];
+    const hasNonNativeMasterCompute = clientRows.some(
+      (c) => c.master_mode === "supabase" && c.master_compute_mode !== "native"
+    );
+
+    const [{ data: schedRows }, { data: dcaRows }, { data: nativeSyncCfgRows }, { data: setupStateRows }] = await Promise.all([
+      supabase.from("sync_schedules").select("*"),
+      hasNonNativeMasterCompute
+        ? supabase
+            .from("master_sheet_grids")
+            .select("client_name, values_grid")
+            .eq("sheet_role", "master")
+            .eq("tab_name", "DataChgAlert")
+        : Promise.resolve({ data: [] }),
       supabase
         .from("pulse_master_sync_configs")
         .select("client_name, data_chg_alert_grid"),
@@ -1618,18 +1744,30 @@ export async function dispatchDueNativeMasterSyncs({
     const candidateNames = dueCandidates.map((item) => item.clientName);
 
     if (candidateNames.length > 0) {
+      const nonNativeMasterCandidates = candidateNames.filter(
+        (n) => supabaseClientRowByName.get(n)?.master_compute_mode !== "native"
+      );
+      const nonNativeSyncCandidates = candidateNames.filter((n) => {
+        const c = supabaseClientRowByName.get(n);
+        const sMode = String(c?.sync_orchestrator_mode || c?.metadata?.sync_orchestrator_mode || "grid_gas").toLowerCase();
+        return c?.client_compute_mode !== "native" || sMode !== "native";
+      });
       const [{ data: masterMetaRows }, { data: localGridRows }, { data: nativeSyncCfgMeta }, { data: bpUpdatedRows }, { data: reconCfgRows }, { data: reconPeriodRows }] = await Promise.all([
-        supabase
-          .from("master_sheet_grids")
-          .select("client_name, tab_name, values_grid")
-          .eq("sheet_role", "master")
-          .in("tab_name", ["KeyInfo", "CRMList"])
-          .in("client_name", candidateNames),
-        supabase
-          .from("master_sheet_grids")
-          .select("client_name, sheet_role, tab_name, updated_at")
-          .in("sheet_role", ["client", "recon"])
-          .in("client_name", candidateNames),
+        nonNativeMasterCandidates.length > 0
+          ? supabase
+              .from("master_sheet_grids")
+              .select("client_name, tab_name, values_grid")
+              .eq("sheet_role", "master")
+              .in("tab_name", ["KeyInfo", "CRMList"])
+              .in("client_name", nonNativeMasterCandidates)
+          : Promise.resolve({ data: [] }),
+        nonNativeSyncCandidates.length > 0
+          ? supabase
+              .from("master_sheet_grids")
+              .select("client_name, sheet_role, tab_name, updated_at")
+              .in("sheet_role", ["client", "recon"])
+              .in("client_name", nonNativeSyncCandidates)
+          : Promise.resolve({ data: [] }),
         supabase
           .from("pulse_master_sync_configs")
           .select("client_name, master_key_info_grid, crm_list_config")

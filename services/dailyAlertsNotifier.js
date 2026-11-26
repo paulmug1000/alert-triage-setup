@@ -43,6 +43,7 @@ import {
   verifyNativeSyncStateParity,
 } from "./nativeSyncOrchestratorService.js";
 import { flushPendingClientRecomputes } from "./masterEngineService.js";
+import { listClientSnapshots } from "./supabaseBackupService.js";
 
 /**
  * Format today's date in UK format: e.g. "Tuesday, 29 September"
@@ -778,8 +779,311 @@ function indexSuiteResultsByClient_(suiteReport) {
   return map;
 }
 
+async function fetchAllRowsForHealth_(sb, tableName, selectCols, filterFn = null) {
+  const out = [];
+  for (let from = 0; ; from += 1000) {
+    let q = sb.from(tableName).select(selectCols).range(from, from + 999);
+    if (typeof filterFn === "function") q = filterFn(q);
+    const { data, error } = await q;
+    if (error) throw new Error(`${tableName} health query failed: ${error.message}`);
+    if (!Array.isArray(data) || data.length === 0) break;
+    out.push(...data);
+    if (data.length < 1000) break;
+  }
+  return out;
+}
+
+async function runSuiteSafe_(label, suiteFailures, fn) {
+  try {
+    const res = await fn();
+    if (res && typeof res === "object") return res;
+    return { results: [] };
+  } catch (err) {
+    const msg = err?.message || String(err);
+    suiteFailures.push({ label, error: msg });
+    console.warn(`[checkAndNotifyClientParity] Verifier suite "${label}" threw:`, msg);
+    return { results: [], suiteError: msg };
+  }
+}
+
+async function collectZeroGridHealthAndMetrics_(sb, activeClients = [], suiteFailures = []) {
+  const perClientMetrics = new Map();
+  const perClientIssues = new Map();
+  const platformIssues = [];
+
+  for (const sErr of suiteFailures) {
+    platformIssues.push({
+      tab: "Verifier suite error",
+      cell: sErr.label,
+      rowLabel: sErr.label,
+      colLabel: "Suite execution",
+      sheetValue: "Passed",
+      supabaseValue: `Error: ${sErr.error}`,
+    });
+  }
+
+  if (!sb) {
+    return { perClientMetrics, perClientIssues, platformIssues };
+  }
+
+  const activeById = new Map();
+  const activeByName = new Map();
+  for (const c of activeClients || []) {
+    if (!c?.id || !c?.client_name) continue;
+    activeById.set(c.id, c);
+    activeByName.set(String(c.client_name).trim().toLowerCase(), c);
+    perClientMetrics.set(c.client_name, {
+      outgoingsNotesCount: 0,
+      confirmedNotesCount: 0,
+      contractorEntriesCount: 0,
+      confirmedJobsCount: 0,
+      dirDiscrepancies: 0,
+      invDiscrepancies: 0,
+    });
+  }
+
+  const pushClientIssue = (clientName, issue) => {
+    if (!perClientIssues.has(clientName)) perClientIssues.set(clientName, []);
+    perClientIssues.get(clientName).push(issue);
+  };
+
+  try {
+    const [
+      outgRows,
+      bpConfRes,
+      contrRows,
+      jobRows,
+      mcRowsRes,
+      schedRes,
+      execLogsRes,
+      intRes,
+      gridDriftRes,
+      cronCfgRes,
+      snapshotsRes,
+    ] = await Promise.all([
+      fetchAllRowsForHealth_(sb, "pulse_outgoing_items", "client_id, cell_notes"),
+      sb
+        .from("pulse_client_tab_blueprints")
+        .select("client_id, notes_meta")
+        .eq("tab_name", "Confirmed"),
+      fetchAllRowsForHealth_(sb, "pulse_contractor_entries", "client_id"),
+      fetchAllRowsForHealth_(sb, "pulse_jobs", "client_id", (q) => q.eq("tab_type", "confirmed")),
+      sb
+        .from("pulse_master_comparisons")
+        .select("client_id, comparison_type, discrepancy_count")
+        .in("comparison_type", ["dir_comp", "inv_comp"]),
+      sb.from("sync_schedules").select("client_name, flags"),
+      sb
+        .from("pulse_execution_logs")
+        .select("client_id, client_name, function_name, status, executed_at, summary")
+        .order("executed_at", { ascending: false })
+        .limit(200),
+      sb.from("tenant_integrations").select("client_id, tool, status"),
+      sb.from("master_sheet_grids").select("client_name").limit(200),
+      sb
+        .from("system_config")
+        .select("value")
+        .eq("key", "supabase_cron_clock")
+        .maybeSingle(),
+      listClientSnapshots().catch((err) => ({ error: err?.message || "Failed listing snapshots", snapshots: [] })),
+    ]);
+
+    for (const r of outgRows || []) {
+      const cl = activeById.get(r.client_id);
+      if (!cl) continue;
+      const cn = r.cell_notes && typeof r.cell_notes === "object" ? r.cell_notes : {};
+      const cnt = Object.keys(cn).filter((k) => String(cn[k] ?? "").trim() !== "").length;
+      perClientMetrics.get(cl.client_name).outgoingsNotesCount += cnt;
+    }
+
+    if (bpConfRes.error) throw new Error(`Confirmed blueprints query failed: ${bpConfRes.error.message}`);
+    for (const r of bpConfRes.data || []) {
+      const cl = activeById.get(r.client_id);
+      if (!cl) continue;
+      const nm = r.notes_meta && typeof r.notes_meta === "object" ? r.notes_meta : {};
+      const cnt = Object.keys(nm).filter((k) => !k.startsWith("__") && String(nm[k] ?? "").trim() !== "").length;
+      perClientMetrics.get(cl.client_name).confirmedNotesCount += cnt;
+    }
+
+    for (const r of contrRows || []) {
+      const cl = activeById.get(r.client_id);
+      if (!cl) continue;
+      perClientMetrics.get(cl.client_name).contractorEntriesCount += 1;
+    }
+
+    for (const r of jobRows || []) {
+      const cl = activeById.get(r.client_id);
+      if (!cl) continue;
+      perClientMetrics.get(cl.client_name).confirmedJobsCount += 1;
+    }
+
+    if (mcRowsRes.error) throw new Error(`Master comparisons health query failed: ${mcRowsRes.error.message}`);
+    for (const r of mcRowsRes.data || []) {
+      const cl = activeById.get(r.client_id);
+      if (!cl) continue;
+      const m = perClientMetrics.get(cl.client_name);
+      if (r.comparison_type === "dir_comp") m.dirDiscrepancies = Number(r.discrepancy_count) || 0;
+      else if (r.comparison_type === "inv_comp") m.invDiscrepancies = Number(r.discrepancy_count) || 0;
+    }
+
+    const nowMs = Date.now();
+
+    // Stuck sync_schedules (> 45 min)
+    for (const s of schedRes.data || []) {
+      const cl = activeByName.get(String(s.client_name || "").trim().toLowerCase());
+      if (!cl) continue;
+      const inFlightSince = s.flags?.in_flight_since;
+      if (inFlightSince) {
+        const ts = new Date(inFlightSince).getTime();
+        const ageMins = Number.isFinite(ts) ? Math.round((nowMs - ts) / 60000) : null;
+        if (ageMins !== null && ageMins > 45) {
+          pushClientIssue(cl.client_name, {
+            tab: "Sync scheduler",
+            cell: "in_flight_since",
+            rowLabel: "Stuck in-flight sync",
+            colLabel: "Schedule lock",
+            sheetValue: "<= 45 min",
+            supabaseValue: `Stuck ${ageMins} min`,
+          });
+        }
+      }
+    }
+
+    // Repeated recent execution log failures (2 consecutive failures within 24h per client+function)
+    const logsByClientFn = new Map();
+    for (const l of execLogsRes.data || []) {
+      const cl = activeById.get(l.client_id) || activeByName.get(String(l.client_name || "").trim().toLowerCase());
+      if (!cl) continue;
+      const execMs = new Date(l.executed_at || 0).getTime();
+      if (!Number.isFinite(execMs) || nowMs - execMs > 24 * 3600 * 1000) continue;
+      const fnName = String(l.function_name || "sync").trim();
+      const key = `${cl.client_name}::${fnName}`;
+      if (!logsByClientFn.has(key)) logsByClientFn.set(key, { clientName: cl.client_name, fnName, entries: [] });
+      const grp = logsByClientFn.get(key);
+      if (grp.entries.length < 2) grp.entries.push(l);
+    }
+    for (const grp of logsByClientFn.values()) {
+      if (grp.entries.length === 2 && grp.entries.every((e) => /fail|error/i.test(String(e.status || "")))) {
+        pushClientIssue(grp.clientName, {
+          tab: "Native sync",
+          cell: grp.fnName,
+          rowLabel: `${grp.fnName} consecutive failures`,
+          colLabel: "Execution log",
+          sheetValue: "Completed",
+          supabaseValue: formatParityCellSnippet_(grp.entries[0]?.summary || grp.entries[0]?.status || "Failed"),
+        });
+      }
+    }
+
+    // Integration auth / token health
+    for (const ti of intRes.data || []) {
+      const cl = activeById.get(ti.client_id);
+      if (!cl) continue;
+      const st = String(ti.status || "").trim().toLowerCase();
+      if (st === "error" || st === "expired" || st === "revoked" || st === "reauth_required") {
+        pushClientIssue(cl.client_name, {
+          tab: "Integration auth",
+          cell: ti.tool || "integration",
+          rowLabel: `${ti.tool || "Integration"} connection status`,
+          colLabel: "Token vault",
+          sheetValue: "connected",
+          supabaseValue: st,
+        });
+      }
+    }
+
+    // Zero-grid drift check on retired tenants
+    const driftCounts = new Map();
+    for (const g of gridDriftRes.data || []) {
+      const cl = activeByName.get(String(g.client_name || "").trim().toLowerCase());
+      if (cl && cl.grid_storage_retired) {
+        driftCounts.set(cl.client_name, (driftCounts.get(cl.client_name) || 0) + 1);
+      }
+    }
+    for (const [cName, cnt] of driftCounts.entries()) {
+      pushClientIssue(cName, {
+        tab: "Zero-grid drift",
+        cell: "master_sheet_grids",
+        rowLabel: "Retired tenant grid rows detected",
+        colLabel: "Storage hygiene",
+        sheetValue: "0",
+        supabaseValue: String(cnt),
+      });
+    }
+
+    // Platform cron clock freshness (> 75 min)
+    const lastCronAt = cronCfgRes?.data?.value?.lastWebhookReceivedAt;
+    const lastCronMs = lastCronAt ? new Date(lastCronAt).getTime() : NaN;
+    if (!Number.isFinite(lastCronMs) || nowMs - lastCronMs > 75 * 60000) {
+      const ageDesc = Number.isFinite(lastCronMs)
+        ? `${Math.round((nowMs - lastCronMs) / 60000)} min ago`
+        : "missing";
+      platformIssues.push({
+        tab: "Cron clock",
+        cell: "supabase_cron_clock",
+        rowLabel: "Last 30-minute cron webhook",
+        colLabel: "Scheduler",
+        sheetValue: "<= 75 min ago",
+        supabaseValue: ageDesc,
+      });
+    }
+
+    // Daily automated backup sweep freshness (> 30 hours)
+    const latestDailyAuto = (snapshotsRes?.snapshots || []).find((s) => s.triggerType === "daily_auto");
+    const lastAutoMs = latestDailyAuto?.createdAt ? new Date(latestDailyAuto.createdAt).getTime() : NaN;
+    if (!Number.isFinite(lastAutoMs) || nowMs - lastAutoMs > 30 * 3600 * 1000) {
+      const ageDesc = Number.isFinite(lastAutoMs)
+        ? `${Math.round((nowMs - lastAutoMs) / 3600000)}h ago`
+        : snapshotsRes?.error || "missing";
+      platformIssues.push({
+        tab: "Backup health",
+        cell: "daily_auto",
+        rowLabel: "Latest daily Format v2 snapshot",
+        colLabel: "Supabase Storage",
+        sheetValue: "<= 30h ago",
+        supabaseValue: ageDesc,
+      });
+    }
+  } catch (healthErr) {
+    platformIssues.push({
+      tab: "Health telemetry",
+      cell: "collector",
+      rowLabel: "Health metrics collection error",
+      colLabel: "Telemetry",
+      sheetValue: "OK",
+      supabaseValue: healthErr.message,
+    });
+  }
+
+  return { perClientMetrics, perClientIssues, platformIssues };
+}
+
 async function runFullActiveClientsParityCheck_() {
-  const [phase4Schema, phase4ReconSchema, phase5FinSchema, phase6Schema, phase6cSchema, phase6dSchema] = await Promise.all([
+  const sb = getSupabaseAdmin();
+  const [
+    clientsRes,
+    phase4Schema,
+    phase4ReconSchema,
+    phase5FinSchema,
+    phase6Schema,
+    phase6cSchema,
+    phase6dSchema,
+  ] = await Promise.all([
+    sb
+      ? sb
+          .from("clients")
+          .select("id, client_name, status, grid_storage_retired, metadata")
+          .order("client_name", { ascending: true })
+          .then(async (res) => {
+            if (res.error && String(res.error.message || "").includes("grid_storage_retired")) {
+              return sb
+                .from("clients")
+                .select("id, client_name, status, metadata")
+                .order("client_name", { ascending: true });
+            }
+            return res;
+          })
+      : Promise.resolve({ data: [] }),
     checkPhase4MasterSchemaStatus().catch(() => ({ schemaReady: false })),
     checkPhase4ReconSchemaStatus().catch(() => ({ schemaReady: false })),
     checkPhase5FinancialsSchemaStatus().catch(() => ({ schemaReady: false })),
@@ -787,13 +1091,22 @@ async function runFullActiveClientsParityCheck_() {
     checkPhase6NativeConnectorsSchemaStatus().catch(() => ({ schemaReady: false })),
     checkPhase6NativeSyncSchemaStatus().catch(() => ({ schemaReady: false })),
   ]);
+
+  const activeClients = (clientsRes?.data || []).filter((c) => {
+    const effStatus = String(c?.metadata?.statusOverride || c?.status || "live").trim().toLowerCase();
+    return Boolean(c?.client_name) && !["inactive", "archived", "suspended"].includes(effStatus);
+  });
+  const hasUnretiredClients = activeClients.some((c) => !c.grid_storage_retired);
+
   const phase4Ready = Boolean(phase4Schema?.schemaReady);
   const phase4ReconReady = Boolean(phase4ReconSchema?.schemaReady);
   const phase5FinReady = Boolean(phase5FinSchema?.schemaReady);
   const phase6Ready = Boolean(phase6Schema?.schemaReady);
-
   const phase6cReady = Boolean(phase6cSchema?.schemaReady);
   const phase6dReady = Boolean(phase6dSchema?.schemaReady);
+
+  const suiteFailures = [];
+  const noopSuite = Promise.resolve({ results: [] });
 
   const [
     sheetReport,
@@ -807,53 +1120,104 @@ async function runFullActiveClientsParityCheck_() {
     reconReadRep,
     finDbRep,
     finReadRep,
-    natClientRep,
     natMasterRep,
     natConnRep,
     natSyncRep,
-    invariantsRep,
+    zeroGridHealth,
   ] = await Promise.all([
-    verifyBridgedClientsParity({
-      includePureSupabase: true,
-      settleOnMismatch: true,
-      skipRelationalSummary: true,
-    }),
-    verifyRelationalJobsParity({ source: "db" }),
-    verifyRelationalInputsParity({ source: "db" }),
-    verifyRelationalJobsReadParity(),
-    verifyRelationalInputsReadParity(),
+    runSuiteSafe_("Bridged & headline parity", suiteFailures, () =>
+      verifyBridgedClientsParity({
+        includePureSupabase: true,
+        settleOnMismatch: true,
+        skipRelationalSummary: true,
+      })
+    ),
+    hasUnretiredClients
+      ? runSuiteSafe_("Jobs DB", suiteFailures, () => verifyRelationalJobsParity({ source: "db" }))
+      : noopSuite,
+    hasUnretiredClients
+      ? runSuiteSafe_("Inputs DB", suiteFailures, () => verifyRelationalInputsParity({ source: "db" }))
+      : noopSuite,
+    hasUnretiredClients
+      ? runSuiteSafe_("Jobs API read", suiteFailures, () => verifyRelationalJobsReadParity())
+      : noopSuite,
+    hasUnretiredClients
+      ? runSuiteSafe_("Inputs API read", suiteFailures, () => verifyRelationalInputsReadParity())
+      : noopSuite,
     phase4Ready
-      ? verifyRelationalMasterParity({ source: "db", onlyIngestionEnabled: true }).catch(() => ({ results: [] }))
-      : Promise.resolve({ results: [] }),
-    phase4Ready
-      ? verifyRelationalMasterReadParity({ source: "db", onlyReadEnabled: true }).catch(() => ({ results: [] }))
-      : Promise.resolve({ results: [] }),
+      ? runSuiteSafe_("Master DB", suiteFailures, () =>
+          verifyRelationalMasterParity({ source: "db", onlyIngestionEnabled: true })
+        )
+      : noopSuite,
+    hasUnretiredClients && phase4Ready
+      ? runSuiteSafe_("Master SQL read", suiteFailures, () =>
+          verifyRelationalMasterReadParity({ source: "db", onlyReadEnabled: true })
+        )
+      : noopSuite,
     phase4ReconReady
-      ? verifyRelationalReconParity({ source: "db", onlyReconEnabled: true }).catch(() => ({ results: [] }))
-      : Promise.resolve({ results: [] }),
-    phase4ReconReady
-      ? verifyRelationalReconReadParity({ source: "db", onlyReadEnabled: true }).catch(() => ({ results: [] }))
-      : Promise.resolve({ results: [] }),
-    phase5FinReady
-      ? verifyRelationalFinancialsParity({ source: "db", onlyFinancialsEnabled: true }).catch(() => ({ results: [] }))
-      : Promise.resolve({ results: [] }),
-    phase5FinReady
-      ? verifyRelationalFinancialsReadParity({ source: "db", onlyReadEnabled: true }).catch(() => ({ results: [] }))
-      : Promise.resolve({ results: [] }),
+      ? runSuiteSafe_("Recon DB", suiteFailures, () =>
+          verifyRelationalReconParity({ source: "db", onlyReconEnabled: true })
+        )
+      : noopSuite,
+    hasUnretiredClients && phase4ReconReady
+      ? runSuiteSafe_("Recon SQL read", suiteFailures, () =>
+          verifyRelationalReconReadParity({ source: "db", onlyReadEnabled: true })
+        )
+      : noopSuite,
+    hasUnretiredClients && phase5FinReady
+      ? runSuiteSafe_("Financials DB", suiteFailures, () =>
+          verifyRelationalFinancialsParity({ source: "db", onlyFinancialsEnabled: true })
+        )
+      : noopSuite,
+    hasUnretiredClients && phase5FinReady
+      ? runSuiteSafe_("Financials SQL read", suiteFailures, () =>
+          verifyRelationalFinancialsReadParity({ source: "db", onlyReadEnabled: true })
+        )
+      : noopSuite,
     phase6Ready
-      ? verifyNativeClientCalcParity({ source: "db", onlyActiveOrShadow: true }).catch(() => ({ results: [] }))
-      : Promise.resolve({ results: [] }),
-    phase6Ready
-      ? verifyNativeMasterComparisonParity({ source: "db", onlyActiveOrShadow: true }).catch(() => ({ results: [] }))
-      : Promise.resolve({ results: [] }),
+      ? runSuiteSafe_("Native master comp", suiteFailures, () =>
+          verifyNativeMasterComparisonParity({ source: "db", onlyActiveOrShadow: true })
+        )
+      : noopSuite,
     phase6cReady
-      ? verifyNativeConnectorsStateParity({ onlyActiveOrShadow: true }).catch(() => ({ results: [] }))
-      : Promise.resolve({ results: [] }),
+      ? runSuiteSafe_("Native connectors", suiteFailures, () =>
+          verifyNativeConnectorsStateParity({ onlyActiveOrShadow: true })
+        )
+      : noopSuite,
     phase6dReady
-      ? verifyNativeSyncStateParity({ onlyActiveOrShadow: true }).catch(() => ({ results: [] }))
-      : Promise.resolve({ results: [] }),
-    verifyRelationalAccountingInvariants({ onlyActive: true }).catch(() => ({ results: [] })),
+      ? runSuiteSafe_("Native sync & logs", suiteFailures, () =>
+          verifyNativeSyncStateParity({ onlyActiveOrShadow: true })
+        )
+      : noopSuite,
+    collectZeroGridHealthAndMetrics_(sb, activeClients, suiteFailures),
   ]);
+
+  const natClientRep = phase6Ready
+    ? await runSuiteSafe_("Native client calc", suiteFailures, () =>
+        verifyNativeClientCalcParity({ source: "db", onlyActiveOrShadow: true, onlyActive: true })
+      )
+    : await noopSuite;
+
+  const invariantsRep = await runSuiteSafe_("Accounting invariants", suiteFailures, () =>
+    verifyRelationalAccountingInvariants({ onlyActive: true })
+  );
+
+  // Re-attach any Wave 2 suite errors caught after Wave 1 telemetry ran
+  if (suiteFailures.length > 0 && zeroGridHealth?.platformIssues) {
+    const existingLabels = new Set(zeroGridHealth.platformIssues.map((p) => p.rowLabel));
+    for (const sf of suiteFailures) {
+      if (!existingLabels.has(sf.label)) {
+        zeroGridHealth.platformIssues.push({
+          tab: "Verifier suite error",
+          cell: sf.label,
+          rowLabel: sf.label,
+          colLabel: "Suite execution",
+          sheetValue: "Passed",
+          supabaseValue: `Error: ${sf.error}`,
+        });
+      }
+    }
+  }
 
   const jobsDbMap = indexSuiteResultsByClient_(jobsDbRep);
   const inputsDbMap = indexSuiteResultsByClient_(inputsDbRep);
@@ -1098,6 +1462,13 @@ async function runFullActiveClientsParityCheck_() {
       }
     }
 
+    const liveMetrics = zeroGridHealth?.perClientMetrics?.get(name) || null;
+    const clientHealthIssues = zeroGridHealth?.perClientIssues?.get(name) || [];
+    for (const issue of clientHealthIssues) {
+      relationalMismatchCount++;
+      relDiffs.push(issue);
+    }
+
     const combinedError = row.error || (relErrors.length > 0 ? relErrors.join("; ") : null);
     const totalMismatchCount = (row.dashboardMismatchCount || 0) + (row.cashMismatchCount || 0) + relationalMismatchCount;
     const sampleMismatches = [...(row.sampleMismatches || []).slice(0, 5), ...relDiffs.slice(0, 8)].slice(0, 12);
@@ -1105,6 +1476,7 @@ async function runFullActiveClientsParityCheck_() {
     return {
       ...row,
       error: combinedError,
+      liveMetrics,
       relationalMismatchCount,
       relationalJobsDbMatched: jDb ? Boolean(jDb.matched && !jDb.error) : true,
       relationalInputsDbMatched: iDb ? Boolean(iDb.matched && !iDb.error) : true,
@@ -1125,6 +1497,18 @@ async function runFullActiveClientsParityCheck_() {
       sampleMismatches,
     };
   });
+
+  if (Array.isArray(zeroGridHealth?.platformIssues) && zeroGridHealth.platformIssues.length > 0) {
+    mergedResults.push({
+      clientName: "System (platform health)",
+      dashboardMismatchCount: 0,
+      cashMismatchCount: 0,
+      relationalMismatchCount: zeroGridHealth.platformIssues.length,
+      totalMismatchCount: zeroGridHealth.platformIssues.length,
+      sampleMismatches: zeroGridHealth.platformIssues.slice(0, 12),
+      error: null,
+    });
+  }
 
   const errorClientsCount = mergedResults.filter((r) => Boolean(r.error || r.lastError)).length;
   const mismatchClientsCount = mergedResults.filter((r) => !r.error && r.totalMismatchCount > 0).length;
@@ -1237,12 +1621,14 @@ export async function checkAndNotifyClientParity({
   recipientOverride,
   dryRunEmail = false,
   parityReportOverride = null,
+  resetBaselines = false,
+  persistState = null,
 } = {}) {
   const sb = getSupabaseAdmin();
   const report = parityReportOverride || await runFullActiveClientsParityCheck_();
 
   const nowIso = report?.checkedAt || new Date().toISOString();
-  let prevState = { clients: {}, transientErrors: {} };
+  let prevState = { clients: {}, transientErrors: {}, baselines: {} };
   if (sb) {
     try {
       const { data: cfgRow } = await sb
@@ -1255,6 +1641,7 @@ export async function checkAndNotifyClientParity({
           ...cfgRow.value,
           clients: { ...(cfgRow.value.clients || {}) },
           transientErrors: { ...(cfgRow.value.transientErrors || {}) },
+          baselines: { ...(cfgRow.value.baselines || {}) },
         };
       }
     } catch (err) {
@@ -1264,24 +1651,94 @@ export async function checkAndNotifyClientParity({
 
   const nextClients = { ...(prevState.clients || {}) };
   const nextTransientErrors = { ...(prevState.transientErrors || {}) };
+  const nextBaselines = { ...(prevState.baselines || {}) };
   const newlyFlagged = [];
 
+  const evalResults = [];
   for (const row of report?.results || []) {
     const name = row?.clientName;
     if (!name) continue;
 
-    if (row.error) {
+    // Anomaly guard: compare live counts against stored per-client baselines
+    const curMetrics = row.liveMetrics || null;
+    const prevBase = prevState.baselines?.[name] || null;
+    const anomalyDiffs = [];
+    const nextClientBase = curMetrics ? { ...curMetrics } : prevBase ? { ...prevBase } : null;
+
+    if (curMetrics && prevBase && !resetBaselines && !row.error) {
+      const checkDrop = (field, label, minRatioDrop, minAbsDrop) => {
+        const prevVal = Number(prevBase[field]) || 0;
+        const curVal = Number(curMetrics[field]) || 0;
+        if (prevVal <= 0) return false;
+        const drop = prevVal - curVal;
+        const wipedToZero = prevVal >= 5 && curVal === 0;
+        const largeDrop = drop >= minAbsDrop && drop / prevVal >= minRatioDrop;
+        if (wipedToZero || largeDrop) {
+          anomalyDiffs.push({
+            tab: "Anomaly guard",
+            cell: field,
+            rowLabel: label,
+            colLabel: "Previous vs current",
+            sheetValue: String(prevVal),
+            supabaseValue: String(curVal),
+          });
+          // Keep higher baseline latched until restored or reset
+          nextClientBase[field] = prevVal;
+          return true;
+        }
+        return false;
+      };
+
+      checkDrop("outgoingsNotesCount", "Outgoings notes count", 0.5, 5);
+      checkDrop("confirmedNotesCount", "Confirmed notes count", 0.5, 5);
+      checkDrop("contractorEntriesCount", "Contractor entries count", 0.5, 5);
+      checkDrop("confirmedJobsCount", "Confirmed jobs count", 0.25, 5);
+
+      for (const [discField, discLabel] of [
+        ["dirDiscrepancies", "Contractor cost discrepancies"],
+        ["invDiscrepancies", "Invoice discrepancies"],
+      ]) {
+        const prevVal = Number(prevBase[discField]) || 0;
+        const curVal = Number(curMetrics[discField]) || 0;
+        if (curVal - prevVal >= 15) {
+          anomalyDiffs.push({
+            tab: "Anomaly guard",
+            cell: discField,
+            rowLabel: discLabel,
+            colLabel: "Previous vs current",
+            sheetValue: String(prevVal),
+            supabaseValue: String(curVal),
+          });
+        }
+      }
+    }
+
+    if (nextClientBase) {
+      nextBaselines[name] = nextClientBase;
+    }
+
+    const enrichedRow = anomalyDiffs.length > 0
+      ? {
+          ...row,
+          relationalMismatchCount: (row.relationalMismatchCount || 0) + anomalyDiffs.length,
+          totalMismatchCount: (row.totalMismatchCount || 0) + anomalyDiffs.length,
+          sampleMismatches: [...anomalyDiffs, ...(row.sampleMismatches || [])].slice(0, 12),
+        }
+      : row;
+    evalResults.push(enrichedRow);
+
+    if (enrichedRow.error) {
       const failCount = (Number(nextTransientErrors[name]) || 0) + 1;
       nextTransientErrors[name] = failCount;
       // Only notify on persistent read failures (2+ consecutive hourly runs) to avoid single transient API blips
       if (failCount >= 2) {
-        const fp = buildParityFingerprint_(row);
+        const fp = buildParityFingerprint_(enrichedRow);
         if (nextClients[name]?.fingerprint !== fp) {
-          newlyFlagged.push(row);
+          newlyFlagged.push(enrichedRow);
           nextClients[name] = {
             fingerprint: fp,
             notifiedAt: nowIso,
-            error: row.error,
+            error: enrichedRow.error,
           };
         }
       }
@@ -1290,18 +1747,18 @@ export async function checkAndNotifyClientParity({
 
     delete nextTransientErrors[name];
 
-    if ((row.totalMismatchCount || 0) > 0) {
-      const fp = buildParityFingerprint_(row);
+    if ((enrichedRow.totalMismatchCount || 0) > 0) {
+      const fp = buildParityFingerprint_(enrichedRow);
       if (nextClients[name]?.fingerprint !== fp) {
-        newlyFlagged.push(row);
+        newlyFlagged.push(enrichedRow);
         nextClients[name] = {
           fingerprint: fp,
           notifiedAt: nowIso,
-          totalMismatchCount: row.totalMismatchCount,
-          dashboardMismatchCount: row.dashboardMismatchCount,
-          cashMismatchCount: row.cashMismatchCount,
-          relationalMismatchCount: row.relationalMismatchCount || 0,
-          sampleMismatches: row.sampleMismatches || [],
+          totalMismatchCount: enrichedRow.totalMismatchCount,
+          dashboardMismatchCount: enrichedRow.dashboardMismatchCount,
+          cashMismatchCount: enrichedRow.cashMismatchCount,
+          relationalMismatchCount: enrichedRow.relationalMismatchCount || 0,
+          sampleMismatches: enrichedRow.sampleMismatches || [],
         };
       }
     } else if (nextClients[name]) {
@@ -1309,19 +1766,30 @@ export async function checkAndNotifyClientParity({
     }
   }
 
-  if (sb && !dryRunEmail) {
+  const hasPlatformRow = evalResults.some((r) => r?.clientName === "System (platform health)");
+  if (!hasPlatformRow && nextClients["System (platform health)"]) {
+    delete nextClients["System (platform health)"];
+  }
+
+  const finalErrorClientsCount = evalResults.filter((r) => Boolean(r.error || r.lastError)).length;
+  const finalMismatchClientsCount = evalResults.filter((r) => !r.error && (r.totalMismatchCount || 0) > 0).length;
+  const finalMatchedClientsCount = evalResults.filter((r) => !r.error && !r.lastError && (r.totalMismatchCount || 0) === 0).length;
+
+  const shouldPersistState = persistState !== null ? Boolean(persistState) : !dryRunEmail;
+  if (sb && shouldPersistState) {
     try {
       await sb.from("system_config").upsert({
         key: "client_parity_monitor_state",
         value: {
           lastCheckedAt: nowIso,
-          clientsChecked: report?.clientsChecked || 0,
-          matchedClientsCount: report?.matchedClientsCount || 0,
-          mismatchClientsCount: report?.mismatchClientsCount || 0,
+          clientsChecked: evalResults.length,
+          matchedClientsCount: finalMatchedClientsCount,
+          mismatchClientsCount: finalMismatchClientsCount,
           clients: nextClients,
           transientErrors: nextTransientErrors,
+          baselines: nextBaselines,
         },
-        description: "Hourly Dashboard and Cashflow parity monitor deduplication state",
+        description: "Hourly Dashboard, Cashflow, and zero-grid health/parity monitor state",
         updated_by: "System (Cron)",
       });
     } catch (err) {
@@ -1390,6 +1858,11 @@ export async function checkAndNotifyClientParity({
   return {
     success: true,
     ...report,
+    clientsChecked: evalResults.length,
+    matchedClientsCount: finalMatchedClientsCount,
+    mismatchClientsCount: finalMismatchClientsCount,
+    errorClientsCount: finalErrorClientsCount,
+    results: evalResults,
     newlyFlaggedCount: newlyFlagged.length,
     flaggedClients: newlyFlagged.map((c) => c.clientName),
     emailed,

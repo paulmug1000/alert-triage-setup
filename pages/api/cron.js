@@ -28,6 +28,7 @@ export const config = {
 const ACTIVITY_CRON_LAST_KEY = "pulse:activity_feed:last_cron_refresh";
 const TEN_MIN_HOUSEKEEPING_KEY = "pulse:cron:ten_min_housekeeping_last";
 const PARITY_MONITOR_CRON_LAST_KEY = "pulse:cron:parity_monitor_last";
+const PARITY_MONITOR_INFLIGHT_KEY = "pulse:cron:parity_monitor_inflight";
 
 export default async function handler(req, res) {
   if (req.method !== "POST" && req.method !== "GET") {
@@ -82,6 +83,33 @@ export default async function handler(req, res) {
     ? prodUrl
     : `${proto}://${host}`;
   const acId = getCanonicalAcSheetId() || "12B2zv_2GVqFvjCECIPTF-CMzSwTAD3dZU-R5INy0X9M";
+  const onlyParityMonitor = Boolean(
+    req.body?.onlyParityMonitor === true || req.query?.onlyParityMonitor === "true"
+  );
+
+  if (onlyParityMonitor) {
+    const isolatedParityTask = (async () => {
+      try {
+        const parityRes = await checkAndNotifyClientParity();
+        if (redisClient?.isOpen) {
+          await redisClient
+            .set(PARITY_MONITOR_CRON_LAST_KEY, new Date().toISOString(), { EX: 3300 })
+            .catch(() => { });
+        }
+        console.log(
+          `CRON (isolated): Parity monitor checked ${parityRes?.clientsChecked || 0} client(s) (mismatches=${parityRes?.mismatchClientsCount || 0}, errors=${parityRes?.errorClientsCount || 0}, emailed=${Boolean(parityRes?.emailed)}).`
+        );
+      } catch (err) {
+        console.error("❌ CRON (isolated parity monitor) failed:", err.message);
+      } finally {
+        if (redisClient?.isOpen) {
+          await redisClient.del(PARITY_MONITOR_INFLIGHT_KEY).catch(() => { });
+        }
+      }
+    })();
+    waitUntil(isolatedParityTask);
+    return;
+  }
 
   // Run the pipeline in the background using Vercel Pro waitUntil
   const backgroundTask = (async () => {
@@ -205,28 +233,65 @@ export default async function handler(req, res) {
         console.warn("⚠️ CRON: Non-fatal error refreshing activity feed:", actErr.message);
       }
 
-      // Run hourly Dashboard + Year0Data + Cashflow parity check across active clients
+      // Run hourly Dashboard + Year0Data + Cashflow + Zero-Grid health/parity check across active clients
       try {
         if (!redisClient?.isOpen) await redisClient.connect().catch(() => { });
         const forceParityCheck = Boolean(req.body?.forceParityCheck === true || req.query?.forceParityCheck === "true");
         let shouldRunParityCheck = forceParityCheck;
         if (!shouldRunParityCheck) {
           if (redisClient?.isOpen) {
-            const parityLock = await redisClient.set(
-              PARITY_MONITOR_CRON_LAST_KEY,
-              new Date().toISOString(),
-              { NX: true, EX: 3300 }
-            ).catch(() => null);
-            shouldRunParityCheck = parityLock === "OK";
+            const lastParityRun = await redisClient.get(PARITY_MONITOR_CRON_LAST_KEY).catch(() => null);
+            shouldRunParityCheck = !lastParityRun;
           } else {
             shouldRunParityCheck = true;
           }
         }
         if (shouldRunParityCheck) {
-          const parityRes = await checkAndNotifyClientParity();
-          console.log(
-            `CRON: Parity monitor checked ${parityRes?.clientsChecked || 0} client(s) (mismatches=${parityRes?.mismatchClientsCount || 0}, emailed=${Boolean(parityRes?.emailed)}).`
-          );
+          let inflightAcquired = true;
+          if (redisClient?.isOpen && !forceParityCheck) {
+            const lockRes = await redisClient
+              .set(PARITY_MONITOR_INFLIGHT_KEY, new Date().toISOString(), { NX: true, EX: 270 })
+              .catch(() => null);
+            inflightAcquired = lockRes === "OK";
+          }
+          if (inflightAcquired) {
+            let dispatchedIsolated = false;
+            try {
+              const dispatchRes = await fetch(`${baseUrl}/api/cron?onlyParityMonitor=true`, {
+                method: "POST",
+                headers: cronHeaders,
+                redirect: "manual",
+                body: JSON.stringify({ onlyParityMonitor: true, secret: cronSecret }),
+              });
+              if (dispatchRes && dispatchRes.status < 400) {
+                dispatchedIsolated = true;
+                console.log("CRON: Dispatched isolated hourly health & parity monitor invocation.");
+              } else {
+                console.warn(`⚠️ CRON: Isolated parity dispatch returned HTTP ${dispatchRes?.status}; falling back inline.`);
+              }
+            } catch (dispErr) {
+              console.warn(`⚠️ CRON: Isolated parity self-dispatch failed (${dispErr.message}); falling back inline.`);
+            }
+            if (!dispatchedIsolated) {
+              try {
+                const parityRes = await checkAndNotifyClientParity();
+                if (redisClient?.isOpen) {
+                  await redisClient
+                    .set(PARITY_MONITOR_CRON_LAST_KEY, new Date().toISOString(), { EX: 3300 })
+                    .catch(() => { });
+                }
+                console.log(
+                  `CRON: Parity monitor checked ${parityRes?.clientsChecked || 0} client(s) (mismatches=${parityRes?.mismatchClientsCount || 0}, errors=${parityRes?.errorClientsCount || 0}, emailed=${Boolean(parityRes?.emailed)}).`
+                );
+              } finally {
+                if (redisClient?.isOpen) {
+                  await redisClient.del(PARITY_MONITOR_INFLIGHT_KEY).catch(() => { });
+                }
+              }
+            }
+          } else {
+            console.log("⏭️ CRON: Hourly parity monitor already in-flight; skipping overlapping trigger.");
+          }
         }
       } catch (parityErr) {
         console.warn("⚠️ CRON: Non-fatal error in hourly parity monitor:", parityErr.message);

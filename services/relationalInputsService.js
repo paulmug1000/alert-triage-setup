@@ -2000,6 +2000,38 @@ async function runSingleInputReconcilePass_(ctx, targetTabs, options = {}) {
         formulasGrid: g.formulas_grid,
         notesGrid: g.notes_grid,
       });
+      if (!options?.allowClearAllNotes) {
+        const countCellNotes = (list) =>
+          (list || []).reduce((sum, item) => {
+            const cn = item?.cell_notes && typeof item.cell_notes === "object" ? item.cell_notes : {};
+            return sum + Object.keys(cn).filter((ck) => String(cn[ck] ?? "").trim() !== "").length;
+          }, 0);
+        const existingTotalNotes = countCellNotes(existingOuts);
+        const desiredTotalNotes = countCellNotes(desiredOuts);
+        if (existingTotalNotes >= 5 && desiredTotalNotes === 0) {
+          const outKey = (x) =>
+            x.name ? `${x.section}::${normalizeTextKey_(x.name)}` : `${x.section}::row:${x.sheet_row_num}`;
+          const existingByKey = new Map();
+          const existingByRow = new Map();
+          for (const ex of existingOuts || []) {
+            existingByKey.set(outKey(ex), ex);
+            if (ex.sheet_row_num) existingByRow.set(Number(ex.sheet_row_num), ex);
+          }
+          let restoredItemNotes = 0;
+          for (const item of desiredOuts) {
+            const match = existingByKey.get(outKey(item)) || existingByRow.get(Number(item.sheet_row_num));
+            if (match?.cell_notes && Object.keys(match.cell_notes).length > 0) {
+              item.cell_notes = { ...match.cell_notes };
+              restoredItemNotes++;
+            }
+          }
+          if (restoredItemNotes > 0) {
+            console.warn(
+              `[relationalInputsService] Preserved existing Outgoings cell_notes across ${restoredItemNotes} item(s) for ${ctx.clientName} against empty-notes write.`
+            );
+          }
+        }
+      }
       const r = await reconcileRowBasedTable_(
         supabase,
         "pulse_outgoing_items",

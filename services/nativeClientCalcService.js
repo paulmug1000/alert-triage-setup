@@ -419,9 +419,65 @@ export async function saveNativeClientTabBlueprint(
 ) {
   if (!ctx?.clientId || !tabName) return null;
   const fullValues = Array.isArray(valuesGrid) ? valuesGrid : [];
-  const fullFormulas =
+  let fullFormulas =
     Array.isArray(formulasGrid) && formulasGrid.length > 0 ? formulasGrid : fullValues;
-  const baseNotes = notesGrid && typeof notesGrid === "object" ? notesGrid : {};
+  const baseNotes = notesGrid && typeof notesGrid === "object" ? { ...notesGrid } : {};
+  const cacheKey = `${String(ctx.clientName).trim().toLowerCase()}::${tabName}`;
+  const supabase = !options.memoryOnly ? getSupabaseAdmin() : null;
+
+  if (!options.memoryOnly && !options.allowClearAllNotes) {
+    const incomingNoteKeys = Object.keys(baseNotes).filter(
+      (k) => !k.startsWith("__") && String(baseNotes[k] ?? "").trim() !== ""
+    );
+    const needFormulaPreserve =
+      Boolean(options.valuesOnly) && (!Array.isArray(formulasGrid) || formulasGrid.length === 0);
+    if (incomingNoteKeys.length === 0 || needFormulaPreserve) {
+      let existingRow = _blueprintCache.get(cacheKey)?.row || null;
+      if (!existingRow && supabase) {
+        try {
+          const { data: bpDbRow } = await supabase
+            .from("pulse_client_tab_blueprints")
+            .select("row_count, col_count, base_values_grid, formulas_blueprint, notes_meta")
+            .eq("client_id", ctx.clientId)
+            .eq("tab_name", tabName)
+            .maybeSingle();
+          existingRow = bpDbRow || null;
+        } catch {
+          existingRow = null;
+        }
+      }
+      if (existingRow) {
+        if (incomingNoteKeys.length === 0 && existingRow.notes_meta && typeof existingRow.notes_meta === "object") {
+          let preservedCount = 0;
+          for (const [nk, nv] of Object.entries(existingRow.notes_meta)) {
+            if (!nk.startsWith("__") && String(nv ?? "").trim() !== "") {
+              baseNotes[nk] = nv;
+              preservedCount++;
+            }
+          }
+          if (existingRow.notes_meta.__dateCells && !baseNotes.__dateCells) {
+            baseNotes.__dateCells = existingRow.notes_meta.__dateCells;
+          }
+          if (preservedCount > 0) {
+            console.warn(
+              `[nativeClientCalcService] Preserved ${preservedCount} existing user note(s) on ${ctx.clientName}/${tabName} against empty-notes save.`
+            );
+          }
+        }
+        if (
+          needFormulaPreserve &&
+          Array.isArray(existingRow.formulas_blueprint) &&
+          existingRow.formulas_blueprint.length > 0
+        ) {
+          const expandedExisting = expandBlueprintRow_(existingRow, tabName, { valuesOnly: false });
+          if (Array.isArray(expandedExisting?.formulas_grid) && expandedExisting.formulas_grid.length > 0) {
+            fullFormulas = expandedExisting.formulas_grid;
+          }
+        }
+      }
+    }
+  }
+
   const maxCols = Math.max(
     fullValues.reduce((acc, r) => Math.max(acc, Array.isArray(r) ? r.length : 0), 0),
     fullFormulas.reduce((acc, r) => Math.max(acc, Array.isArray(r) ? r.length : 0), 0)
@@ -447,7 +503,6 @@ export async function saveNativeClientTabBlueprint(
     updated_at: nowIso,
   };
 
-  const cacheKey = `${String(ctx.clientName).trim().toLowerCase()}::${tabName}`;
   _blueprintCache.set(cacheKey, {
     expiresAt: Date.now() + BLUEPRINT_CACHE_TTL_MS,
     row: rowPayload,
@@ -457,7 +512,6 @@ export async function saveNativeClientTabBlueprint(
     return rowPayload;
   }
 
-  const supabase = getSupabaseAdmin();
   if (!supabase) return rowPayload;
   const { error } = await supabase
     .from("pulse_client_tab_blueprints")
@@ -1516,6 +1570,7 @@ export async function verifyNativeClientCalcParity({
   clientName = null,
   source = "auto",
   onlyActiveOrShadow = false,
+  onlyActive = false,
   compareFrozenGrids = false,
 } = {}) {
   const supabase = getSupabaseAdmin();
@@ -1523,8 +1578,8 @@ export async function verifyNativeClientCalcParity({
 
   const schema = await checkPhase6NativeComputeSchemaStatus();
   const cols = schema.schemaReady
-    ? "id, client_name, client_compute_mode, recon_read_mode, financials_read_mode, client_sheet_id, master_sheet_id, recon_sheet_id, metadata"
-    : "id, client_name, recon_read_mode, financials_read_mode, client_sheet_id, master_sheet_id, recon_sheet_id, metadata";
+    ? "id, client_name, status, client_compute_mode, recon_read_mode, financials_read_mode, client_sheet_id, master_sheet_id, recon_sheet_id, metadata"
+    : "id, client_name, status, recon_read_mode, financials_read_mode, client_sheet_id, master_sheet_id, recon_sheet_id, metadata";
   let query = supabase.from("clients").select(cols).order("client_name");
   if (clientName) query = query.eq("client_name", clientName);
   const { data: clients, error } = await query;
@@ -1532,7 +1587,12 @@ export async function verifyNativeClientCalcParity({
 
   const targetClients = (clients || []).filter((cl) => {
     const mode = cl.client_compute_mode || "grid_gas";
-    return !(onlyActiveOrShadow && mode !== "native" && mode !== "shadow");
+    if (onlyActiveOrShadow && mode !== "native" && mode !== "shadow") return false;
+    if (onlyActive) {
+      const effStatus = str_(cl.metadata?.statusOverride || cl.status || "live").toLowerCase();
+      if (effStatus === "inactive" || effStatus === "archived" || effStatus === "suspended") return false;
+    }
+    return true;
   });
 
   const evalOneClient = async (cl) => {
@@ -1565,18 +1625,16 @@ export async function verifyNativeClientCalcParity({
       let nativeGrids = null;
 
       if (usePersistedNativeRef) {
-        const [persistedReadRecords, nativeRecords] = await Promise.all([
-          loadNativeClientTabRecordsBatch(ctx, tabsToCompare, {
-            source: "db",
-            valuesOnly: true,
-            includeNotes: true,
-          }),
-          loadNativeClientTabRecordsBatch(ctx, CORE_CLIENT_TABS, {
-            source: "db",
-            valuesOnly: false,
-            includeNotes: true,
-          }),
-        ]);
+        const nativeRecords = await loadNativeClientTabRecordsBatch(ctx, CORE_CLIENT_TABS, {
+          source: "db",
+          valuesOnly: false,
+          includeNotes: true,
+        });
+        const persistedReadRecords = await loadNativeClientTabRecordsBatch(ctx, tabsToCompare, {
+          source: "db",
+          valuesOnly: true,
+          includeNotes: true,
+        });
         legacyGrids = cloneFormulaEntryMap_(persistedReadRecords);
         nativeGrids = cloneFormulaEntryMap_(nativeRecords);
 
@@ -1894,14 +1952,16 @@ export async function verifyRelationalAccountingInvariants({
     { tab: "Calcs", maxR: 37, maxC: 52 },
   ];
 
-  const results = [];
-  for (const cl of clients || []) {
-    if (clientName && cl.client_name !== clientName) continue;
+  const targetClients = (clients || []).filter((cl) => {
+    if (clientName && cl.client_name !== clientName) return false;
     const effStatus = str_(cl.metadata?.statusOverride || cl.status || "live").toLowerCase();
     if (onlyActive && (effStatus === "inactive" || effStatus === "archived" || effStatus === "suspended")) {
-      continue;
+      return false;
     }
+    return true;
+  });
 
+  const evalInvariantClient = async (cl) => {
     try {
       const ctx = { clientId: cl.id, clientName: cl.client_name };
       const bundle = await preloadClientRelationalFinancialsBundle(ctx, {
@@ -2087,7 +2147,7 @@ export async function verifyRelationalAccountingInvariants({
         }
       }
 
-      results.push({
+      return {
         clientName: cl.client_name,
         source: bundle?.source || "unknown",
         matched: violations.length === 0,
@@ -2095,9 +2155,9 @@ export async function verifyRelationalAccountingInvariants({
         violationCount: violations.length,
         sampleMismatches: violations.slice(0, 10),
         error: null,
-      });
+      };
     } catch (err) {
-      results.push({
+      return {
         clientName: cl.client_name,
         source: "error",
         matched: false,
@@ -2105,8 +2165,15 @@ export async function verifyRelationalAccountingInvariants({
         violationCount: 0,
         sampleMismatches: [],
         error: err.message,
-      });
+      };
     }
+  };
+
+  const results = [];
+  for (let i = 0; i < targetClients.length; i += 4) {
+    const chunk = targetClients.slice(i, i + 4);
+    const chunkRes = await Promise.all(chunk.map(evalInvariantClient));
+    results.push(...chunkRes);
   }
 
   return {

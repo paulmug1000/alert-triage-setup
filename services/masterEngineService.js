@@ -1007,11 +1007,12 @@ export async function getOrLoadVirtualTabGrid_(ctx, sheetRole, tabName, rawSheet
 
     if (sheetRole === "client" && ctx.clientComputeMode === "native") {
       try {
+        const effectiveIncludeNotes = !valuesOnly || includeNotes;
         const { loadNativeClientTabRecord } = await import("./nativeClientCalcService.js");
         const relRec = await loadNativeClientTabRecord(ctx, tabName, {
           source: "db",
           valuesOnly,
-          includeNotes,
+          includeNotes: effectiveIncludeNotes,
         });
         if (relRec && Array.isArray(relRec.values_grid) && relRec.values_grid.length > 0) {
           const recOut = {
@@ -1021,7 +1022,7 @@ export async function getOrLoadVirtualTabGrid_(ctx, sheetRole, tabName, rawSheet
             tab_name: tabName,
             ...relRec,
             _valuesOnlyLoaded: valuesOnly,
-            _notesLoaded: !valuesOnly || includeNotes,
+            _notesLoaded: effectiveIncludeNotes,
           };
           const existing = _gridMemoryCache.get(cacheKey);
           if (shouldStoreClientRecordInCache_(existing, { valuesOnly, includeNotes })) {

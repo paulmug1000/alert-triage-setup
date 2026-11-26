@@ -148,11 +148,15 @@ export default function DbView({
   const [relationalReconReadParityReport, setRelationalReconReadParityReport] = useState(null);
   const [relationalFinancialsParityReport, setRelationalFinancialsParityReport] = useState(null);
   const [relationalFinancialsReadParityReport, setRelationalFinancialsReadParityReport] = useState(null);
+  const [nativeClientCalcParityReport, setNativeClientCalcParityReport] = useState(null);
+  const [nativeMasterCompParityReport, setNativeMasterCompParityReport] = useState(null);
+  const [accountingInvariantsReport, setAccountingInvariantsReport] = useState(null);
   const [copied0012Sql, setCopied0012Sql] = useState(false);
   const [copied0013Sql, setCopied0013Sql] = useState(false);
   const [copied0014Sql, setCopied0014Sql] = useState(false);
   const [copied0015Sql, setCopied0015Sql] = useState(false);
   const [copied0016Sql, setCopied0016Sql] = useState(false);
+  const [copied0017Sql, setCopied0017Sql] = useState(false);
 
   // Live operation progress & feedback state
   const [activeOp, setActiveOp] = useState(null); // { key, label, startedAt }
@@ -1270,6 +1274,205 @@ export default function DbView({
         return {
           type: "success",
           text: `Switched ${targetClient} financial calculation read source to ${nextMode}.`,
+        };
+      }
+    );
+  };
+
+  const handleBackfillNativeClientCalc = (allClients = false, clientOverride = null) => {
+    const targetClient = typeof clientOverride === "string" && clientOverride ? clientOverride : activeClientName;
+    runTrackedOperation(
+      allClients ? "backfill_native_client_all" : `backfill_native_client_${targetClient}`,
+      allClients
+        ? "Backfilling Phase 6A client tab blueprints across all clients..."
+        : `Backfilling Phase 6A client tab blueprints for ${targetClient}...`,
+      async () => {
+        const res = await fetch("/api/pma/master-engine", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            action: "backfill_native_client_calc",
+            allClients,
+            clientName: targetClient,
+            automationCommanderSheetId,
+          }),
+        });
+        const data = await res.json();
+        if (!data.success) throw new Error(data.error || "Phase 6A blueprint backfill failed.");
+        if (data.status) setStage2Data(data.status);
+        const r = data.result || {};
+        return {
+          type: "success",
+          text: allClients
+            ? `Backfilled Phase 6A client blueprints for ${r.clientsProcessed || 0} client(s).`
+            : `Backfilled ${r.tabsSaved || 0} client tab blueprint(s) for ${targetClient}.`,
+        };
+      }
+    );
+  };
+
+  const handleVerifyNativeClientCalcParity = (allClients = true) => {
+    runTrackedOperation(
+      "native_client_calc_parity",
+      "Verifying Phase 6A native client calculation parity against virtual grids...",
+      async () => {
+        const res = await fetch("/api/pma/master-engine", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            action: "verify_native_client_calc_parity",
+            allClients,
+            clientName: activeClientName,
+            automationCommanderSheetId,
+          }),
+        });
+        const data = await res.json();
+        if (!data.success) throw new Error(data.error || "Phase 6A client calc parity check failed.");
+        const r = data.parityReport || {};
+        setNativeClientCalcParityReport(r);
+        return {
+          type: (r.errorClientsCount || 0) > 0 || (r.mismatchClientsCount || 0) > 0 ? "info" : "success",
+          text: `Native client calculation parity verified across ${r.clientsChecked || 0} client(s): ${r.matchedClientsCount || 0} matched 100%, ${r.mismatchClientsCount || 0} mismatch(es).`,
+        };
+      }
+    );
+  };
+
+  const handleSetClientComputeMode = (nextMode, clientOverride = null) => {
+    const targetClient = typeof clientOverride === "string" && clientOverride ? clientOverride : activeClientName;
+    runTrackedOperation(
+      `set_client_compute_mode_${nextMode}`,
+      `Switching ${targetClient} client calculation engine mode to ${nextMode}...`,
+      async () => {
+        const res = await fetch("/api/pma/master-engine", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            action: "set_client_compute_mode",
+            clientName: targetClient,
+            clientComputeMode: nextMode,
+            automationCommanderSheetId,
+          }),
+        });
+        const data = await res.json();
+        if (!data.success) throw new Error(data.error || "Could not update client calculation mode.");
+        if (data.status) setStage2Data(data.status);
+        return {
+          type: "success",
+          text: `Switched ${targetClient} client calculation engine mode to ${nextMode}.`,
+        };
+      }
+    );
+  };
+
+  const handleBackfillNativeMasterComparisons = (allClients = false, clientOverride = null) => {
+    const targetClient = typeof clientOverride === "string" && clientOverride ? clientOverride : activeClientName;
+    runTrackedOperation(
+      allClients ? "backfill_native_master_all" : `backfill_native_master_${targetClient}`,
+      allClients
+        ? "Backfilling Phase 6B native master comparisons and context grids across all clients..."
+        : `Backfilling Phase 6B native master comparisons for ${targetClient}...`,
+      async () => {
+        const res = await fetch("/api/pma/master-engine", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            action: "backfill_native_master_comparisons",
+            allClients,
+            clientName: targetClient,
+            automationCommanderSheetId,
+          }),
+        });
+        const data = await res.json();
+        if (!data.success) throw new Error(data.error || "Phase 6B comparison backfill failed.");
+        if (data.status) setStage2Data(data.status);
+        const r = data.result || {};
+        return {
+          type: "success",
+          text: allClients
+            ? `Backfilled Phase 6B master comparisons for ${r.clientsProcessed || 0} client(s).`
+            : `Backfilled ${r.comparisonRowsSaved || 0} comparison row(s) for ${targetClient}.`,
+        };
+      }
+    );
+  };
+
+  const handleVerifyNativeMasterCompParity = (allClients = true) => {
+    runTrackedOperation(
+      "native_master_comp_parity",
+      "Verifying Phase 6B native master comparison parity against legacy master formulas...",
+      async () => {
+        const res = await fetch("/api/pma/master-engine", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            action: "verify_native_master_comparisons_parity",
+            allClients,
+            clientName: activeClientName,
+            automationCommanderSheetId,
+          }),
+        });
+        const data = await res.json();
+        if (!data.success) throw new Error(data.error || "Phase 6B master comparison parity check failed.");
+        const r = data.parityReport || {};
+        setNativeMasterCompParityReport(r);
+        return {
+          type: (r.errorClientsCount || 0) > 0 || (r.mismatchClientsCount || 0) > 0 ? "info" : "success",
+          text: `Native master comparison parity verified across ${r.clientsChecked || 0} client(s): ${r.matchedClientsCount || 0} matched 100%, ${r.mismatchClientsCount || 0} mismatch(es).`,
+        };
+      }
+    );
+  };
+
+  const handleSetClientMasterComputeMode = (nextMode, clientOverride = null) => {
+    const targetClient = typeof clientOverride === "string" && clientOverride ? clientOverride : activeClientName;
+    runTrackedOperation(
+      `set_master_compute_mode_${nextMode}`,
+      `Switching ${targetClient} master comparison engine mode to ${nextMode}...`,
+      async () => {
+        const res = await fetch("/api/pma/master-engine", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            action: "set_client_master_compute_mode",
+            clientName: targetClient,
+            masterComputeMode: nextMode,
+            automationCommanderSheetId,
+          }),
+        });
+        const data = await res.json();
+        if (!data.success) throw new Error(data.error || "Could not update master comparison mode.");
+        if (data.status) setStage2Data(data.status);
+        return {
+          type: "success",
+          text: `Switched ${targetClient} master comparison engine mode to ${nextMode}.`,
+        };
+      }
+    );
+  };
+
+  const handleVerifyAccountingInvariants = (allClients = true) => {
+    runTrackedOperation(
+      "accounting_invariants",
+      "Running independent SQL accounting invariant checks (Gate 4) across clients...",
+      async () => {
+        const res = await fetch("/api/pma/master-engine", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            action: "verify_relational_accounting_invariants",
+            allClients,
+            clientName: activeClientName,
+            automationCommanderSheetId,
+          }),
+        });
+        const data = await res.json();
+        if (!data.success) throw new Error(data.error || "Accounting invariants verification failed.");
+        const r = data.parityReport || {};
+        setAccountingInvariantsReport(r);
+        return {
+          type: (r.errorClientsCount || 0) > 0 || (r.mismatchClientsCount || 0) > 0 ? "info" : "success",
+          text: `Accounting invariants (Gate 4) checked across ${r.clientsChecked || 0} client(s): ${r.matchedClientsCount || 0} passed 100%, ${r.mismatchClientsCount || 0} issue(s).`,
         };
       }
     );
@@ -5743,6 +5946,435 @@ export default function DbView({
                       }}
                     >
                       {`${r.clientName}: ${r.matched ? `${r.rollupMonthsCount || 0}r/${r.statementLinesCount || 0}s/${r.cashflowLinesCount || 0}cf (${r.source})` : r.error || `${r.totalMismatchCount || r.mismatchCount} diff(s)`}`}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* SECTION 4e: Native calculation and master comparison engine (Phase 6A + 6B + Gate 4) */}
+          <div style={cardStyle}>
+            <div
+              style={{
+                display: "flex",
+                justifyContent: "space-between",
+                alignItems: "flex-start",
+                gap: "12px",
+                flexWrap: "wrap",
+                marginBottom: "10px",
+              }}
+            >
+              <div>
+                <h2 style={{ margin: 0, fontSize: "15px", fontWeight: 700, color: "#0f172a" }}>
+                  Native calculation and master comparison engine (Phase 6A + 6B)
+                </h2>
+                <p style={{ margin: "2px 0 0", fontSize: "12px", color: "#64748b" }}>
+                  Decouples client recalculation and master comparison evaluation from grid blobs using blueprint metadata, persisted comparisons, and Gate 4 SQL accounting invariants.
+                </p>
+              </div>
+              <div style={{ display: "flex", alignItems: "center", gap: "6px", flexWrap: "wrap" }}>
+                <span
+                  style={{
+                    padding: "3px 9px",
+                    borderRadius: "999px",
+                    fontSize: "11px",
+                    fontWeight: 600,
+                    background: stage2Data?.phase6NativeCompute?.schemaReady ? "#dcfce7" : "#fef3c7",
+                    color: stage2Data?.phase6NativeCompute?.schemaReady ? "#166534" : "#92400e",
+                  }}
+                >
+                  {stage2Data?.phase6NativeCompute?.schemaReady ? "Schema ready (0017)" : "Migration 0017 required"}
+                </span>
+                {stage2Data?.phase6NativeCompute?.schemaReady && (
+                  <span
+                    style={{
+                      padding: "3px 9px",
+                      borderRadius: "999px",
+                      fontSize: "11px",
+                      fontWeight: 600,
+                      background: "#eff6ff",
+                      color: "#1e40af",
+                    }}
+                  >
+                    {`${stage2Data.phase6NativeCompute.clientComputeNativeCount || 0} native calc (${stage2Data.phase6NativeCompute.clientComputeShadowCount || 0} shadow) · ${stage2Data.phase6NativeCompute.masterComputeNativeCount || 0} native master (${stage2Data.phase6NativeCompute.masterComputeShadowCount || 0} shadow)`}
+                  </span>
+                )}
+              </div>
+            </div>
+
+            {!stage2Data?.phase6NativeCompute?.schemaReady && stage2Data?.phase6NativeCompute?.migrationSql && (
+              <div
+                style={{
+                  marginBottom: "12px",
+                  padding: "10px 12px",
+                  borderRadius: "7px",
+                  background: "#fffbeb",
+                  border: "1px solid #fde68a",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                  gap: "10px",
+                  flexWrap: "wrap",
+                  fontSize: "12px",
+                  color: "#92400e",
+                }}
+              >
+                <span>
+                  Run migration 0017 in the Supabase SQL editor to add client compute mode columns, pulse_client_tab_blueprints, master context columns, and pulse_master_comparisons.
+                </span>
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (typeof navigator !== "undefined" && navigator.clipboard) {
+                      navigator.clipboard.writeText(stage2Data.phase6NativeCompute.migrationSql);
+                      setCopied0017Sql(true);
+                      setTimeout(() => setCopied0017Sql(false), 2500);
+                    }
+                  }}
+                  style={{
+                    padding: "5px 10px",
+                    fontSize: "11.5px",
+                    fontWeight: 600,
+                    borderRadius: "6px",
+                    border: "1px solid #f59e0b",
+                    background: "#ffffff",
+                    color: "#92400e",
+                    cursor: "pointer",
+                  }}
+                >
+                  {copied0017Sql ? "Copied migration 0017 SQL" : "Copy migration 0017 SQL"}
+                </button>
+              </div>
+            )}
+
+            {stage2Data?.phase6NativeCompute?.schemaReady && (
+              <div
+                style={{
+                  display: "grid",
+                  gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))",
+                  gap: "8px",
+                  marginBottom: "12px",
+                }}
+              >
+                {[
+                  { label: "Blueprint tabs (6A)", value: stage2Data.phase6NativeCompute.totalClientBlueprintTabs || 0 },
+                  { label: "Master comparisons (6B)", value: stage2Data.phase6NativeCompute.totalMasterComparisons || 0 },
+                  { label: "Native client calc", value: stage2Data.phase6NativeCompute.clientComputeNativeCount || 0 },
+                  { label: "Native master comp", value: stage2Data.phase6NativeCompute.masterComputeNativeCount || 0 },
+                  { label: "6A backfilled clients", value: stage2Data.phase6NativeCompute.clientBackfilledCount || 0 },
+                  { label: "6B backfilled clients", value: stage2Data.phase6NativeCompute.masterBackfilledCount || 0 },
+                ].map((stat) => (
+                  <div
+                    key={stat.label}
+                    style={{
+                      padding: "8px 10px",
+                      borderRadius: "6px",
+                      background: "#f8fafc",
+                      border: "1px solid #e2e8f0",
+                    }}
+                  >
+                    <div style={{ fontSize: "11px", color: "#64748b" }}>{stat.label}</div>
+                    <div style={{ fontSize: "15px", fontWeight: 700, color: "#0f172a" }}>
+                      {Number(stat.value).toLocaleString()}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            <div style={{ display: "flex", gap: "8px", flexWrap: "wrap", alignItems: "center", marginBottom: "8px" }}>
+              <button
+                type="button"
+                disabled={!stage2Data?.phase6NativeCompute?.schemaReady || isBusy}
+                onClick={() => handleBackfillNativeClientCalc(true)}
+                style={{
+                  ...actionBtnBase,
+                  background: !stage2Data?.phase6NativeCompute?.schemaReady ? "#f3f4f6" : "#eff6ff",
+                  borderColor: !stage2Data?.phase6NativeCompute?.schemaReady ? "#cbd5e1" : "#93c5fd",
+                  color: !stage2Data?.phase6NativeCompute?.schemaReady ? "#9ca3af" : "#1e40af",
+                  cursor: !stage2Data?.phase6NativeCompute?.schemaReady ? "not-allowed" : isBusy ? "wait" : "pointer",
+                }}
+              >
+                {activeOp?.key === "backfill_native_client_all" && (
+                  <Spinner size={11} color="#1e40af" style={{ marginRight: 0 }} />
+                )}
+                <span>{`Backfill 6A blueprints (${allClients.length})`}</span>
+              </button>
+
+              <button
+                type="button"
+                disabled={!s2Ready || isBusy}
+                onClick={() => handleVerifyNativeClientCalcParity(true)}
+                style={{
+                  ...actionBtnBase,
+                  background: "#ffffff",
+                  borderColor: "#cbd5e1",
+                  color: "#1e293b",
+                  cursor: !s2Ready ? "not-allowed" : isBusy ? "wait" : "pointer",
+                }}
+              >
+                {activeOp?.key === "native_client_calc_parity" && (
+                  <Spinner size={11} color="#1e293b" style={{ marginRight: 0 }} />
+                )}
+                <span>{`Verify 6A client parity (${allClients.length})`}</span>
+              </button>
+
+              <button
+                type="button"
+                disabled={!stage2Data?.phase6NativeCompute?.schemaReady || isBusy}
+                onClick={() => {
+                  const cur = activeClientObj?.clientComputeMode || "grid_gas";
+                  const next = cur === "grid_gas" ? "shadow" : cur === "shadow" ? "native" : "grid_gas";
+                  handleSetClientComputeMode(next, activeClientName);
+                }}
+                style={{
+                  ...actionBtnBase,
+                  background: !stage2Data?.phase6NativeCompute?.schemaReady
+                    ? "#f3f4f6"
+                    : activeClientObj?.clientComputeMode === "native"
+                      ? "#fef2f2"
+                      : "#f0fdf4",
+                  borderColor: !stage2Data?.phase6NativeCompute?.schemaReady
+                    ? "#cbd5e1"
+                    : activeClientObj?.clientComputeMode === "native"
+                      ? "#fecaca"
+                      : "#86efac",
+                  color: !stage2Data?.phase6NativeCompute?.schemaReady
+                    ? "#9ca3af"
+                    : activeClientObj?.clientComputeMode === "native"
+                      ? "#b91c1c"
+                      : "#166534",
+                  cursor: !stage2Data?.phase6NativeCompute?.schemaReady ? "not-allowed" : isBusy ? "wait" : "pointer",
+                }}
+              >
+                <span>
+                  {activeClientObj?.clientComputeMode === "native"
+                    ? `Revert ${activeClientName} 6A to grid_gas`
+                    : activeClientObj?.clientComputeMode === "shadow"
+                      ? `Switch ${activeClientName} 6A to native`
+                      : `Switch ${activeClientName} 6A to shadow`}
+                </span>
+              </button>
+
+              <button
+                type="button"
+                disabled={!stage2Data?.phase6NativeCompute?.schemaReady || isBusy}
+                onClick={() => handleBackfillNativeMasterComparisons(true)}
+                style={{
+                  ...actionBtnBase,
+                  background: !stage2Data?.phase6NativeCompute?.schemaReady ? "#f3f4f6" : "#eff6ff",
+                  borderColor: !stage2Data?.phase6NativeCompute?.schemaReady ? "#cbd5e1" : "#93c5fd",
+                  color: !stage2Data?.phase6NativeCompute?.schemaReady ? "#9ca3af" : "#1e40af",
+                  cursor: !stage2Data?.phase6NativeCompute?.schemaReady ? "not-allowed" : isBusy ? "wait" : "pointer",
+                }}
+              >
+                {activeOp?.key === "backfill_native_master_all" && (
+                  <Spinner size={11} color="#1e40af" style={{ marginRight: 0 }} />
+                )}
+                <span>{`Backfill 6B master comparisons (${allClients.length})`}</span>
+              </button>
+
+              <button
+                type="button"
+                disabled={!s2Ready || isBusy}
+                onClick={() => handleVerifyNativeMasterCompParity(true)}
+                style={{
+                  ...actionBtnBase,
+                  background: "#ffffff",
+                  borderColor: "#cbd5e1",
+                  color: "#1e293b",
+                  cursor: !s2Ready ? "not-allowed" : isBusy ? "wait" : "pointer",
+                }}
+              >
+                {activeOp?.key === "native_master_comp_parity" && (
+                  <Spinner size={11} color="#1e293b" style={{ marginRight: 0 }} />
+                )}
+                <span>{`Verify 6B master parity (${allClients.length})`}</span>
+              </button>
+
+              <button
+                type="button"
+                disabled={!stage2Data?.phase6NativeCompute?.schemaReady || isBusy}
+                onClick={() => {
+                  const cur = activeClientObj?.masterComputeMode || "grid_gas";
+                  const next = cur === "grid_gas" ? "shadow" : cur === "shadow" ? "native" : "grid_gas";
+                  handleSetClientMasterComputeMode(next, activeClientName);
+                }}
+                style={{
+                  ...actionBtnBase,
+                  background: !stage2Data?.phase6NativeCompute?.schemaReady
+                    ? "#f3f4f6"
+                    : activeClientObj?.masterComputeMode === "native"
+                      ? "#fef2f2"
+                      : "#f0fdf4",
+                  borderColor: !stage2Data?.phase6NativeCompute?.schemaReady
+                    ? "#cbd5e1"
+                    : activeClientObj?.masterComputeMode === "native"
+                      ? "#fecaca"
+                      : "#86efac",
+                  color: !stage2Data?.phase6NativeCompute?.schemaReady
+                    ? "#9ca3af"
+                    : activeClientObj?.masterComputeMode === "native"
+                      ? "#b91c1c"
+                      : "#166534",
+                  cursor: !stage2Data?.phase6NativeCompute?.schemaReady ? "not-allowed" : isBusy ? "wait" : "pointer",
+                }}
+              >
+                <span>
+                  {activeClientObj?.masterComputeMode === "native"
+                    ? `Revert ${activeClientName} 6B to grid_gas`
+                    : activeClientObj?.masterComputeMode === "shadow"
+                      ? `Switch ${activeClientName} 6B to native`
+                      : `Switch ${activeClientName} 6B to shadow`}
+                </span>
+              </button>
+
+              <button
+                type="button"
+                disabled={!s2Ready || isBusy}
+                onClick={() => handleVerifyAccountingInvariants(true)}
+                style={{
+                  ...actionBtnBase,
+                  background: "#ffffff",
+                  borderColor: "#cbd5e1",
+                  color: "#1e293b",
+                  cursor: !s2Ready ? "not-allowed" : isBusy ? "wait" : "pointer",
+                }}
+              >
+                {activeOp?.key === "accounting_invariants" && (
+                  <Spinner size={11} color="#1e293b" style={{ marginRight: 0 }} />
+                )}
+                <span>{`Run accounting invariants (${allClients.length})`}</span>
+              </button>
+            </div>
+
+            {nativeClientCalcParityReport && (
+              <div
+                style={{
+                  marginTop: "10px",
+                  padding: "10px 12px",
+                  borderRadius: "7px",
+                  background: "#f8fafc",
+                  border: `1px solid ${nativeClientCalcParityReport.mismatchClientsCount > 0 || nativeClientCalcParityReport.errorClientsCount > 0 ? "#fde68a" : "#bbf7d0"}`,
+                  fontSize: "11.5px",
+                }}
+              >
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "6px" }}>
+                  <strong style={{ color: "#0f172a" }}>
+                    {`Native client calc parity (${formatTimestamp(nativeClientCalcParityReport.checkedAt)}) — ${nativeClientCalcParityReport.matchedClientsCount || 0} of ${nativeClientCalcParityReport.clientsChecked || 0} clients match 100%`}
+                  </strong>
+                  <button
+                    type="button"
+                    onClick={() => setNativeClientCalcParityReport(null)}
+                    style={{ padding: "2px 7px", fontSize: "11px", borderRadius: "4px", border: "1px solid #cbd5e1", background: "#ffffff", cursor: "pointer" }}
+                  >
+                    Hide
+                  </button>
+                </div>
+                <div style={{ display: "flex", flexWrap: "wrap", gap: "6px" }}>
+                  {(nativeClientCalcParityReport.results || []).map((r) => (
+                    <span
+                      key={r.clientName}
+                      title={r.error || JSON.stringify(r.sampleMismatches || [])}
+                      style={{
+                        padding: "2px 8px",
+                        borderRadius: "999px",
+                        fontSize: "10.5px",
+                        fontWeight: 600,
+                        background: r.error || !r.matched ? "#fee2e2" : "#dcfce7",
+                        color: r.error || !r.matched ? "#991b1b" : "#166534",
+                      }}
+                    >
+                      {`${r.clientName}: ${r.matched ? `100% (${r.source})` : r.error || `${r.mismatchCount} diff(s)`}`}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {nativeMasterCompParityReport && (
+              <div
+                style={{
+                  marginTop: "10px",
+                  padding: "10px 12px",
+                  borderRadius: "7px",
+                  background: "#f8fafc",
+                  border: `1px solid ${nativeMasterCompParityReport.mismatchClientsCount > 0 || nativeMasterCompParityReport.errorClientsCount > 0 ? "#fde68a" : "#bbf7d0"}`,
+                  fontSize: "11.5px",
+                }}
+              >
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "6px" }}>
+                  <strong style={{ color: "#0f172a" }}>
+                    {`Native master comparison parity (${formatTimestamp(nativeMasterCompParityReport.checkedAt)}) — ${nativeMasterCompParityReport.matchedClientsCount || 0} of ${nativeMasterCompParityReport.clientsChecked || 0} clients match 100%`}
+                  </strong>
+                  <button
+                    type="button"
+                    onClick={() => setNativeMasterCompParityReport(null)}
+                    style={{ padding: "2px 7px", fontSize: "11px", borderRadius: "4px", border: "1px solid #cbd5e1", background: "#ffffff", cursor: "pointer" }}
+                  >
+                    Hide
+                  </button>
+                </div>
+                <div style={{ display: "flex", flexWrap: "wrap", gap: "6px" }}>
+                  {(nativeMasterCompParityReport.results || []).map((r) => (
+                    <span
+                      key={r.clientName}
+                      title={r.error || JSON.stringify(r.sampleMismatches || [])}
+                      style={{
+                        padding: "2px 8px",
+                        borderRadius: "999px",
+                        fontSize: "10.5px",
+                        fontWeight: 600,
+                        background: r.error || !r.matched ? "#fee2e2" : "#dcfce7",
+                        color: r.error || !r.matched ? "#991b1b" : "#166534",
+                      }}
+                    >
+                      {`${r.clientName}: ${r.matched ? `100% (${r.source})` : r.error || `${r.mismatchCount} diff(s)`}`}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {accountingInvariantsReport && (
+              <div
+                style={{
+                  marginTop: "10px",
+                  padding: "10px 12px",
+                  borderRadius: "7px",
+                  background: "#f8fafc",
+                  border: `1px solid ${accountingInvariantsReport.mismatchClientsCount > 0 || accountingInvariantsReport.errorClientsCount > 0 ? "#fde68a" : "#bbf7d0"}`,
+                  fontSize: "11.5px",
+                }}
+              >
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "6px" }}>
+                  <strong style={{ color: "#0f172a" }}>
+                    {`Gate 4 SQL accounting invariants (${formatTimestamp(accountingInvariantsReport.checkedAt)}) — ${accountingInvariantsReport.matchedClientsCount || 0} of ${accountingInvariantsReport.clientsChecked || 0} clients passed`}
+                  </strong>
+                  <button
+                    type="button"
+                    onClick={() => setAccountingInvariantsReport(null)}
+                    style={{ padding: "2px 7px", fontSize: "11px", borderRadius: "4px", border: "1px solid #cbd5e1", background: "#ffffff", cursor: "pointer" }}
+                  >
+                    Hide
+                  </button>
+                </div>
+                <div style={{ display: "flex", flexWrap: "wrap", gap: "6px" }}>
+                  {(accountingInvariantsReport.results || []).map((r) => (
+                    <span
+                      key={r.clientName}
+                      title={r.error || JSON.stringify(r.sampleMismatches || [])}
+                      style={{
+                        padding: "2px 8px",
+                        borderRadius: "999px",
+                        fontSize: "10.5px",
+                        fontWeight: 600,
+                        background: r.error || !r.matched ? "#fee2e2" : "#dcfce7",
+                        color: r.error || !r.matched ? "#991b1b" : "#166534",
+                      }}
+                    >
+                      {`${r.clientName}: ${r.matched ? `Passed (${r.checksPassed || 0}/${r.checksTotal || 0})` : r.error || `${r.mismatchCount} issue(s)`}`}
                     </span>
                   ))}
                 </div>

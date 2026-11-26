@@ -5,7 +5,7 @@ import { useTriage } from "../contexts/TriageContext";
 import { useAppGlobals } from "../hooks/useAppGlobals";
 import { useTasks } from "../contexts/TaskContext";
 import { useAuth } from "../hooks/useAuth";
-import { stripRowInfo, cleanUserFacingText, formatSeenTimestamp, isPlaceholderExpense, isPlaceholderInvoice, parseSheetDate } from "../utils/helpers";
+import { stripRowInfo, cleanUserFacingText, formatSeenTimestamp, isPlaceholderExpense, isPlaceholderInvoice, parseSheetDate, validateDateRange, isNoEndDateSentinel } from "../utils/helpers";
 import JobMatchCard, { buildJobsFromRows } from "./JobMatchCard";
 import ExploreJobsModal from "./ExploreJobsModal";
 import OutgoingsContractorPickerModal from "./OutgoingsContractorPickerModal";
@@ -573,6 +573,16 @@ export default function TriageAnalysisView({
 
   const executeConfirmedJobCreation = async () => {
     if (!confirmJobModal || !targetClientSheetId) return;
+    const isRetainerModal = String(confirmJobModal.projectRetainer || "").toLowerCase() === "retainer";
+    const dateCheck = validateDateRange(confirmJobModal.startDate, confirmJobModal.endDate, {
+      allowNoEndDate: isRetainerModal && isNoEndDateSentinel(confirmJobModal.endDate),
+      requireStart: false,
+      requireEnd: false,
+    });
+    if (!dateCheck.valid) {
+      setAcceptError(dateCheck.error || "End date cannot be earlier than start date.");
+      return;
+    }
     setIsSavingPlacement(true);
     setAcceptError("");
 

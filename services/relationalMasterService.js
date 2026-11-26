@@ -1738,7 +1738,7 @@ export async function preloadClientRelationalMasterBundle(ctxOrClientName, { sou
   return bundle;
 }
 
-function buildBaseRawMasterTabsFromBundle_(bundle) {
+export function buildBaseRawMasterTabsFromBundle(bundle) {
   const cfg = bundle.config || {};
   return {
     InvFromApp: projectAccountingInvoicesToGrid({
@@ -1782,32 +1782,9 @@ function buildBaseRawMasterTabsFromBundle_(bundle) {
   };
 }
 
-export async function reconstructRelationalMasterTabFromBundle(bundle, tabName, ctxOverride = null) {
-  if (!bundle) return null;
-  if (bundle.evaluatedTabsCache?.has(tabName)) {
-    return clone2D_(bundle.evaluatedTabsCache.get(tabName));
-  }
-
-  const rawTabs = buildBaseRawMasterTabsFromBundle_(bundle);
-  if (Object.prototype.hasOwnProperty.call(rawTabs, tabName)) {
-    const out = rawTabs[tabName];
-    bundle.evaluatedTabsCache?.set(tabName, out);
-    return clone2D_(out);
-  }
-
-  const cfg = bundle.config || {};
-  const ctx = ctxOverride || (await resolveSupabaseSheetContext({ clientName: bundle.clientName }));
-
-  const loadMasterContextGrid_ = async (t) => {
-    if (bundle.rawGridsOverride && bundle.rawGridsOverride[t]) {
-      return clone2D_(bundle.rawGridsOverride[t]);
-    }
-    const rec = await getOrLoadVirtualTabGrid_(ctx, "master", t, null).catch(() => null);
-    return clone2D_(rec?.values_grid || []);
-  };
-
-  const grids = {
-    ...rawTabs,
+export function buildMasterComparisonSeedGridsFromBundle(bundle) {
+  const cfg = bundle?.config || {};
+  return {
     InvAppList: buildSeedGridFromMeta_(
       cfg.inv_app_list_meta?.headerRows,
       cfg.inv_app_list_meta?.rowCount || 3,
@@ -1847,7 +1824,48 @@ export async function reconstructRelationalMasterTabFromBundle(bundle, tabName, 
       cfg.crm_comp_controls?.extraCells
     ),
     PLComp: seedPLCompFromMeta_(cfg.pl_comp_meta || {}),
-    TimeComp: seedTimeCompFromMeta_(cfg.time_comp_controls || {}, bundle.timeEntries),
+    TimeComp: seedTimeCompFromMeta_(cfg.time_comp_controls || {}, bundle?.timeEntries || []),
+  };
+}
+
+export async function reconstructRelationalMasterTabFromBundle(bundle, tabName, ctxOverride = null) {
+  if (!bundle) return null;
+  if (bundle.evaluatedTabsCache?.has(tabName)) {
+    return clone2D_(bundle.evaluatedTabsCache.get(tabName));
+  }
+
+  const rawTabs = buildBaseRawMasterTabsFromBundle(bundle);
+  if (Object.prototype.hasOwnProperty.call(rawTabs, tabName)) {
+    const out = rawTabs[tabName];
+    bundle.evaluatedTabsCache?.set(tabName, out);
+    return clone2D_(out);
+  }
+
+  const ctx = ctxOverride || (await resolveSupabaseSheetContext({ clientName: bundle.clientName }));
+  if (ctx?.masterComputeMode === "native" && PHASE4_CONFIG_AND_COMP_TABS.includes(tabName)) {
+    try {
+      const { loadPersistedOrEvaluateMasterComparisonTab } = await import("./nativeMasterComparisonService.js");
+      const grid = await loadPersistedOrEvaluateMasterComparisonTab(ctx, tabName);
+      if (Array.isArray(grid)) {
+        bundle.evaluatedTabsCache?.set(tabName, grid);
+        return clone2D_(grid);
+      }
+    } catch (natErr) {
+      console.warn(`[relationalMasterService] Native comparison fallback (${bundle.clientName}/${tabName}):`, natErr?.message);
+    }
+  }
+
+  const loadMasterContextGrid_ = async (t) => {
+    if (bundle.rawGridsOverride && bundle.rawGridsOverride[t]) {
+      return clone2D_(bundle.rawGridsOverride[t]);
+    }
+    const rec = await getOrLoadVirtualTabGrid_(ctx, "master", t, null).catch(() => null);
+    return clone2D_(rec?.values_grid || []);
+  };
+
+  const grids = {
+    ...rawTabs,
+    ...buildMasterComparisonSeedGridsFromBundle(bundle),
   };
 
   const needsCrm = tabName === "CRMList" || tabName === "CRMComp";
@@ -2088,7 +2106,7 @@ export async function verifyRelationalMasterParity({
           virtualGrids[t] = rec?.values_grid || [];
         })
       );
-      const relRawTabs = buildBaseRawMasterTabsFromBundle_(bundle);
+      const relRawTabs = buildBaseRawMasterTabsFromBundle(bundle);
 
       let totalMismatchCount = 0;
       const sampleMismatches = [];
@@ -2146,11 +2164,23 @@ export async function verifyRelationalMasterReadParity({
 
   const schema = await checkPhase4MasterSchemaStatus();
   const cols = schema.schemaReady
-    ? "id, client_name, master_ingestion_mode, master_read_mode, recon_sheet_id, metadata"
+    ? "id, client_name, master_ingestion_mode, master_read_mode, master_compute_mode, recon_sheet_id, metadata"
     : "id, client_name, recon_sheet_id, metadata";
   let query = supabase.from("clients").select(cols).order("client_name");
   if (clientName) query = query.eq("client_name", clientName);
-  const { data: clients, error } = await query;
+  let { data: clients, error } = await query;
+  if (error && String(error.message || "").includes("master_compute_mode")) {
+    let fbQuery = supabase
+      .from("clients")
+      .select(
+        schema.schemaReady
+          ? "id, client_name, master_ingestion_mode, master_read_mode, recon_sheet_id, metadata"
+          : "id, client_name, recon_sheet_id, metadata"
+      )
+      .order("client_name");
+    if (clientName) fbQuery = fbQuery.eq("client_name", clientName);
+    ({ data: clients, error } = await fbQuery);
+  }
   if (error) throw new Error(`Failed loading clients: ${error.message}`);
 
   const READ_PARITY_TABS = ["InvComp", "DirComp", "PLComp", "CRMList", "CRMComp", "TimeComp"];
@@ -2159,9 +2189,11 @@ export async function verifyRelationalMasterReadParity({
   for (const cl of clients || []) {
     if (onlyReadEnabled && cl.master_read_mode !== "relational") continue;
     try {
+      const masterComputeMode = String(cl.master_compute_mode || cl.metadata?.master_compute_mode || "grid_gas");
       const ctx = {
         clientId: cl.id,
         clientName: cl.client_name,
+        masterComputeMode,
         reconSheetId: cl.recon_sheet_id || `sb-recon-${String(cl.client_name).toLowerCase()}`,
       };
       const canUseDb =
@@ -2173,42 +2205,47 @@ export async function verifyRelationalMasterReadParity({
         source: canUseDb ? "db" : "in_memory",
       });
 
-      // Evaluate Virtual Master baseline (A) with fresh clones
-      const baseContextTabs = [
-        "KeyInfo",
-        "DataChgAlert",
-        "ConfCalcs",
-        "PipeCalcs",
-        "Outgoings",
-        "OutgNotes",
-        "PLAdds",
-        ...ALL_PHASE4_MASTER_TABS,
-      ];
-      const baseGridsA = {};
-      await Promise.all(
-        baseContextTabs.map(async (t) => {
-          const rec = await getOrLoadVirtualTabGrid_(ctx, "master", t, null).catch(() => null);
-          baseGridsA[t] = clone2D_(rec?.values_grid || []);
-        })
-      );
-      if (ctx.reconSheetId) {
-        const rPa = await getOrLoadVirtualTabGrid_(ctx, "recon", "PLAdds", null).catch(() => null);
-        if (Array.isArray(rPa?.values_grid) && rPa.values_grid.length > 0) {
-          baseGridsA.ReconPLAdds = clone2D_(rPa.values_grid);
+      let baseGridsA = {};
+      if (masterComputeMode === "native") {
+        const { evaluateNativeMasterComparisonsInMemory } = await import("./nativeMasterComparisonService.js");
+        const nat = await evaluateNativeMasterComparisonsInMemory(ctx, { source: "db" });
+        baseGridsA = nat?.grids || {};
+      } else {
+        const baseContextTabs = [
+          "KeyInfo",
+          "DataChgAlert",
+          "ConfCalcs",
+          "PipeCalcs",
+          "Outgoings",
+          "OutgNotes",
+          "PLAdds",
+          ...ALL_PHASE4_MASTER_TABS,
+        ];
+        await Promise.all(
+          baseContextTabs.map(async (t) => {
+            const rec = await getOrLoadVirtualTabGrid_(ctx, "master", t, null).catch(() => null);
+            baseGridsA[t] = clone2D_(rec?.values_grid || []);
+          })
+        );
+        if (ctx.reconSheetId) {
+          const rPa = await getOrLoadVirtualTabGrid_(ctx, "recon", "PLAdds", null).catch(() => null);
+          if (Array.isArray(rPa?.values_grid) && rPa.values_grid.length > 0) {
+            baseGridsA.ReconPLAdds = clone2D_(rPa.values_grid);
+          }
         }
-      }
 
-      evaluateOutgoingsMasterTab(baseGridsA);
-      evaluateInvAppList(baseGridsA);
-      evaluateInvDashList(baseGridsA);
-      evaluateInvComp(baseGridsA);
-      evaluateJnlAppList(baseGridsA);
-      evaluateDirDashList(baseGridsA);
-      evaluateDirComp(baseGridsA);
-      evaluateCRMList(baseGridsA);
-      evaluateCRMComp(baseGridsA);
-      evaluateKeyInfoAndPLComp(baseGridsA);
-      evaluateTimeComp(baseGridsA);
+        evaluateOutgoingsMasterTab(baseGridsA);
+        evaluateInvAppList(baseGridsA);
+        evaluateInvDashList(baseGridsA);
+        evaluateInvComp(baseGridsA);
+        evaluateJnlAppList(baseGridsA);
+        evaluateDirDashList(baseGridsA);
+        evaluateDirComp(baseGridsA);
+        evaluateCRMList(baseGridsA);
+        evaluateCRMComp(baseGridsA);
+        evaluateKeyInfoAndPLComp(baseGridsA);
+        evaluateTimeComp(baseGridsA);
+      }
 
       let mismatchCount = 0;
       const sampleMismatches = [];

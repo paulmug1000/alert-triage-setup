@@ -948,6 +948,9 @@ export async function executeChangeRetainerEndDate(sheets, params = {}) {
     const revenue = retParseMoney(parentRow[32]);
     const vat = parentRow[34];
     const startDate = retParseSheetDate(parentRow[37]);
+    if (startDate && !isNoEndDateSentinel(newEndDate) && newEnd.getTime() < startDate.getTime()) {
+      return { success: false, error: "End date cannot be earlier than start date." };
+    }
 
     const childRows = [];
     let cj = parentRowNum;
@@ -5362,6 +5365,13 @@ export async function handleUpdateVariableRetainerBase(req, res, sheets) {
     if (!parsedEnd) return res.status(400).json({ success: false, error: "Invalid end date" });
     const formattedEnd = retFmtDate(parsedEnd);
     const isNoEnd = Boolean(noEndDate || isNoEndDateSentinel(formattedEnd) || parsedEnd.getFullYear() >= 2050);
+    const firstMonthStart =
+      targetSeries.startDateObj ||
+      targetSeries.months[0]?.startDate ||
+      retParseSheetDate(targetSeries.months[0]?.row?.[37]);
+    if (!isNoEnd && firstMonthStart && parsedEnd.getTime() < firstMonthStart.getTime()) {
+      return res.status(400).json({ success: false, error: "End date cannot be earlier than start date." });
+    }
     const newEndMonthVal = parsedEnd.getFullYear() * 12 + parsedEnd.getMonth();
 
     const parsedSendDay = parseInt(rawSendDay, 10);
@@ -5778,6 +5788,13 @@ export async function handleSaveVariableRetainerSeries_(req, res, sheets, { veri
     const isNoEnd = Boolean(job.noEndDate || isNoEndDateSentinel(job.endDate));
     const parsedEnd = isNoEnd ? new Date(2050, 11, 31) : retParseSheetDate(job.endDate);
     if (!parsedEnd) return res.status(400).json({ success: false, error: "Invalid end date" });
+    const firstMonthStart =
+      targetSeries.startDateObj ||
+      targetSeries.months[0]?.startDate ||
+      retParseSheetDate(targetSeries.months[0]?.row?.[37]);
+    if (!isNoEnd && firstMonthStart && parsedEnd.getTime() < firstMonthStart.getTime()) {
+      return res.status(400).json({ success: false, error: "End date cannot be earlier than start date." });
+    }
     const formattedEnd = retFmtDate(parsedEnd);
     const newEndMonthVal = parsedEnd.getFullYear() * 12 + parsedEnd.getMonth();
 

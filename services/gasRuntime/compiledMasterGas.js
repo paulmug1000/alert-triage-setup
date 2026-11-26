@@ -8086,6 +8086,7 @@ async function logMyQuickBooksTaxCodesWithIDs() {
  * ==      CRM TASKS (CRMComp) LOGIC      ==
  * =========================================
  *
+ * v3.24 (Clear Column AN likelihood and Pipeline Column DD when clearing non-JobCosting job rows in clearJobRowPreservingFormulas_)
  * v3.23 (Support [VarRetainer] monthly series in _copyPipelineJobToConfirmed: expand 1-month-per-row entries with blank Date conf on rolled future months and formula-safe writes)
  * v3.22 (Use isNonZeroRecharged_ for Confirmed Col R zone checks in updateCheckedRows, updateCheckedRowsRight, and _copyPipelineJobToConfirmed so pre-filled 0s do not push new jobs past row 5000)
  * v3.21 (Safely coerce blank CRM Revenue and % Likelihood to 0 when updating existing Pipeline rows, guarded by a CRM-wide non-blank column circuit breaker)
@@ -8348,9 +8349,12 @@ function ensureJobCostingRowFormulas_(sheet, rowNum, isConfirmed, headers, force
 function clearJobRowPreservingFormulas_(sheet, targetRow, isConfirmed, headers) {
   const invClearCols = isConfirmed ? 21 : 19;
   if (!isJobCostingSheet_(headers)) {
-    sheet.getRange(targetRow, 1, 1, 39).clearContent();
+    sheet.getRange(targetRow, 1, 1, 40).clearContent();
     sheet.getRange(targetRow, 42, 1, invClearCols).clearContent();
     sheet.getRange(targetRow, 76, 1, 20).clearContent();
+    if (!isConfirmed && sheet.getLastColumn() >= 108) {
+      sheet.getRange(targetRow, 108, 1, 1).clearContent(); // DD
+    }
     return;
   }
   // Clear only non-formula input columns in A..AN, plus invoice and expense blocks
@@ -10866,6 +10870,7 @@ async function processInstantConfirmedJobs_(ss) {
  * ----------------------------------------------------------------
  * 5_AGENT_RECEIVER
  * 
+ * v3.41 (Include Column AN in trimmed retainer child-row clear range while preserving Column AO formula)
  * v3.40 (Support [VarRetainer] monthly series: skip fixed-retainer loops for [VarRetainer], roll 18-month future runway with blank Date conf, and route invoice audit through Project parent/child slot handling with AP formula guard)
  * v3.39 (Handle CRM +/-25% job-count swing guard pause and one-time override in runAgencyAutomator and doPost)
  * v3.38 (Use isNonZeroRecharged_ for Confirmed Col R zone checks in runRetainerSheetAudit_ and runInvoiceSheetAudit_ so pre-filled 0s do not count as populated rows)
@@ -12543,7 +12548,7 @@ function runRetainerSheetAudit_(sheet, alertSheet, targetDay, defaultDays) {
                         const rowNum = childDataIdx + 1;
                         
                         // FIXED: Push to batched array instead of making synchronous API calls
-                        rangesToClear.push(`A${rowNum}:AM${rowNum}`);
+                        rangesToClear.push(`A${rowNum}:AN${rowNum}`);
                         rangesToClear.push(isConfTab ? `AP${rowNum}:BJ${rowNum}` : `AP${rowNum}:BH${rowNum}`);
                         rangesToClear.push(`BX${rowNum}:CR${rowNum}`);
                         

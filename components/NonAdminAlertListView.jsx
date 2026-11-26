@@ -691,7 +691,7 @@ export default function NonAdminAlertListView({
                             {(() => {
                               const cName = na.clientName || selectedClient?.clientName;
                               const clientInfo = getClientInfoForAlert(na, cName) || { clientName: cName };
-                              const jobTarget = getAlertJobTarget(na, true, clientInfo);
+                              const jobTarget = getAlertJobTarget(analysis ? { ...na, analysisResult: analysis } : na, true, clientInfo);
                               if (!jobTarget || !onViewJob) return null;
                               return (
                                 <button

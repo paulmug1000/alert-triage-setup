@@ -26,6 +26,14 @@ import {
   verifyRelationalFinancialsParity,
   verifyRelationalFinancialsReadParity,
 } from "./relationalFinancialsService.js";
+import {
+  checkPhase6NativeComputeSchemaStatus,
+  verifyNativeClientCalcParity,
+  verifyRelationalAccountingInvariants,
+} from "./nativeClientCalcService.js";
+import {
+  verifyNativeMasterComparisonParity,
+} from "./nativeMasterComparisonService.js";
 import { flushPendingClientRecomputes } from "./masterEngineService.js";
 
 /**
@@ -548,19 +556,33 @@ export async function checkAndNotifyTabErrors({ sheets: providedSheets, automati
   }
 
   // 3. Batch-load Supabase virtual ErrorCheck grids for client_mode === "supabase" clients
+  //    Prefer relational pulse_financial_configs.error_check_grid (Phase 5/6) with fallback to master_sheet_grids.
   const supabaseErrorGrids = new Map();
   const supaClientNames = clientList.filter((c) => c.clientMode === "supabase").map((c) => c.clientName);
   if (sb && supaClientNames.length > 0) {
     try {
-      const { data: ecRows } = await sb
-        .from("master_sheet_grids")
-        .select("client_name, values_grid")
-        .eq("tab_name", "ErrorCheck")
-        .eq("sheet_role", "client")
-        .in("client_name", supaClientNames);
+      const [{ data: finCfgRows }, { data: ecRows }] = await Promise.all([
+        sb
+          .from("pulse_financial_configs")
+          .select("client_name, error_check_grid")
+          .in("client_name", supaClientNames)
+          .then((r) => r)
+          .catch(() => ({ data: [] })),
+        sb
+          .from("master_sheet_grids")
+          .select("client_name, values_grid")
+          .eq("tab_name", "ErrorCheck")
+          .eq("sheet_role", "client")
+          .in("client_name", supaClientNames),
+      ]);
       for (const row of ecRows || []) {
         if (row.client_name && Array.isArray(row.values_grid)) {
           supabaseErrorGrids.set(String(row.client_name).trim().toLowerCase(), row.values_grid);
+        }
+      }
+      for (const cfg of finCfgRows || []) {
+        if (cfg.client_name && Array.isArray(cfg.error_check_grid) && cfg.error_check_grid.length > 0) {
+          supabaseErrorGrids.set(String(cfg.client_name).trim().toLowerCase(), cfg.error_check_grid);
         }
       }
     } catch (err) {
@@ -746,14 +768,16 @@ function indexSuiteResultsByClient_(suiteReport) {
 }
 
 async function runFullActiveClientsParityCheck_() {
-  const [phase4Schema, phase4ReconSchema, phase5FinSchema] = await Promise.all([
+  const [phase4Schema, phase4ReconSchema, phase5FinSchema, phase6Schema] = await Promise.all([
     checkPhase4MasterSchemaStatus().catch(() => ({ schemaReady: false })),
     checkPhase4ReconSchemaStatus().catch(() => ({ schemaReady: false })),
     checkPhase5FinancialsSchemaStatus().catch(() => ({ schemaReady: false })),
+    checkPhase6NativeComputeSchemaStatus().catch(() => ({ schemaReady: false })),
   ]);
   const phase4Ready = Boolean(phase4Schema?.schemaReady);
   const phase4ReconReady = Boolean(phase4ReconSchema?.schemaReady);
   const phase5FinReady = Boolean(phase5FinSchema?.schemaReady);
+  const phase6Ready = Boolean(phase6Schema?.schemaReady);
 
   const [
     sheetReport,
@@ -767,6 +791,9 @@ async function runFullActiveClientsParityCheck_() {
     reconReadRep,
     finDbRep,
     finReadRep,
+    natClientRep,
+    natMasterRep,
+    invariantsRep,
   ] = await Promise.all([
     verifyBridgedClientsParity({
       includePureSupabase: true,
@@ -795,6 +822,13 @@ async function runFullActiveClientsParityCheck_() {
     phase5FinReady
       ? verifyRelationalFinancialsReadParity({ source: "db", onlyReadEnabled: true }).catch(() => ({ results: [] }))
       : Promise.resolve({ results: [] }),
+    phase6Ready
+      ? verifyNativeClientCalcParity({ source: "db", onlyActiveOrShadow: true }).catch(() => ({ results: [] }))
+      : Promise.resolve({ results: [] }),
+    phase6Ready
+      ? verifyNativeMasterComparisonParity({ source: "db", onlyActiveOrShadow: true }).catch(() => ({ results: [] }))
+      : Promise.resolve({ results: [] }),
+    verifyRelationalAccountingInvariants({ onlyActive: true }).catch(() => ({ results: [] })),
   ]);
 
   const jobsDbMap = indexSuiteResultsByClient_(jobsDbRep);
@@ -807,6 +841,9 @@ async function runFullActiveClientsParityCheck_() {
   const reconReadMap = indexSuiteResultsByClient_(reconReadRep);
   const finDbMap = indexSuiteResultsByClient_(finDbRep);
   const finReadMap = indexSuiteResultsByClient_(finReadRep);
+  const natClientMap = indexSuiteResultsByClient_(natClientRep);
+  const natMasterMap = indexSuiteResultsByClient_(natMasterRep);
+  const invariantsMap = indexSuiteResultsByClient_(invariantsRep);
 
   const activeNames = (sheetReport?.results || []).map((r) => r?.clientName).filter(Boolean);
   const clientsNeedingSettle = [];
@@ -821,6 +858,9 @@ async function runFullActiveClientsParityCheck_() {
     const rRead = reconReadMap.get(name);
     const fDb = finDbMap.get(name);
     const fRead = finReadMap.get(name);
+    const nClient = natClientMap.get(name);
+    const nMaster = natMasterMap.get(name);
+    const inv = invariantsMap.get(name);
     const hasRelIssue =
       (jDb && (jDb.error || !jDb.matched)) ||
       (iDb && (iDb.error || !iDb.matched)) ||
@@ -831,7 +871,10 @@ async function runFullActiveClientsParityCheck_() {
       (rDb && (rDb.error || !rDb.matched)) ||
       (rRead && (rRead.error || !rRead.matched)) ||
       (fDb && (fDb.error || !fDb.matched)) ||
-      (fRead && (fRead.error || !fRead.matched));
+      (fRead && (fRead.error || !fRead.matched)) ||
+      (nClient && (nClient.error || !nClient.matched)) ||
+      (nMaster && (nMaster.error || !nMaster.matched)) ||
+      (inv && (inv.error || !inv.matched));
     if (hasRelIssue) {
       clientsNeedingSettle.push(name);
     }
@@ -855,6 +898,9 @@ async function runFullActiveClientsParityCheck_() {
       const rRead = reconReadMap.get(name);
       const fDb = finDbMap.get(name);
       const fRead = finReadMap.get(name);
+      const nClient = natClientMap.get(name);
+      const nMaster = natMasterMap.get(name);
+      const inv = invariantsMap.get(name);
 
       if (jDb && (jDb.error || !jDb.matched)) {
         retries.push(
@@ -926,6 +972,27 @@ async function runFullActiveClientsParityCheck_() {
             .catch(() => { })
         );
       }
+      if (nClient && (nClient.error || !nClient.matched)) {
+        retries.push(
+          verifyNativeClientCalcParity({ clientName: name, source: "db", onlyActiveOrShadow: true })
+            .then((r) => { if (r?.results?.[0]) natClientMap.set(name, r.results[0]); })
+            .catch(() => { })
+        );
+      }
+      if (nMaster && (nMaster.error || !nMaster.matched)) {
+        retries.push(
+          verifyNativeMasterComparisonParity({ clientName: name, source: "db", onlyActiveOrShadow: true })
+            .then((r) => { if (r?.results?.[0]) natMasterMap.set(name, r.results[0]); })
+            .catch(() => { })
+        );
+      }
+      if (inv && (inv.error || !inv.matched)) {
+        retries.push(
+          verifyRelationalAccountingInvariants({ clientName: name, onlyActive: true })
+            .then((r) => { if (r?.results?.[0]) invariantsMap.set(name, r.results[0]); })
+            .catch(() => { })
+        );
+      }
       if (retries.length > 0) await Promise.all(retries);
     }
   }
@@ -944,6 +1011,9 @@ async function runFullActiveClientsParityCheck_() {
     const rRead = reconReadMap.get(name) || null;
     const fDb = finDbMap.get(name) || null;
     const fRead = finReadMap.get(name) || null;
+    const nClient = natClientMap.get(name) || null;
+    const nMaster = natMasterMap.get(name) || null;
+    const inv = invariantsMap.get(name) || null;
 
     const suites = [
       { label: "Jobs DB", rec: jDb, isRead: false },
@@ -956,6 +1026,9 @@ async function runFullActiveClientsParityCheck_() {
       { label: "Recon SQL read", rec: rRead, isRead: false },
       { label: "Financials DB", rec: fDb, isRead: false },
       { label: "Financials SQL read", rec: fRead, isRead: false },
+      { label: "Native client calc", rec: nClient, isRead: false },
+      { label: "Native master comp", rec: nMaster, isRead: false },
+      { label: "Accounting invariants", rec: inv, isRead: false },
     ];
 
     const relDiffs = [];
@@ -993,6 +1066,9 @@ async function runFullActiveClientsParityCheck_() {
       relationalReconReadMatched: rRead ? Boolean(rRead.matched && !rRead.error) : true,
       relationalFinancialsDbMatched: fDb ? Boolean(fDb.matched && !fDb.error) : true,
       relationalFinancialsReadMatched: fRead ? Boolean(fRead.matched && !fRead.error) : true,
+      nativeClientCalcMatched: nClient ? Boolean(nClient.matched && !nClient.error) : true,
+      nativeMasterCompMatched: nMaster ? Boolean(nMaster.matched && !nMaster.error) : true,
+      accountingInvariantsMatched: inv ? Boolean(inv.matched && !inv.error) : true,
       totalMismatchCount,
       sampleMismatches,
     };

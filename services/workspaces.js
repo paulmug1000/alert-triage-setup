@@ -8,6 +8,7 @@ import {
   formatInvoiceRefForSheet,
   toSheetDateFormat,
   parseSheetDate,
+  validateDateRange,
   canonicalizeInvoiceStatus,
   canonicalizeExpenseStatus,
   hasActiveCrmIntegration,
@@ -2627,6 +2628,40 @@ export async function handleUpdateJobField(req, res, sheets) {
       : (targetCol === "AN" ? normalizeLikelihoodInput(value) : value);
     const safeValue = sanitizeFormulaInput(normalizedVal);
 
+    const isFormulaDateStr_ = (v) => typeof v === "string" && v.trim().startsWith("=");
+    if (["AL", "AM", "F", "G"].includes(targetCol) && targetRow && !isFormulaDateStr_(safeValue)) {
+      let existingStart = "";
+      let existingEnd = "";
+      try {
+        const dateResp = await withRetry(() =>
+          sheets.spreadsheets.values.batchGet({
+            spreadsheetId: sheetIdClean,
+            ranges: [`${tabName}!F${targetRow}:G${targetRow}`, `${tabName}!AL${targetRow}:AM${targetRow}`],
+            valueRenderOption: "UNFORMATTED_VALUE",
+          })
+        );
+        const fgRow = dateResp.data?.valueRanges?.[0]?.values?.[0] || [];
+        const alAmRow = dateResp.data?.valueRanges?.[1]?.values?.[0] || [];
+        existingStart = alAmRow[0] !== undefined && alAmRow[0] !== "" ? alAmRow[0] : (fgRow[0] ?? "");
+        existingEnd = alAmRow[1] !== undefined && alAmRow[1] !== "" ? alAmRow[1] : (fgRow[1] ?? "");
+      } catch (_) { }
+      const effStart = (targetCol === "AL" || targetCol === "F") ? safeValue : existingStart;
+      const effEnd = (targetCol === "AM" || targetCol === "G") ? safeValue : existingEnd;
+      if (!isFormulaDateStr_(effStart) && !isFormulaDateStr_(effEnd)) {
+        const dateCheck = validateDateRange(effStart, effEnd, {
+          allowNoEndDate: isNoEndDateSentinel(effEnd),
+          requireStart: false,
+          requireEnd: false,
+        });
+        if (!dateCheck.valid) {
+          return res.status(400).json({
+            success: false,
+            error: dateCheck.error || "End date cannot be earlier than start date.",
+          });
+        }
+      }
+    }
+
     if (targetCol === "AE" && String(safeValue || "").trim().toLowerCase().startsWith("[split]")) {
       const splitAllowed = await isClientUnevenSplitEnabled_(sheets, sheetIdClean);
       if (!splitAllowed) {
@@ -3046,6 +3081,55 @@ export async function handleUpdateJobFields(req, res, sheets) {
     const isFixedRetainerJob = isRetainerJob && !isVarRetainerRow;
     const isChangingToRetainer = tabName === "Confirmed" && typeUpdate && String(typeUpdate.value || "").trim().toLowerCase() === "retainer" && !isVarRetainerRow;
     const isExistingRetainer = isFixedRetainerJob && !isChangingToRetainer;
+
+    if (startDateUpdate || endDateUpdate) {
+      const isFormulaDateStr_ = (v) => typeof v === "string" && v.trim().startsWith("=");
+      const pickDateVal_ = (primary, fallback) => {
+        if (primary !== undefined && primary !== null && primary !== "" && !isFormulaDateStr_(primary)) return primary;
+        if (fallback !== undefined && fallback !== null && fallback !== "" && !isFormulaDateStr_(fallback)) return fallback;
+        return primary !== undefined && primary !== null && primary !== "" ? primary : (fallback ?? "");
+      };
+      const pRow = preloadedGroup?.parentRow || null;
+      let existingStart = pRow ? pickDateVal_(pRow[37], pRow[5]) : "";
+      let existingEnd = pRow ? pickDateVal_(pRow[38], pRow[6]) : "";
+      if ((!pRow || isFormulaDateStr_(existingStart) || isFormulaDateStr_(existingEnd)) && targetRowNum && (!startDateUpdate || !endDateUpdate)) {
+        try {
+          const dateResp = await withRetry(() =>
+            sheets.spreadsheets.values.batchGet({
+              spreadsheetId: sheetIdClean,
+              ranges: [`${tabName}!F${targetRowNum}:G${targetRowNum}`, `${tabName}!AL${targetRowNum}:AM${targetRowNum}`],
+              valueRenderOption: "UNFORMATTED_VALUE",
+            })
+          );
+          const fgRow = dateResp.data?.valueRanges?.[0]?.values?.[0] || [];
+          const alAmRow = dateResp.data?.valueRanges?.[1]?.values?.[0] || [];
+          if (!pRow || isFormulaDateStr_(existingStart)) {
+            existingStart = alAmRow[0] !== undefined && alAmRow[0] !== "" ? alAmRow[0] : (fgRow[0] ?? "");
+          }
+          if (!pRow || isFormulaDateStr_(existingEnd)) {
+            existingEnd = alAmRow[1] !== undefined && alAmRow[1] !== "" ? alAmRow[1] : (fgRow[1] ?? "");
+          }
+        } catch (_) { }
+      }
+      const effStart = startDateUpdate ? startDateUpdate.value : existingStart;
+      const effEnd = endDateUpdate ? endDateUpdate.value : existingEnd;
+      const isRetainerForDate =
+        isRetainerJob ||
+        String(typeUpdate?.value || pRow?.[35] || "").trim().toLowerCase().includes("retainer");
+      if (!isFormulaDateStr_(effStart) && !isFormulaDateStr_(effEnd)) {
+        const dateCheck = validateDateRange(effStart, effEnd, {
+          allowNoEndDate: isRetainerForDate && isNoEndDateSentinel(effEnd),
+          requireStart: false,
+          requireEnd: false,
+        });
+        if (!dateCheck.valid) {
+          return res.status(400).json({
+            success: false,
+            error: dateCheck.error || "End date cannot be earlier than start date.",
+          });
+        }
+      }
+    }
 
     const isSettingRetainer = normalizedUpdates.some(
       u => u._coord.colLetters === "AJ" && String(u.value || "").trim().toLowerCase() === "retainer"
@@ -8134,6 +8218,17 @@ export async function handleUpdateInvoiceSlot(req, res, sheets) {
 export async function handleCreateJobFromInvoice(req, res, sheets) {
   const { clientSheetId, jobName, projectCode, revenue, directCosts, vatYesNo, projectType, startDate, endDate, invoice } = req.body;
   if (!clientSheetId || !invoice) return res.status(400).json({ success: false, error: "Missing clientSheetId or invoice" });
+  const createFromInvDateCheck = validateDateRange(startDate, endDate, {
+    allowNoEndDate: Boolean(String(projectType || "").trim().toLowerCase() === "retainer" && isNoEndDateSentinel(endDate)),
+    requireStart: false,
+    requireEnd: false,
+  });
+  if (!createFromInvDateCheck.valid) {
+    return res.status(400).json({
+      success: false,
+      error: createFromInvDateCheck.error || "End date cannot be earlier than start date.",
+    });
+  }
   try {
     const sheetIdClean = extractSheetIdFromUrl(clientSheetId) || clientSheetId;
     const startRow = 2;
@@ -8425,6 +8520,20 @@ export async function handleAddNewJob(req, res, sheets) {
   const { clientSheetId, tabName, jobData } = req.body;
   if (!clientSheetId || !jobData || !jobData.jobName) {
     return res.status(400).json({ success: false, error: "Missing clientSheetId or required job data" });
+  }
+  const addJobDateCheck = validateDateRange(jobData.startDate, jobData.endDate, {
+    allowNoEndDate: Boolean(
+      String(jobData.projectRetainer || "").trim().toLowerCase() === "retainer" &&
+      (jobData.noEndDate || isNoEndDateSentinel(jobData.endDate))
+    ),
+    requireStart: false,
+    requireEnd: false,
+  });
+  if (!addJobDateCheck.valid) {
+    return res.status(400).json({
+      success: false,
+      error: addJobDateCheck.error || "End date cannot be earlier than start date.",
+    });
   }
 
   try {

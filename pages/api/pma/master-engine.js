@@ -87,6 +87,19 @@ import {
   verifyRelationalFinancialsReadParity,
   setClientFinancialsReadMode,
 } from "../../../services/relationalFinancialsService.js";
+import {
+  backfillClientNativeCalc,
+  backfillAllClientsNativeCalc,
+  verifyNativeClientCalcParity,
+  setClientComputeMode,
+  verifyRelationalAccountingInvariants,
+} from "../../../services/nativeClientCalcService.js";
+import {
+  backfillClientNativeMasterComparisons,
+  backfillAllClientsNativeMasterComparisons,
+  verifyNativeMasterComparisonParity,
+  setClientMasterComputeMode,
+} from "../../../services/nativeMasterComparisonService.js";
 
 async function refreshPrecomputedAlerts_(sheets, acId) {
   invalidatePrecomputedMemoryCache();
@@ -716,6 +729,90 @@ export default async function handler(req, res) {
       }).catch(() => { });
       const status = await getStage2Status(cleanClient);
       return res.status(200).json({ success: true, updated, status });
+    }
+
+    if (action === "backfill_native_client_calc") {
+      const result = req.body?.allClients
+        ? await backfillAllClientsNativeCalc()
+        : await backfillClientNativeCalc(cleanClient);
+      const status = await getStage2Status(cleanClient);
+      return res.status(200).json({ success: true, result, status });
+    }
+
+    if (action === "verify_native_client_calc_parity") {
+      const targetClientFilter = req.body?.allClients ? null : cleanClient;
+      const source = req.body?.source || "auto";
+      const parityReport = await verifyNativeClientCalcParity({
+        clientName: targetClientFilter,
+        source,
+      });
+      return res.status(200).json({ success: true, parityReport });
+    }
+
+    if (action === "set_client_compute_mode") {
+      const clientComputeMode = String(req.body?.clientComputeMode || "").trim().toLowerCase();
+      if (clientComputeMode !== "grid_gas" && clientComputeMode !== "shadow" && clientComputeMode !== "native") {
+        return res.status(400).json({ success: false, error: "Invalid clientComputeMode. Expected 'grid_gas', 'shadow', or 'native'." });
+      }
+      const updated = await setClientComputeMode(cleanClient, clientComputeMode);
+      const sheets = await getSheetsClient();
+      await logPmaActivity(sheets, {
+        automationCommanderSheetId: acId,
+        clientName: cleanClient,
+        category: "SYSTEM",
+        action: "CLIENT_COMPUTE_MODE_CHANGED",
+        summary: `Switched ${cleanClient} native client calculation engine mode to "${clientComputeMode}"`,
+        details: updated,
+        userEmail: sessionUser?.email || (isCronAuth ? "System (Scheduled Sync)" : "Admin"),
+      }).catch(() => { });
+      const status = await getStage2Status(cleanClient);
+      return res.status(200).json({ success: true, updated, status });
+    }
+
+    if (action === "backfill_native_master_comparisons") {
+      const result = req.body?.allClients
+        ? await backfillAllClientsNativeMasterComparisons()
+        : await backfillClientNativeMasterComparisons(cleanClient);
+      const status = await getStage2Status(cleanClient);
+      return res.status(200).json({ success: true, result, status });
+    }
+
+    if (action === "verify_native_master_comparisons_parity") {
+      const targetClientFilter = req.body?.allClients ? null : cleanClient;
+      const source = req.body?.source || "auto";
+      const parityReport = await verifyNativeMasterComparisonParity({
+        clientName: targetClientFilter,
+        source,
+      });
+      return res.status(200).json({ success: true, parityReport });
+    }
+
+    if (action === "set_client_master_compute_mode") {
+      const masterComputeMode = String(req.body?.masterComputeMode || "").trim().toLowerCase();
+      if (masterComputeMode !== "grid_gas" && masterComputeMode !== "shadow" && masterComputeMode !== "native") {
+        return res.status(400).json({ success: false, error: "Invalid masterComputeMode. Expected 'grid_gas', 'shadow', or 'native'." });
+      }
+      const updated = await setClientMasterComputeMode(cleanClient, masterComputeMode);
+      const sheets = await getSheetsClient();
+      await logPmaActivity(sheets, {
+        automationCommanderSheetId: acId,
+        clientName: cleanClient,
+        category: "SYSTEM",
+        action: "CLIENT_MASTER_COMPUTE_MODE_CHANGED",
+        summary: `Switched ${cleanClient} native master comparison mode to "${masterComputeMode}"`,
+        details: updated,
+        userEmail: sessionUser?.email || (isCronAuth ? "System (Scheduled Sync)" : "Admin"),
+      }).catch(() => { });
+      const status = await getStage2Status(cleanClient);
+      return res.status(200).json({ success: true, updated, status });
+    }
+
+    if (action === "verify_relational_accounting_invariants") {
+      const targetClientFilter = req.body?.allClients ? null : cleanClient;
+      const parityReport = await verifyRelationalAccountingInvariants({
+        clientName: targetClientFilter,
+      });
+      return res.status(200).json({ success: true, parityReport });
     }
 
     if (action === "sync_sheet_bridge_outbound") {

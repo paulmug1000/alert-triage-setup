@@ -227,6 +227,13 @@ export async function recomputeClientComparisonsInSupabase(sheets, clientName = 
   const ctx = await resolveSupabaseSheetContext({ clientName });
   if (!ctx) throw new Error(`Client "${clientName}" not found.`);
 
+  if (ctx.masterComputeMode === "native") {
+    const { computeAndPersistNativeMasterComparisons } = await import("./nativeMasterComparisonService.js");
+    const natRes = await computeAndPersistNativeMasterComparisons(ctx, { source: "db" });
+    markMasterComparisonsFresh(ctx.clientName);
+    return natRes.summary;
+  }
+
   const env = await createGasEnvironment({
     ctx,
     sheets,
@@ -235,6 +242,14 @@ export async function recomputeClientComparisonsInSupabase(sheets, clientName = 
   });
   await env.finalizeExecution({ recordExecution: false });
   markMasterComparisonsFresh(ctx.clientName);
+
+  if (ctx.masterComputeMode === "shadow") {
+    import("./nativeMasterComparisonService.js")
+      .then(({ computeAndPersistNativeMasterComparisons }) =>
+        computeAndPersistNativeMasterComparisons(ctx, { source: "db" })
+      )
+      .catch(() => { });
+  }
 
   return summarizeComparisonsFromMasterSS_(env.masterSS, ctx.clientName);
 }
@@ -246,6 +261,23 @@ export async function recomputeClientComparisonsInSupabase(sheets, clientName = 
 export async function recomputeCrmComparisonInSupabase(sheets, clientName, requestedMode = null) {
   const ctx = await resolveSupabaseSheetContext({ clientName });
   if (!ctx) return { success: false };
+
+  if (ctx.masterComputeMode === "native") {
+    const { computeAndPersistNativeMasterComparisons } = await import("./nativeMasterComparisonService.js");
+    const natRes = await computeAndPersistNativeMasterComparisons(ctx, {
+      requestedCrmMode: requestedMode || null,
+      source: "db",
+    });
+    markMasterComparisonsFresh(ctx.clientName);
+    return {
+      success: true,
+      mode: natRes.crmMode,
+      crmDealsCount: natRes.crmDealsCount,
+      sheetJobsCount: natRes.sheetJobsCount,
+      dashDiscrCount: natRes.summary.crmDashDiscrepancyCount,
+      appDiscrCount: natRes.summary.crmAppDiscrepancyCount,
+    };
+  }
 
   const env = await createGasEnvironment({
     ctx,

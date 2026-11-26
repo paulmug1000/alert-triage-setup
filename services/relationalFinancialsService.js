@@ -631,8 +631,53 @@ export async function getPhase5FinancialsOverviewStats() {
 // 3. VIRTUAL CLIENT GRID LOADER & IDEMPOTENT RECONCILE / BACKFILL
 // ============================================================================
 
-async function loadExpandedPhase5TabRecords_(supabase, clientName, { valuesOnly = false } = {}) {
-  const targetNames = [...PHASE5_FINANCIAL_TABS, ...PHASE5_FINANCIAL_TABS.map((t) => `Client::${t}`)];
+async function loadExpandedPhase5TabRecords_(
+  supabase,
+  clientName,
+  { valuesOnly = false, preloadedGrids = null } = {}
+) {
+  const byTab = {};
+  const missingTabs = [];
+
+  for (const t of PHASE5_FINANCIAL_TABS) {
+    const pre = preloadedGrids && preloadedGrids[t] ? preloadedGrids[t] : null;
+    if (pre) {
+      const vals = Array.isArray(pre.values_grid)
+        ? pre.values_grid
+        : Array.isArray(pre.values)
+          ? pre.values
+          : [];
+      const forms = valuesOnly
+        ? null
+        : Array.isArray(pre.formulas_grid) && pre.formulas_grid.length > 0
+          ? pre.formulas_grid
+          : Array.isArray(pre.formulas) && pre.formulas.length > 0
+            ? pre.formulas
+            : vals;
+      const notes =
+        pre.notes_grid && typeof pre.notes_grid === "object"
+          ? { ...pre.notes_grid }
+          : pre.notes && typeof pre.notes === "object"
+            ? { ...pre.notes }
+            : {};
+      byTab[t] = {
+        sheet_role: "client",
+        tab_name: t,
+        row_count: vals.length,
+        col_count: vals.reduce((m, r) => Math.max(m, Array.isArray(r) ? r.length : 0), 0),
+        values_grid: vals,
+        ...(valuesOnly ? {} : { formulas_grid: forms }),
+        notes_grid: notes,
+        updated_at: pre.updated_at || new Date().toISOString(),
+      };
+    } else {
+      missingTabs.push(t);
+    }
+  }
+
+  if (missingTabs.length === 0) return byTab;
+
+  const targetNames = [...missingTabs, ...missingTabs.map((t) => `Client::${t}`)];
   const selectCols = valuesOnly
     ? "tab_name, sheet_role, row_count, col_count, values_grid, notes_grid, updated_at"
     : "tab_name, sheet_role, row_count, col_count, values_grid, formulas_grid, notes_grid, updated_at";
@@ -644,8 +689,7 @@ async function loadExpandedPhase5TabRecords_(supabase, clientName, { valuesOnly 
     .in("tab_name", targetNames);
   if (error) throw new Error(`Failed loading client grids for ${clientName}: ${error.message}`);
 
-  const byTab = {};
-  for (const t of PHASE5_FINANCIAL_TABS) {
+  for (const t of missingTabs) {
     const rec =
       (rows || []).find((r) => r.sheet_role === "client" && r.tab_name === t) ||
       (rows || []).find((r) => r.sheet_role === "master" && r.tab_name === `Client::${t}`) ||
@@ -678,6 +722,7 @@ async function runSingleFinancialsReconcilePass_(ctx, tabNames = null, options =
 
   const tabRecordsByTab = await loadExpandedPhase5TabRecords_(supabase, ctx.clientName, {
     valuesOnly: false,
+    preloadedGrids: options?.preloadedGrids || null,
   });
 
   const parsed = parseClientFinancialsFromTabRecords({
@@ -737,11 +782,11 @@ async function runSingleFinancialsReconcilePass_(ctx, tabNames = null, options =
     const activeStmtRows = targetAll
       ? parsed.statementRows
       : parsed.statementRows.filter((r) => {
-          if (r.statement_type === "dashboard") return reqSet.has("Dashboard");
-          if (r.statement_type === "performance") return reqSet.has("Performance");
-          if (r.statement_type === "gp_by_pl") return reqSet.has("GPbyPL");
-          return false;
-        });
+        if (r.statement_type === "dashboard") return reqSet.has("Dashboard");
+        if (r.statement_type === "performance") return reqSet.has("Performance");
+        if (r.statement_type === "gp_by_pl") return reqSet.has("GPbyPL");
+        return false;
+      });
     await upsertInChunks_(
       supabase,
       "pulse_financial_statements",
@@ -867,6 +912,10 @@ export async function reconcileClientFinancialsFromGrids(
     updateBackfillTimestamp: Boolean(
       prevPending.opts.updateBackfillTimestamp || options?.updateBackfillTimestamp
     ),
+    preloadedGrids:
+      prevPending.opts.preloadedGrids || options?.preloadedGrids
+        ? { ...(prevPending.opts.preloadedGrids || {}), ...(options?.preloadedGrids || {}) }
+        : null,
   };
   _pendingFinancialsReconcileByClient.set(key, prevPending);
 
@@ -1241,11 +1290,19 @@ export async function verifyRelationalFinancialsParity({
 
   const schema = await checkPhase5FinancialsSchemaStatus();
   const cols = schema.schemaReady
-    ? "id, client_name, financials_mode, metadata"
+    ? "id, client_name, financials_mode, client_compute_mode, metadata"
     : "id, client_name, metadata";
   let query = supabase.from("clients").select(cols).order("client_name");
   if (clientName) query = query.eq("client_name", clientName);
-  const { data: clients, error } = await query;
+  let { data: clients, error } = await query;
+  if (error && String(error.message || "").includes("client_compute_mode")) {
+    let fbQuery = supabase
+      .from("clients")
+      .select(schema.schemaReady ? "id, client_name, financials_mode, metadata" : "id, client_name, metadata")
+      .order("client_name");
+    if (clientName) fbQuery = fbQuery.eq("client_name", clientName);
+    ({ data: clients, error } = await fbQuery);
+  }
   if (error) throw new Error(`Failed loading clients: ${error.message}`);
 
   const results = [];
@@ -1258,12 +1315,21 @@ export async function verifyRelationalFinancialsParity({
         (source === "db" ||
           (source === "auto" && Boolean(cl.metadata?.relational_financials_state?.lastBackfilledAt)));
 
+      const useNativeRef = String(cl.client_compute_mode || cl.metadata?.client_compute_mode || "grid_gas") === "native";
       const [bundle, tabRecordsByTab] = await Promise.all([
         preloadClientRelationalFinancialsBundle(ctx, {
           source: canUseDb ? "db" : "in_memory",
           includeFormulas: false,
         }),
-        loadExpandedPhase5TabRecords_(supabase, cl.client_name, { valuesOnly: true }),
+        useNativeRef
+          ? import("./nativeClientCalcService.js").then(({ loadNativeClientTabRecordsBatch }) =>
+            loadNativeClientTabRecordsBatch(ctx, PHASE5_FINANCIAL_TABS, {
+              source: "db",
+              valuesOnly: true,
+              includeNotes: true,
+            })
+          )
+          : loadExpandedPhase5TabRecords_(supabase, cl.client_name, { valuesOnly: true }),
       ]);
 
       let totalMismatchCount = 0;
@@ -1365,11 +1431,23 @@ export async function verifyRelationalFinancialsReadParity({
 
   const schema = await checkPhase5FinancialsSchemaStatus();
   const cols = schema.schemaReady
-    ? "id, client_name, financials_mode, financials_read_mode, metadata"
+    ? "id, client_name, financials_mode, financials_read_mode, client_compute_mode, metadata"
     : "id, client_name, metadata";
   let query = supabase.from("clients").select(cols).order("client_name");
   if (clientName) query = query.eq("client_name", clientName);
-  const { data: clients, error } = await query;
+  let { data: clients, error } = await query;
+  if (error && String(error.message || "").includes("client_compute_mode")) {
+    let fbQuery = supabase
+      .from("clients")
+      .select(
+        schema.schemaReady
+          ? "id, client_name, financials_mode, financials_read_mode, metadata"
+          : "id, client_name, metadata"
+      )
+      .order("client_name");
+    if (clientName) fbQuery = fbQuery.eq("client_name", clientName);
+    ({ data: clients, error } = await fbQuery);
+  }
   if (error) throw new Error(`Failed loading clients: ${error.message}`);
 
   const checkRanges = [
@@ -1393,12 +1471,21 @@ export async function verifyRelationalFinancialsReadParity({
         (source === "db" ||
           (source === "auto" && Boolean(cl.metadata?.relational_financials_state?.lastBackfilledAt)));
 
+      const useNativeRef = String(cl.client_compute_mode || cl.metadata?.client_compute_mode || "grid_gas") === "native";
       const [bundle, tabRecordsByTab] = await Promise.all([
         preloadClientRelationalFinancialsBundle(ctx, {
           source: canUseDb ? "db" : "in_memory",
           includeFormulas: false,
         }),
-        loadExpandedPhase5TabRecords_(supabase, cl.client_name, { valuesOnly: true }),
+        useNativeRef
+          ? import("./nativeClientCalcService.js").then(({ loadNativeClientTabRecordsBatch }) =>
+            loadNativeClientTabRecordsBatch(ctx, PHASE5_FINANCIAL_TABS, {
+              source: "db",
+              valuesOnly: true,
+              includeNotes: true,
+            })
+          )
+          : loadExpandedPhase5TabRecords_(supabase, cl.client_name, { valuesOnly: true }),
       ]);
 
       let mismatchCount = 0;

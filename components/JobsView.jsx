@@ -38,6 +38,7 @@ import {
   formatLikelihood,
   normalizeLikelihoodInput,
   isValidCalendarIsoDate,
+  validateDateRange,
   MIN_INPUT_DATE,
   MAX_INPUT_DATE
 } from "../utils/helpers";
@@ -2026,6 +2027,35 @@ export default function JobsView({
     const tabName = job.tabName || parentRow.tabName || (filterType === "pipeline" ? "Pipeline" : "Confirmed");
     const parentRowNum = parentRow.rowNum;
 
+    if (
+      (!fieldsToExclude.includes("startDate") && currentDraft.startDate !== undefined) ||
+      (!fieldsToExclude.includes("endDate") && currentDraft.endDate !== undefined)
+    ) {
+      const effStart = !fieldsToExclude.includes("startDate") && currentDraft.startDate !== undefined
+        ? currentDraft.startDate
+        : (parentRow.startDate || "");
+      const effEnd = !fieldsToExclude.includes("endDate") && currentDraft.endDate !== undefined
+        ? currentDraft.endDate
+        : (parentRow.endDate || "");
+      const isRet = String(
+        (!fieldsToExclude.includes("projectRetainer") && currentDraft.projectRetainer !== undefined)
+          ? currentDraft.projectRetainer
+          : (parentRow.projectRetainer || "")
+      ).toLowerCase().includes("retainer");
+      const startIsFormula = typeof effStart === "string" && effStart.trim().startsWith("=");
+      const endIsFormula = typeof effEnd === "string" && effEnd.trim().startsWith("=");
+      if (!startIsFormula && !endIsFormula) {
+        const dateCheck = validateDateRange(effStart, effEnd, {
+          allowNoEndDate: isRet && isNoEndDateSentinel(effEnd),
+          requireStart: false,
+          requireEnd: false,
+        });
+        if (!dateCheck.valid) {
+          throw new Error(dateCheck.error || "End date cannot be earlier than start date.");
+        }
+      }
+    }
+
     const FIELD_MAP = {
       client: { colLetter: "A", fieldName: "Client" },
       jobName: { colLetter: "B", fieldName: "Job Name" },
@@ -2710,6 +2740,29 @@ export default function JobsView({
       }
     }
 
+    if (currentDraft.startDate !== undefined || currentDraft.endDate !== undefined) {
+      const effStart = currentDraft.startDate !== undefined ? currentDraft.startDate : (parentRow.startDate || "");
+      const effEnd = currentDraft.endDate !== undefined ? currentDraft.endDate : (parentRow.endDate || "");
+      const isRet = String(
+        currentDraft.projectRetainer !== undefined ? currentDraft.projectRetainer : (parentRow.projectRetainer || "")
+      ).toLowerCase().includes("retainer");
+      const startIsFormula = typeof effStart === "string" && effStart.trim().startsWith("=");
+      const endIsFormula = typeof effEnd === "string" && effEnd.trim().startsWith("=");
+      if (!startIsFormula && !endIsFormula) {
+        const dateCheck = validateDateRange(effStart, effEnd, {
+          allowNoEndDate: isRet && isNoEndDateSentinel(effEnd),
+          requireStart: false,
+          requireEnd: false,
+        });
+        if (!dateCheck.valid) {
+          const msg = dateCheck.error || "End date cannot be earlier than start date.";
+          setActionError(msg);
+          alert(msg);
+          return;
+        }
+      }
+    }
+
     const updates = [];
     Object.keys(currentDraft).forEach((fieldKey) => {
       const meta = FIELD_MAP[fieldKey];
@@ -3358,15 +3411,37 @@ export default function JobsView({
     let targetJobName = "";
     let targetJobUuid = null;
     let targetRowOffset = 0;
+    let matchedRow = null;
     if (jobsData) {
       for (const job of jobsData) {
         const matchRow = (job.rows || []).find((r) => r.rowNum === rowNum);
         if (matchRow) {
+          matchedRow = matchRow;
           targetEndClient = matchRow.client || job.client || "";
           targetJobName = matchRow.jobName || job.jobName || "";
           targetJobUuid = job.jobUuid || job.rows?.[0]?.jobUuid || null;
           targetRowOffset = Math.max(0, Number(rowNum) - Number(job.rows?.[0]?.rowNum || rowNum));
           break;
+        }
+      }
+    }
+
+    if (["AL", "AM", "F", "G"].includes(colLetter)) {
+      const effStart = (colLetter === "AL" || colLetter === "F") ? newValue : (matchedRow?.startDate || "");
+      const effEnd = (colLetter === "AM" || colLetter === "G") ? newValue : (matchedRow?.endDate || "");
+      const startIsFormula = typeof effStart === "string" && effStart.trim().startsWith("=");
+      const endIsFormula = typeof effEnd === "string" && effEnd.trim().startsWith("=");
+      if (!startIsFormula && !endIsFormula) {
+        const dateCheck = validateDateRange(effStart, effEnd, {
+          allowNoEndDate: isNoEndDateSentinel(effEnd),
+          requireStart: false,
+          requireEnd: false,
+        });
+        if (!dateCheck.valid) {
+          const msg = dateCheck.error || "End date cannot be earlier than start date.";
+          setActionError(msg);
+          alert(msg);
+          return;
         }
       }
     }
@@ -3432,6 +3507,13 @@ export default function JobsView({
         })
       });
       const inlineData = await inlineRes.json().catch(() => ({}));
+      if (!inlineRes.ok || inlineData?.success === false) {
+        const errMsg = inlineData?.error || "Failed to update job field.";
+        setActionError(errMsg);
+        alert(errMsg);
+        loadJobsData(jobsClient, "All", true, true);
+        return;
+      }
       if (inlineData?.invoiceSlotUpdates?.length > 0 || inlineData?.expenseSlotUpdates?.length > 0) {
         const invMap = new Map((inlineData.invoiceSlotUpdates || []).map(u => [`${u.rowNum}_${u.slotNum}`, u]));
         const expMap = new Map((inlineData.expenseSlotUpdates || []).map(u => [`${u.rowNum}_${u.slotNum}`, u]));

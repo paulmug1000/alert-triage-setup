@@ -1431,6 +1431,47 @@ export function parseInfoAlertDetail(flagType, detail = "") {
           : "Pipeline project promoted to Confirmed jobs (Copied box checked)."
       };
     }
+    if (flagType === "crmCopiedConfChecked") {
+      const upd = clean.match(/Updated\s+Pipeline:\s*Row\s*(\d+),\s*([^|]+)\|\s*([\s\S]+)$/i);
+      if (upd) {
+        const afterPipe = upd[3].trim();
+        const knownFields = [
+          "Start date:",
+          "End date:",
+          "Job name:",
+          "Date originally",
+          "Direct costs:",
+          "Prod. line:",
+          "% likel.",
+          "Copied Status:",
+          "Revenue:",
+          "Type:",
+          "VAT",
+        ];
+        let firstFieldPos = afterPipe.length;
+        for (const field of knownFields) {
+          const idx = afterPipe.indexOf(field);
+          if (idx !== -1 && idx < firstFieldPos) firstFieldPos = idx;
+        }
+        const chunk = afterPipe.slice(0, firstFieldPos);
+        const lastSep = chunk.lastIndexOf(" - ");
+        let rawJob = (lastSep !== -1 ? chunk.slice(0, lastSep) : chunk).trim();
+        let projectCode = "";
+        const codeMatch = rawJob.match(/^(.*?)\s*\[([^\]]+)\]\s*$/);
+        if (codeMatch) {
+          rawJob = codeMatch[1].trim();
+          projectCode = codeMatch[2].trim();
+        }
+        return {
+          client: upd[2] ? upd[2].trim() : "",
+          job: rawJob,
+          projectCode,
+          pipelineRow: upd[1] ? parseInt(upd[1], 10) : null,
+          confirmedRow: null,
+          highlight: "Pipeline project promoted to Confirmed jobs (Copied box checked)."
+        };
+      }
+    }
   }
 
   // 6. CRM Copied Unchecked
@@ -2064,6 +2105,7 @@ export function calculateRenewalDates(startDateStr, endDateStr) {
  * Extracts target job or outgoings expense information for supported alert types:
  * - expenseUnreconGaps
  * - invoiceStaleUnsentChanges
+ * - crmCopiedConfChecked
  * - uninvoiced_new_job
  * - uninvoiced_revenue
  * - unreceived_expenses
@@ -2088,10 +2130,45 @@ function getAlertJobTargetInternal_(alertOrNa, isInfo = false, clientInfo = null
 
   if (isInfo) {
     const flagType = alertOrNa.flagType;
-    if (flagType !== "expenseUnreconGaps" && flagType !== "invoiceStaleUnsentChanges") {
+    if (
+      flagType !== "expenseUnreconGaps" &&
+      flagType !== "invoiceStaleUnsentChanges" &&
+      flagType !== "crmCopiedConfChecked"
+    ) {
       return null;
     }
     const parsed = parseInfoAlertDetail(flagType, alertOrNa.flagDetail);
+
+    if (flagType === "crmCopiedConfChecked") {
+      const primaryResult =
+        filterAnalysisResultsForAlert(alertOrNa.analysisResult?.results, alertOrNa.flagDetail)?.[0] || null;
+      const confirmedRow = parsed?.confirmedRow || primaryResult?.confirmedRow || null;
+      const pipelineRow = parsed?.pipelineRow || primaryResult?.pipelineRow || null;
+      const jobName =
+        parsed?.job ||
+        (primaryResult?.jobName && primaryResult.jobName !== "-" ? primaryResult.jobName : "") ||
+        "";
+      const endClientName = parsed?.client || primaryResult?.clientName || "";
+      const projectCode = parsed?.projectCode || primaryResult?.projectCode || "";
+
+      if (!confirmedRow && !pipelineRow && !jobName && !endClientName && !projectCode) {
+        return null;
+      }
+
+      const usePipelineFallback = Boolean(!confirmedRow && !jobName && !projectCode && pipelineRow);
+      return {
+        isOutgoings: false,
+        client: effectiveClient,
+        clientName: cName,
+        clientSheetId: cSheetId,
+        rowNum: usePipelineFallback ? pipelineRow : (confirmedRow || null),
+        tabName: usePipelineFallback ? "Pipeline" : "Confirmed",
+        jobName,
+        endClientName,
+        projectCode,
+      };
+    }
+
     if (!parsed) return null;
 
     if (flagType === "expenseUnreconGaps" && (parsed.tab === "Outgoings" || (!parsed.tab && (parsed.contractor || parsed.outgoingsRow)))) {
@@ -2815,7 +2892,7 @@ export function buildJobRowClearAndRestorePlan({
     if (!r || r < 2) continue;
     if (!isJobCosting) {
       clearRanges.push(
-        `${sheetName}!A${r}:AM${r}`,
+        `${sheetName}!A${r}:AN${r}`,
         `${sheetName}!AP${r}:${invRangeSuffix}${r}`,
         `${sheetName}!BX${r}:CR${r}`
       );

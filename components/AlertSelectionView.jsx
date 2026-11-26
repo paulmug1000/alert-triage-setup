@@ -2238,7 +2238,7 @@ export default function AlertSelectionView({
                                       </div>
                                       <div style={{ display: "flex", gap: "8px", alignItems: "center", flexWrap: "wrap" }}>
                                         {(() => {
-                                          const jobTarget = getAlertJobTarget(na, true, clientInfo);
+                                          const jobTarget = getAlertJobTarget(analysis ? { ...na, analysisResult: analysis } : na, true, clientInfo);
                                           if (!jobTarget) return null;
                                           return (
                                             <button
@@ -2247,7 +2247,7 @@ export default function AlertSelectionView({
                                               style={{ ...styles.buttonSecondary, fontSize: "12px", padding: "4px 12px", color: "#0284c7", borderColor: "#bae6fd" }}
                                               title={jobTarget.isOutgoings ? "View Outgoings expense details" : "View and edit job details in pop-up"}
                                             >
-                                              {jobTarget.isOutgoings ? "🔍 View expense" : "🔍 View job"}
+                                              {jobTarget.isOutgoings ? "View expense" : "View job"}
                                             </button>
                                           );
                                         })()}

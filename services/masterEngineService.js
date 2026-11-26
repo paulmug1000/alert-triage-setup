@@ -378,6 +378,14 @@ export function invalidateMasterEngineCache(clientName = null, sheetRole = null,
     import("./relationalFinancialsService.js")
       .then(({ invalidateClientRelationalFinancialsCache }) => invalidateClientRelationalFinancialsCache(clientName))
       .catch(() => { });
+    import("./nativeClientCalcService.js")
+      .then(({ invalidateClientNativeCalcCache }) => invalidateClientNativeCalcCache(clientName, tabNames))
+      .catch(() => { });
+  }
+  if (!sheetRole || sheetRole === "master" || sheetRole === "client") {
+    import("./nativeMasterComparisonService.js")
+      .then(({ invalidateClientNativeMasterCompCache }) => invalidateClientNativeMasterCompCache(clientName))
+      .catch(() => { });
   }
   if (!clientName) {
     _gridMemoryCache.clear();
@@ -439,7 +447,12 @@ export async function resolveSupabaseSheetContext({ spreadsheetId = "", clientNa
         try {
           let { data, error } = await supabase
             .from("clients")
-            .select("id, client_name, normalized_key, master_mode, client_mode, jobs_mode, jobs_read_mode, inputs_mode, inputs_read_mode, master_ingestion_mode, master_read_mode, recon_mode, recon_read_mode, financials_mode, financials_read_mode, client_sheet_id, master_sheet_id, recon_sheet_id, metadata");
+            .select("id, client_name, normalized_key, master_mode, client_mode, jobs_mode, jobs_read_mode, inputs_mode, inputs_read_mode, master_ingestion_mode, master_read_mode, recon_mode, recon_read_mode, financials_mode, financials_read_mode, client_compute_mode, master_compute_mode, client_sheet_id, master_sheet_id, recon_sheet_id, metadata");
+          if (error && (String(error.message || "").includes("client_compute_mode") || String(error.message || "").includes("master_compute_mode"))) {
+            ({ data, error } = await supabase
+              .from("clients")
+              .select("id, client_name, normalized_key, master_mode, client_mode, jobs_mode, jobs_read_mode, inputs_mode, inputs_read_mode, master_ingestion_mode, master_read_mode, recon_mode, recon_read_mode, financials_mode, financials_read_mode, client_sheet_id, master_sheet_id, recon_sheet_id, metadata"));
+          }
           if (error && (String(error.message || "").includes("financials_mode") || String(error.message || "").includes("financials_read_mode"))) {
             ({ data, error } = await supabase
               .from("clients")
@@ -520,6 +533,8 @@ export async function resolveSupabaseSheetContext({ spreadsheetId = "", clientNa
                 financialsReadMode: String(row.financials_read_mode || row.metadata?.financials_read_mode || "grid").trim().toLowerCase() === "relational"
                   ? "relational"
                   : "grid",
+                clientComputeMode: String(row.client_compute_mode || row.metadata?.client_compute_mode || "grid_gas").trim().toLowerCase(),
+                masterComputeMode: String(row.master_compute_mode || row.metadata?.master_compute_mode || "grid_gas").trim().toLowerCase(),
                 sheetBridgeMode: String(row.metadata?.sheet_bridge_mode || "off").trim().toLowerCase(),
                 clientSheetId: cId,
                 masterSheetId: mId,
@@ -962,6 +977,84 @@ export async function getOrLoadVirtualTabGrid_(ctx, sheetRole, tabName, rawSheet
     let data = null;
     let error = null;
 
+    if (sheetRole === "client" && ctx.clientComputeMode === "native") {
+      try {
+        const { loadNativeClientTabRecord } = await import("./nativeClientCalcService.js");
+        const relRec = await loadNativeClientTabRecord(ctx, tabName, {
+          source: "db",
+          valuesOnly,
+          includeNotes,
+        });
+        if (relRec && Array.isArray(relRec.values_grid) && relRec.values_grid.length > 0) {
+          const recOut = {
+            client_id: ctx.clientId,
+            client_name: ctx.clientName,
+            sheet_role: "client",
+            tab_name: tabName,
+            ...relRec,
+            _valuesOnlyLoaded: valuesOnly,
+            _notesLoaded: !valuesOnly || includeNotes,
+          };
+          const existing = _gridMemoryCache.get(cacheKey);
+          if (shouldStoreClientRecordInCache_(existing, { valuesOnly, includeNotes })) {
+            setGridMemoryCache_(cacheKey, recOut);
+          }
+          return recOut;
+        }
+      } catch (natErr) {
+        console.warn(`[masterEngineService] Native client tab load fallback (${ctx.clientName}/${tabName}):`, natErr?.message);
+      }
+    }
+
+    if (sheetRole === "master" && ctx.masterComputeMode === "native") {
+      try {
+        const {
+          MASTER_COMP_TYPE_BY_TAB,
+          loadMasterContextTabFromConfig,
+          loadPersistedOrEvaluateMasterComparisonTab,
+        } = await import("./nativeMasterComparisonService.js");
+        if (tabName === "KeyInfo" || tabName === "DataChgAlert" || tabName === "PLAdds") {
+          const ctxGrid = await loadMasterContextTabFromConfig(ctx, tabName);
+          if (Array.isArray(ctxGrid) && ctxGrid.length > 0) {
+            const recOut = {
+              client_id: ctx.clientId,
+              client_name: ctx.clientName,
+              sheet_role: "master",
+              tab_name: tabName,
+              values_grid: ctxGrid,
+              formulas_grid: ctxGrid,
+              notes_grid: {},
+              row_count: ctxGrid.length,
+              col_count: ctxGrid.reduce((m, r) => Math.max(m, Array.isArray(r) ? r.length : 0), 0),
+              updated_at: new Date().toISOString(),
+            };
+            setGridMemoryCache_(cacheKey, recOut);
+            return recOut;
+          }
+        } else if (Object.prototype.hasOwnProperty.call(MASTER_COMP_TYPE_BY_TAB, tabName)) {
+          const compGrid = await loadPersistedOrEvaluateMasterComparisonTab(ctx, tabName);
+          if (Array.isArray(compGrid)) {
+            const recOut = {
+              client_id: ctx.clientId,
+              client_name: ctx.clientName,
+              sheet_role: "master",
+              tab_name: tabName,
+              values_grid: compGrid,
+              formulas_grid: compGrid,
+              notes_grid: {},
+              row_count: compGrid.length,
+              col_count: compGrid.reduce((m, r) => Math.max(m, Array.isArray(r) ? r.length : 0), 0),
+              updated_at: new Date().toISOString(),
+            };
+            setGridMemoryCache_(cacheKey, recOut);
+            return recOut;
+          }
+        }
+      } catch (natMasterErr) {
+        console.warn(`[masterEngineService] Native master tab load fallback (${ctx.clientName}/${tabName}):`, natMasterErr?.message);
+      }
+    }
+
     if (sheetRole === "client") {
       const selectCols = !valuesOnly
         ? "id, client_id, client_name, sheet_role, tab_name, values_grid, formulas_grid, notes_grid, row_count, col_count, updated_at"
@@ -1087,7 +1180,10 @@ async function getVirtualTabGridForWrite_(ctx, sheetRole, tabName, rawSheetsApi 
   const supabase = getSupabaseAdmin();
   const cacheKey = `${ctx.clientName.toLowerCase()}::${sheetRole}::${tabName}`;
   const cached = _gridMemoryCache.get(cacheKey);
-  if (supabase && cached && !hasPendingOrInFlightClientRecompute_(ctx.clientName)) {
+  const skipGridStalenessCheck =
+    (sheetRole === "client" && ctx.clientComputeMode === "native") ||
+    (sheetRole === "master" && ctx.masterComputeMode === "native");
+  if (supabase && cached && !skipGridStalenessCheck && !hasPendingOrInFlightClientRecompute_(ctx.clientName)) {
     try {
       const q = supabase
         .from("master_sheet_grids")
@@ -1257,6 +1353,31 @@ export async function saveVirtualTabGrid_(
       delete inMemoryRecord.notes_grid.__formulas_grid;
       delete inMemoryRecord.notes_grid.__compact_meta;
       setGridMemoryCache_(cacheKey, inMemoryRecord);
+      return;
+    }
+
+    if (ctx.clientComputeMode === "native") {
+      const inMemoryRecord = {
+        client_id: ctx.clientId,
+        client_name: ctx.clientName,
+        sheet_role: "client",
+        tab_name: tabName,
+        values_grid: fullValues,
+        formulas_grid: fullFormulas,
+        notes_grid: { ...baseNotes },
+        row_count: fullValues.length,
+        col_count: maxCols,
+        updated_at: new Date().toISOString(),
+        _hasMigratedFormulasCol: true,
+        _notesLoaded: true,
+        _persistedImmediate: Boolean(options.markPersistedImmediate),
+        _persistedToDbImmediate: Boolean(options.markPersistedToDbImmediate || options.markPersistedImmediate),
+      };
+      delete inMemoryRecord.notes_grid.__formulas_grid;
+      delete inMemoryRecord.notes_grid.__compact_meta;
+      setGridMemoryCache_(cacheKey, inMemoryRecord);
+      const { saveNativeClientTabBlueprint } = await import("./nativeClientCalcService.js");
+      await saveNativeClientTabBlueprint(ctx, tabName, fullValues, fullFormulas, baseNotes, options);
       return;
     }
 
@@ -1442,6 +1563,22 @@ export async function saveVirtualTabGrid_(
   };
 
   setGridMemoryCache_(cacheKey, { ...payload, formulas_grid: formulasGrid || existing.formulas_grid || compactedValues });
+
+  if (sheetRole === "master" && ctx.masterComputeMode === "native") {
+    const {
+      MASTER_COMP_TYPE_BY_TAB,
+      syncMasterContextGridsToConfig,
+    } = await import("./nativeMasterComparisonService.js");
+    if (
+      tabName === "KeyInfo" ||
+      tabName === "DataChgAlert" ||
+      tabName === "PLAdds" ||
+      Object.prototype.hasOwnProperty.call(MASTER_COMP_TYPE_BY_TAB, tabName)
+    ) {
+      await syncMasterContextGridsToConfig(ctx, { [tabName]: compactedValues });
+      return;
+    }
+  }
 
   const { error: upsertErr } = await supabase.from("master_sheet_grids").upsert(payload, {
     onConflict: "client_name,sheet_role,tab_name",
@@ -2209,20 +2346,40 @@ async function loadReferencedReconGridsForClientFormulas_(ctx, formulaGrids, raw
   }
   if (reconTabs.size === 0) return null;
   const out = Object.create(null);
-  await Promise.all(
-    [...reconTabs].map(async (tabName) => {
-      const rec = await getOrLoadVirtualTabGrid_(ctx, "recon", tabName, rawSheetsApi, {
-        valuesOnly: true,
-      }).catch(() => null);
-      if (rec && Array.isArray(rec.values_grid)) {
-        out[tabName] = { values: rec.values_grid };
+  if (ctx?.reconReadMode === "relational") {
+    try {
+      const {
+        isManagedReconTab,
+        preloadClientRelationalReconBundle,
+        reconstructRelationalReconTabFromBundle,
+      } = await import("./relationalReconService.js");
+      const bundle = await preloadClientRelationalReconBundle(ctx, { source: "db" });
+      for (const tabName of reconTabs) {
+        if (!isManagedReconTab(tabName)) continue;
+        const relRec = reconstructRelationalReconTabFromBundle(bundle, tabName);
+        if (relRec && Array.isArray(relRec.values_grid)) {
+          out[tabName] = { values: relRec.values_grid };
+        }
       }
-    })
-  );
+    } catch { }
+  }
+  const missingReconTabs = [...reconTabs].filter((t) => !out[t]);
+  if (missingReconTabs.length > 0) {
+    await Promise.all(
+      missingReconTabs.map(async (tabName) => {
+        const rec = await getOrLoadVirtualTabGrid_(ctx, "recon", tabName, rawSheetsApi, {
+          valuesOnly: true,
+        }).catch(() => null);
+        if (rec && Array.isArray(rec.values_grid)) {
+          out[tabName] = { values: rec.values_grid };
+        }
+      })
+    );
+  }
   return Object.keys(out).length > 0 ? out : null;
 }
 
-async function syncPhase2RelationalJobsIfEnabled_(ctx, tabNames = []) {
+async function syncPhase2RelationalJobsIfEnabled_(ctx, tabNames = [], preloadedGrids = null) {
   if (!ctx || ctx.jobsMode !== "relational") return;
   const mapped = [];
   for (const t of Array.isArray(tabNames) ? tabNames : []) {
@@ -2233,7 +2390,11 @@ async function syncPhase2RelationalJobsIfEnabled_(ctx, tabNames = []) {
   if (relevant.length === 0) return;
   try {
     const { reconcileClientRelationalJobsFromGrids } = await import("./relationalJobsService.js");
-    await reconcileClientRelationalJobsFromGrids(ctx, relevant);
+    await reconcileClientRelationalJobsFromGrids(
+      ctx,
+      relevant,
+      preloadedGrids ? { preloadedGrids } : {}
+    );
     const { invalidateClientRelationalMasterCache } = await import("./relationalMasterService.js");
     invalidateClientRelationalMasterCache(ctx.clientName);
   } catch (err) {
@@ -2243,13 +2404,17 @@ async function syncPhase2RelationalJobsIfEnabled_(ctx, tabNames = []) {
 
 const PHASE3_INPUT_TAB_SET_ = new Set(["Salaries", "Outgoings", "OutgNotes", "NBtoFind", "Budget", "Cash"]);
 
-async function syncPhase3OperatingInputsIfEnabled_(ctx, tabNames = []) {
+async function syncPhase3OperatingInputsIfEnabled_(ctx, tabNames = [], preloadedGrids = null) {
   if (!ctx || ctx.inputsMode !== "relational") return;
   const relevant = [...new Set((Array.isArray(tabNames) ? tabNames : []).filter((t) => PHASE3_INPUT_TAB_SET_.has(t)))];
   if (relevant.length === 0) return;
   try {
     const { reconcileClientOperatingInputsFromGrids } = await import("./relationalInputsService.js");
-    await reconcileClientOperatingInputsFromGrids(ctx, relevant);
+    await reconcileClientOperatingInputsFromGrids(
+      ctx,
+      relevant,
+      preloadedGrids ? { preloadedGrids } : {}
+    );
     const { invalidateClientRelationalMasterCache } = await import("./relationalMasterService.js");
     invalidateClientRelationalMasterCache(ctx.clientName);
   } catch (err) {
@@ -2269,7 +2434,7 @@ const PHASE5_FINANCIAL_TAB_SET_ = new Set([
   "KeyInfo",
 ]);
 
-async function syncPhase5FinancialsIfEnabled_(ctx, tabNames = []) {
+async function syncPhase5FinancialsIfEnabled_(ctx, tabNames = [], preloadedGrids = null) {
   if (!ctx) return;
   try {
     const {
@@ -2280,7 +2445,11 @@ async function syncPhase5FinancialsIfEnabled_(ctx, tabNames = []) {
     if (ctx.financialsMode !== "relational") return;
     const relevant = [...new Set((Array.isArray(tabNames) ? tabNames : []).filter((t) => PHASE5_FINANCIAL_TAB_SET_.has(t)))];
     if (relevant.length === 0) return;
-    await reconcileClientFinancialsFromGrids(ctx, relevant);
+    await reconcileClientFinancialsFromGrids(
+      ctx,
+      relevant,
+      preloadedGrids ? { preloadedGrids } : {}
+    );
   } catch (err) {
     console.warn(`[masterEngineService] Phase 5 relational financials reconciliation warning (${ctx.clientName}):`, err?.message);
   }
@@ -2562,9 +2731,9 @@ async function runSingleImmediateClientTabsPass_(
     })
   );
 
-  await syncPhase2RelationalJobsIfEnabled_(ctx, allImmediateTabs);
-  await syncPhase3OperatingInputsIfEnabled_(ctx, allImmediateTabs);
-  await syncPhase5FinancialsIfEnabled_(ctx, allImmediateTabs);
+  await syncPhase2RelationalJobsIfEnabled_(ctx, allImmediateTabs, localGrids);
+  await syncPhase3OperatingInputsIfEnabled_(ctx, allImmediateTabs, localGrids);
+  await syncPhase5FinancialsIfEnabled_(ctx, allImmediateTabs, localGrids);
 
   let activeSourceSet = _activeRecomputeSourceTabsByClient.get(clientKey);
   if (!activeSourceSet) {
@@ -2833,12 +3002,47 @@ async function executeClientFormulaRecomputePass_(ctx, clientKey, allUpdatedTabs
     (missingAffectedTabs.length > 0 || missingUnaffectedTabs.length > 0 || missingUnaffectedWithNotesTabs.length > 0) &&
     supabase
   ) {
+    if (ctx.clientComputeMode === "native") {
+      try {
+        const { loadNativeClientTabRecordsBatch } = await import("./nativeClientCalcService.js");
+        const allMissingTabs = [
+          ...missingAffectedTabs,
+          ...missingUnaffectedWithNotesTabs,
+          ...missingUnaffectedTabs,
+        ];
+        const loadedMap = await loadNativeClientTabRecordsBatch(ctx, allMissingTabs, {
+          source: "db",
+          valuesOnly: false,
+          includeNotes: true,
+        });
+        for (const t of allMissingTabs) {
+          const rec = loadedMap[t];
+          if (!rec) continue;
+          const isAff = missingAffectedTabs.includes(t);
+          const reqNotes = missingUnaffectedWithNotesTabs.includes(t);
+          rec._valuesOnlyLoaded = !isAff;
+          rec._notesLoaded = isAff || reqNotes;
+          recordsByTab[t] = rec;
+          const existing = _gridMemoryCache.get(`${clientKey}::client::${t}`);
+          if (shouldStoreClientRecordInCache_(existing, { valuesOnly: !isAff, includeNotes: rec._notesLoaded })) {
+            setGridMemoryCache_(`${clientKey}::client::${t}`, rec);
+          }
+        }
+      } catch (natLoadErr) {
+        console.warn(`[masterEngineService] Native client batch load fallback (${ctx.clientName}):`, natLoadErr?.message);
+      }
+    }
+
+    const stillMissingAffected = missingAffectedTabs.filter((t) => !recordsByTab[t]);
+    const stillMissingUnaffNotes = missingUnaffectedWithNotesTabs.filter((t) => !recordsByTab[t]);
+    const stillMissingUnaff = missingUnaffectedTabs.filter((t) => !recordsByTab[t]);
+
     const dbRole = _useClientRoleFallback ? "master" : "client";
     const queries = [];
-    if (missingAffectedTabs.length > 0) {
+    if (stillMissingAffected.length > 0) {
       const targetNames = _useClientRoleFallback
-        ? missingAffectedTabs.map((t) => `Client::${t}`)
-        : missingAffectedTabs;
+        ? stillMissingAffected.map((t) => `Client::${t}`)
+        : stillMissingAffected;
       const CHUNK_SIZE = 5;
       for (let i = 0; i < targetNames.length; i += CHUNK_SIZE) {
         const chunk = targetNames.slice(i, i + CHUNK_SIZE);
@@ -2853,10 +3057,10 @@ async function executeClientFormulaRecomputePass_(ctx, clientKey, allUpdatedTabs
         );
       }
     }
-    if (missingUnaffectedWithNotesTabs.length > 0) {
+    if (stillMissingUnaffNotes.length > 0) {
       const targetNames = _useClientRoleFallback
-        ? missingUnaffectedWithNotesTabs.map((t) => `Client::${t}`)
-        : missingUnaffectedWithNotesTabs;
+        ? stillMissingUnaffNotes.map((t) => `Client::${t}`)
+        : stillMissingUnaffNotes;
       queries.push(
         supabase
           .from("master_sheet_grids")
@@ -2867,10 +3071,10 @@ async function executeClientFormulaRecomputePass_(ctx, clientKey, allUpdatedTabs
           .then(({ data }) => ({ rows: data || [], valuesOnly: true, includeNotes: true }))
       );
     }
-    if (missingUnaffectedTabs.length > 0) {
+    if (stillMissingUnaff.length > 0) {
       const targetNames = _useClientRoleFallback
-        ? missingUnaffectedTabs.map((t) => `Client::${t}`)
-        : missingUnaffectedTabs;
+        ? stillMissingUnaff.map((t) => `Client::${t}`)
+        : stillMissingUnaff;
       queries.push(
         supabase
           .from("master_sheet_grids")
@@ -3034,9 +3238,19 @@ async function executeClientFormulaRecomputePass_(ctx, clientKey, allUpdatedTabs
   );
 
   const phaseSyncTabs = [...new Set([...allUpdatedTabs, ...dirtyTabs])];
-  await syncPhase2RelationalJobsIfEnabled_(ctx, phaseSyncTabs);
-  await syncPhase3OperatingInputsIfEnabled_(ctx, phaseSyncTabs);
-  await syncPhase5FinancialsIfEnabled_(ctx, phaseSyncTabs);
+  await syncPhase2RelationalJobsIfEnabled_(ctx, phaseSyncTabs, grids);
+  await syncPhase3OperatingInputsIfEnabled_(ctx, phaseSyncTabs, grids);
+  await syncPhase5FinancialsIfEnabled_(ctx, phaseSyncTabs, grids);
+  if (ctx.clientComputeMode === "shadow") {
+    import("./nativeClientCalcService.js")
+      .then(({ runShadowClientCalcCheck }) => runShadowClientCalcCheck(ctx, phaseSyncTabs, grids))
+      .catch((e) => console.warn("[masterEngineService] Phase 6A shadow check warning:", e?.message));
+  }
+  if (ctx.masterComputeMode === "native") {
+    import("./nativeMasterComparisonService.js")
+      .then(({ invalidateClientNativeMasterCompCache }) => invalidateClientNativeMasterCompCache(ctx.clientName))
+      .catch(() => { });
+  }
 
   if (dirtyTabs.length > 0) {
     await import("./cacheService.js")
@@ -6512,6 +6726,7 @@ export async function getStage2Status(targetClientName = "APPTEST") {
     phase4MasterStats,
     phase4ReconStats,
     phase5FinancialsStats,
+    phase6NativeStats,
   ] = await Promise.all([
     Promise.all(
       STAGE2_TABLES.map(async (t) => {
@@ -6535,9 +6750,15 @@ export async function getStage2Status(targetClientName = "APPTEST") {
     (() =>
       supabase
         .from("clients")
-        .select("id, client_name, normalized_key, status, master_mode, client_mode, jobs_mode, jobs_read_mode, inputs_mode, inputs_read_mode, master_ingestion_mode, master_read_mode, recon_mode, recon_read_mode, financials_mode, financials_read_mode, client_sheet_id, master_sheet_id, recon_sheet_id, metadata")
+        .select("id, client_name, normalized_key, status, master_mode, client_mode, jobs_mode, jobs_read_mode, inputs_mode, inputs_read_mode, master_ingestion_mode, master_read_mode, recon_mode, recon_read_mode, financials_mode, financials_read_mode, client_compute_mode, master_compute_mode, client_sheet_id, master_sheet_id, recon_sheet_id, metadata")
         .order("client_name", { ascending: true })
         .then(async (res) => {
+          if (res.error && (String(res.error.message || "").includes("client_compute_mode") || String(res.error.message || "").includes("master_compute_mode"))) {
+            res = await supabase
+              .from("clients")
+              .select("id, client_name, normalized_key, status, master_mode, client_mode, jobs_mode, jobs_read_mode, inputs_mode, inputs_read_mode, master_ingestion_mode, master_read_mode, recon_mode, recon_read_mode, financials_mode, financials_read_mode, client_sheet_id, master_sheet_id, recon_sheet_id, metadata")
+              .order("client_name", { ascending: true });
+          }
           if (res.error && (String(res.error.message || "").includes("financials_mode") || String(res.error.message || "").includes("financials_read_mode"))) {
             res = await supabase
               .from("clients")
@@ -6630,6 +6851,11 @@ export async function getStage2Status(targetClientName = "APPTEST") {
     import("./relationalFinancialsService.js")
       .then(({ getPhase5FinancialsOverviewStats }) =>
         getPhase5FinancialsOverviewStats()
+      )
+      .catch(() => null),
+    import("./nativeClientCalcService.js")
+      .then(({ getPhase6NativeComputeOverviewStats }) =>
+        getPhase6NativeComputeOverviewStats()
       )
       .catch(() => null),
   ]);
@@ -6745,6 +6971,10 @@ export async function getStage2Status(targetClientName = "APPTEST") {
         financialsMode: String(c.financials_mode || c.metadata?.financials_mode || "grid").trim().toLowerCase(),
         financialsReadMode: String(c.financials_read_mode || c.metadata?.financials_read_mode || "grid").trim().toLowerCase(),
         relationalFinancialsState: c.metadata?.relational_financials_state || null,
+        clientComputeMode: String(c.client_compute_mode || c.metadata?.client_compute_mode || "grid_gas").trim().toLowerCase(),
+        masterComputeMode: String(c.master_compute_mode || c.metadata?.master_compute_mode || "grid_gas").trim().toLowerCase(),
+        nativeClientCalcState: c.metadata?.native_client_calc_state || null,
+        nativeMasterCompState: c.metadata?.native_master_comp_state || null,
         masterTabCount: gs.masterTabCount,
         reconTabCount: gs.reconTabCount,
         clientTabCount: gs.clientTabCount,
@@ -6781,6 +7011,12 @@ export async function getStage2Status(targetClientName = "APPTEST") {
   let phase5BackfilledCount = 0;
   let financialsModeClientsCount = 0;
   let financialsReadModeClientsCount = 0;
+  let phase6ClientBackfilledCount = 0;
+  let phase6MasterBackfilledCount = 0;
+  let clientComputeNativeCount = 0;
+  let clientComputeShadowCount = 0;
+  let masterComputeNativeCount = 0;
+  let masterComputeShadowCount = 0;
   for (const c of clientsData || []) {
     if (c?.metadata?.relational_jobs_state?.lastBackfilledAt) backfilledClientsCount++;
     if (String(c?.jobs_mode || c?.metadata?.jobs_mode || "").trim().toLowerCase() === "relational") relationalModeClientsCount++;
@@ -6797,6 +7033,14 @@ export async function getStage2Status(targetClientName = "APPTEST") {
     if (c?.metadata?.relational_financials_state?.lastBackfilledAt) phase5BackfilledCount++;
     if (String(c?.financials_mode || c?.metadata?.financials_mode || "").trim().toLowerCase() === "relational") financialsModeClientsCount++;
     if (String(c?.financials_read_mode || c?.metadata?.financials_read_mode || "").trim().toLowerCase() === "relational") financialsReadModeClientsCount++;
+    if (c?.metadata?.native_client_calc_state?.lastBackfilledAt) phase6ClientBackfilledCount++;
+    if (c?.metadata?.native_master_comp_state?.lastBackfilledAt) phase6MasterBackfilledCount++;
+    const cComp = String(c?.client_compute_mode || c?.metadata?.client_compute_mode || "").trim().toLowerCase();
+    if (cComp === "native") clientComputeNativeCount++;
+    else if (cComp === "shadow") clientComputeShadowCount++;
+    const mComp = String(c?.master_compute_mode || c?.metadata?.master_compute_mode || "").trim().toLowerCase();
+    if (mComp === "native") masterComputeNativeCount++;
+    else if (mComp === "shadow") masterComputeShadowCount++;
   }
 
   return {
@@ -6907,6 +7151,32 @@ export async function getStage2Status(targetClientName = "APPTEST") {
         backfilledClientsCount: phase5BackfilledCount,
         financialsModeClientsCount,
         financialsReadModeClientsCount,
+      },
+    phase6NativeCompute: phase6NativeStats
+      ? {
+        ...phase6NativeStats,
+        clientBackfilledCount: phase6ClientBackfilledCount,
+        masterBackfilledCount: phase6MasterBackfilledCount,
+        clientComputeNativeCount,
+        clientComputeShadowCount,
+        masterComputeNativeCount,
+        masterComputeShadowCount,
+      }
+      : {
+        schemaReady: false,
+        migrationSql: "",
+        totalClientBlueprintTabs: 0,
+        totalMasterComparisons: 0,
+        clientsOnNativeClientCalc: clientComputeNativeCount,
+        clientsOnShadowClientCalc: clientComputeShadowCount,
+        clientsOnNativeMasterComp: masterComputeNativeCount,
+        clientsOnShadowMasterComp: masterComputeShadowCount,
+        clientBackfilledCount: phase6ClientBackfilledCount,
+        masterBackfilledCount: phase6MasterBackfilledCount,
+        clientComputeNativeCount,
+        clientComputeShadowCount,
+        masterComputeNativeCount,
+        masterComputeShadowCount,
       },
   };
 }
@@ -7154,6 +7424,39 @@ export async function getVirtualTabForInspector({
       } catch (relErr) {
         console.warn(`[masterEngineService] Inspector relational financials fallback for ${clientName}/${tabName}:`, relErr?.message);
       }
+    } else if (!PHASE5_FINANCIAL_TAB_SET_.has(tabName) && forceFinancialsSource !== "grid") {
+      try {
+        const ctx = await resolveSupabaseSheetContext({ clientName });
+        const shouldUseNativeCalc =
+          forceFinancialsSource === "relational" || (ctx && ctx.clientComputeMode === "native");
+        if (shouldUseNativeCalc && ctx) {
+          const { loadNativeClientTabRecord } = await import("./nativeClientCalcService.js");
+          const natRec = await loadNativeClientTabRecord(ctx, tabName, {
+            source: "db",
+            valuesOnly: !includeFormulas,
+            includeNotes,
+          });
+          if (natRec && Array.isArray(natRec.values_grid)) {
+            data = {
+              row_count: natRec.row_count || natRec.values_grid.length,
+              col_count: natRec.col_count || 0,
+              values_grid: natRec.values_grid,
+              formulas_grid: includeFormulas
+                ? natRec.formulas_grid || data?.formulas_grid || natRec.values_grid
+                : undefined,
+              notes_grid:
+                natRec.notes_grid && Object.keys(natRec.notes_grid).length > 0
+                  ? natRec.notes_grid
+                  : data?.notes_grid || {},
+              updated_at: natRec.updated_at || data?.updated_at || new Date().toISOString(),
+            };
+            error = null;
+            usedRelationalFinancials = true;
+          }
+        }
+      } catch (natErr) {
+        console.warn(`[masterEngineService] Inspector native client calc fallback for ${clientName}/${tabName}:`, natErr?.message);
+      }
     }
   } else {
     const selectCols = includeFormulas
@@ -7237,6 +7540,42 @@ export async function getVirtualTabForInspector({
         }
       } catch (relErr) {
         console.warn(`[masterEngineService] Inspector relational master fallback for ${clientName}/${tabName}:`, relErr?.message);
+      }
+    } else if (
+      sheetRole === "master" &&
+      !PHASE4_MASTER_TAB_SET_.has(tabName) &&
+      (tabName === "KeyInfo" || tabName === "DataChgAlert" || tabName === "PLAdds" || tabName === "Outgoings") &&
+      forceMasterSource !== "grid"
+    ) {
+      try {
+        const ctx = await resolveSupabaseSheetContext({ clientName });
+        const shouldUseNativeMaster =
+          forceMasterSource === "relational" || (ctx && ctx.masterComputeMode === "native");
+        if (shouldUseNativeMaster && ctx) {
+          const {
+            loadMasterContextTabFromConfig,
+            loadPersistedOrEvaluateMasterComparisonTab,
+          } = await import("./nativeMasterComparisonService.js");
+          const nativeGrid =
+            tabName === "Outgoings"
+              ? await loadPersistedOrEvaluateMasterComparisonTab(ctx, "Outgoings")
+              : await loadMasterContextTabFromConfig(ctx, tabName);
+          if (Array.isArray(nativeGrid) && nativeGrid.length > 0) {
+            const maxColsNat = nativeGrid.reduce((m, row) => Math.max(m, Array.isArray(row) ? row.length : 0), 0);
+            data = {
+              row_count: nativeGrid.length,
+              col_count: maxColsNat,
+              values_grid: nativeGrid,
+              formulas_grid: includeFormulas ? data?.formulas_grid || nativeGrid : undefined,
+              notes_grid: data?.notes_grid || {},
+              updated_at: data?.updated_at || new Date().toISOString(),
+            };
+            error = null;
+            usedRelationalMaster = true;
+          }
+        }
+      } catch (natMasterErr) {
+        console.warn(`[masterEngineService] Inspector native master context fallback for ${clientName}/${tabName}:`, natMasterErr?.message);
       }
     }
 

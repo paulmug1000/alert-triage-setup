@@ -2491,6 +2491,28 @@ export async function createGasEnvironment({
               });
             }
           }
+          if (ctx.masterComputeMode === "shadow" || ctx.masterComputeMode === "native") {
+            try {
+              const {
+                syncMasterContextGridsToConfig,
+                computeAndPersistNativeMasterComparisons,
+              } = await import("../nativeMasterComparisonService.js");
+              const partialCtx = {};
+              for (const t of ["KeyInfo", "DataChgAlert", "PLAdds", "CRMComp", "InvComp", "DirComp", "PLComp", "TimeComp"]) {
+                const sObj = masterSS.getSheetByName(t);
+                if (sObj && Array.isArray(sObj.valuesGrid)) {
+                  partialCtx[t] = sObj.valuesGrid;
+                }
+              }
+              await syncMasterContextGridsToConfig(ctx, partialCtx);
+              await computeAndPersistNativeMasterComparisons(ctx, { source: "db" });
+            } catch (natErr) {
+              console.warn(
+                `[gasEnvironment] Phase 6B native comparison sync warning for ${ctx.clientName}:`,
+                natErr?.message
+              );
+            }
+          }
         }
         if (reconMutatedTabs.length > 0) {
           invalidateMasterEngineCache(ctx.clientName, "recon", reconMutatedTabs);

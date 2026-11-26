@@ -41,7 +41,8 @@ import {
   canonicalizeInvoiceStatus,
   sanitizeSpreadsheetTerms,
   formatLikelihood,
-  normalizeLikelihoodInput
+  normalizeLikelihoodInput,
+  validateDateRange
 } from "../utils/helpers";
 import CrmSyncBadge, { CrmSyncIcon } from "./CrmSyncBadge";
 import { useAppGlobals } from "../hooks/useAppGlobals";
@@ -1174,6 +1175,26 @@ export default function JobDetailModal({
     if (!job || !isDirty || !clientSheetId) return;
 
     const parentRowNum = parentRow.rowNum;
+    if (draftEdits.startDate !== undefined || draftEdits.endDate !== undefined) {
+      const effStart = draftEdits.startDate !== undefined ? draftEdits.startDate : (parentRow?.startDate || "");
+      const effEnd = draftEdits.endDate !== undefined ? draftEdits.endDate : (parentRow?.endDate || "");
+      const isRet = String(
+        draftEdits.projectRetainer !== undefined ? draftEdits.projectRetainer : (parentRow?.projectRetainer || "")
+      ).toLowerCase().includes("retainer");
+      const startIsFormula = typeof effStart === "string" && effStart.trim().startsWith("=");
+      const endIsFormula = typeof effEnd === "string" && effEnd.trim().startsWith("=");
+      if (!startIsFormula && !endIsFormula) {
+        const dateCheck = validateDateRange(effStart, effEnd, {
+          allowNoEndDate: isRet && isNoEndDateSentinel(effEnd),
+          requireStart: false,
+          requireEnd: false,
+        });
+        if (!dateCheck.valid) {
+          alert(dateCheck.error || "End date cannot be earlier than start date.");
+          return;
+        }
+      }
+    }
     const FIELD_MAP = {
       client: { colLetter: "A", fieldName: "Client" },
       jobName: { colLetter: "B", fieldName: "Job Name" },

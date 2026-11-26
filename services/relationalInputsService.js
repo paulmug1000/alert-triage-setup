@@ -297,15 +297,23 @@ function hasRecordChanged_(existing, desired, numericCols = [], jsonCols = []) {
 
 async function fetchAllRowsForClient_(supabase, tableName, clientId, { selectCols = "*" } = {}) {
   const out = [];
+  const seenIds = new Set();
   for (let from = 0; ; from += 1000) {
     const { data, error } = await supabase
       .from(tableName)
       .select(selectCols)
       .eq("client_id", clientId)
+      .order("id", { ascending: true })
       .range(from, from + 999);
     if (error) throw new Error(`${tableName} read failed: ${error.message}`);
     if (!Array.isArray(data) || data.length === 0) break;
-    out.push(...data);
+    for (const row of data) {
+      if (row?.id) {
+        if (seenIds.has(row.id)) continue;
+        seenIds.add(row.id);
+      }
+      out.push(row);
+    }
     if (data.length < 1000) break;
   }
   return out;

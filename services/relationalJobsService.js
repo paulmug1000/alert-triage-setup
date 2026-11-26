@@ -1193,17 +1193,23 @@ function hasRecordChanged_(existing, desired, numericCols = [], jsonCols = []) {
 
 async function fetchAllRowsForClient_(supabase, tableName, clientId, { tabType = null, selectCols = "*" } = {}) {
   const out = [];
+  const seenIds = new Set();
   for (let from = 0; ; from += 1000) {
     let q = supabase
       .from(tableName)
       .select(selectCols)
-      .eq("client_id", clientId)
-      .range(from, from + 999);
+      .eq("client_id", clientId);
     if (tabType) q = q.eq("tab_type", tabType);
-    const { data, error } = await q;
+    const { data, error } = await q.order("id", { ascending: true }).range(from, from + 999);
     if (error) throw new Error(`${tableName} read failed: ${error.message}`);
     if (!Array.isArray(data) || data.length === 0) break;
-    out.push(...data);
+    for (const row of data) {
+      if (row?.id) {
+        if (seenIds.has(row.id)) continue;
+        seenIds.add(row.id);
+      }
+      out.push(row);
+    }
     if (data.length < 1000) break;
   }
   return out;
@@ -1212,6 +1218,7 @@ async function fetchAllRowsForClient_(supabase, tableName, clientId, { tabType =
 async function fetchChildRowsForJobIds_(supabase, tableName, clientId, jobIds, selectCols = "*") {
   if (!Array.isArray(jobIds) || jobIds.length === 0) return [];
   const out = [];
+  const seenIds = new Set();
   for (let i = 0; i < jobIds.length; i += 200) {
     const chunk = jobIds.slice(i, i + 200);
     for (let from = 0; ; from += 1000) {
@@ -1220,10 +1227,17 @@ async function fetchChildRowsForJobIds_(supabase, tableName, clientId, jobIds, s
         .select(selectCols)
         .eq("client_id", clientId)
         .in("job_id", chunk)
+        .order("id", { ascending: true })
         .range(from, from + 999);
       if (error) throw new Error(`${tableName} read failed: ${error.message}`);
       if (!Array.isArray(data) || data.length === 0) break;
-      out.push(...data);
+      for (const row of data) {
+        if (row?.id) {
+          if (seenIds.has(row.id)) continue;
+          seenIds.add(row.id);
+        }
+        out.push(row);
+      }
       if (data.length < 1000) break;
     }
   }

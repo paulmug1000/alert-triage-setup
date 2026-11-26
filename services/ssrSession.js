@@ -380,10 +380,11 @@ async function loadClientsArrayFromSupabaseFallback_() {
     if (!(await isSupabaseControlPlaneActive())) return null;
     const sb = getSupabaseAdmin();
     if (!sb) return null;
-    const [{ data: sbClients }, { data: kiRows }, { data: kiGridRows }] = await Promise.all([
+    const [{ data: sbClients }, { data: kiRows }, { data: kiGridRows }, { data: finCfgRows }] = await Promise.all([
       sb.from("clients").select("*").order("client_name", { ascending: true }),
       sb.from("tenant_key_info").select("client_name, normalized_key, revenue_or_income_mode, direct_costs_mode, accounting_tool, crm_tool, crm_drives, invoice_method"),
       sb.from("master_sheet_grids").select("client_name, values_grid").eq("tab_name", "KeyInfo").eq("sheet_role", "client"),
+      sb.from("pulse_financial_configs").select("client_name, client_key_info_grid"),
     ]);
     if (!Array.isArray(sbClients) || sbClients.length === 0) return null;
     const kiByNorm = new Map();
@@ -398,6 +399,15 @@ async function loadClientsArrayFromSupabaseFallback_() {
         const rawD16 = g.values_grid?.[15]?.[3];
         if (rawD16 !== undefined && rawD16 !== null && String(rawD16).trim() !== "") {
           kiGridD16ByName.set(String(g.client_name).trim().toLowerCase(), String(rawD16).trim());
+        }
+      }
+    }
+    const finCfgD16ByName = new Map();
+    for (const g of finCfgRows || []) {
+      if (g.client_name && Array.isArray(g.client_key_info_grid)) {
+        const rawD16 = g.client_key_info_grid?.[15]?.[3];
+        if (rawD16 !== undefined && rawD16 !== null && String(rawD16).trim() !== "") {
+          finCfgD16ByName.set(String(g.client_name).trim().toLowerCase(), String(rawD16).trim());
         }
       }
     }
@@ -433,7 +443,10 @@ async function loadClientsArrayFromSupabaseFallback_() {
         webAppUrl: String(c.master_deployment_url || c.web_app_url || c.metadata?.webAppUrl || "").trim(),
         hasWebAppUrl: Boolean(c.master_deployment_url || c.web_app_url || c.metadata?.webAppUrl) || c.master_mode === "supabase",
         splitEnabled: (() => {
-          const d16Val = kiGridD16ByName.get(clientName.toLowerCase());
+          const d16Val =
+            (c.financials_read_mode === "relational" || c.client_compute_mode === "native"
+              ? finCfgD16ByName.get(clientName.toLowerCase())
+              : undefined) ?? kiGridD16ByName.get(clientName.toLowerCase());
           return d16Val !== undefined
             ? d16Val.toLowerCase() === "yes"
             : Boolean(c.metadata?.splitEnabled || String(ki?.invoice_method || "").toLowerCase().includes("split"));

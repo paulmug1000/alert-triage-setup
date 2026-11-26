@@ -653,6 +653,8 @@ export default function TriageAnalysisView({
     otherDuplicateAlerts.length > 0
   );
   const spreadsheetItems = isInvoiceType ? (alert?.spreadsheetItems || []) : [];
+  const rechargedDiagnosis = isInvoiceType ? (alert?.rechargedDiagnosis || null) : null;
+  const hasRechargedInBreakdown = spreadsheetItems.some((it) => Number(it?.rechargedAmount || 0) > 0);
 
   return (
     <div className="pma-page-container" style={styles.container}>
@@ -982,6 +984,68 @@ export default function TriageAnalysisView({
           </div>
         )}
 
+        {rechargedDiagnosis && (
+          <div style={{
+            backgroundColor: "#f0f9ff",
+            border: "1.5px solid #7dd3fc",
+            borderRadius: "8px",
+            padding: "14px 16px",
+            marginBottom: "16px",
+            color: "#0c4a6e"
+          }}>
+            <div style={{ fontWeight: "700", fontSize: "14px", display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
+              <span>{rechargedDiagnosis.isSplitInvoice ? "Split invoice — recharged expenses mismatch" : "Recharged expenses mismatch"}</span>
+              <span style={{
+                background: "#0284c7",
+                color: "#ffffff",
+                padding: "2px 8px",
+                borderRadius: "4px",
+                fontSize: "11px",
+                fontWeight: "700"
+              }}>
+                {`${rechargedDiagnosis.rechargedDiff >= 0 ? "+" : "-"}£${Math.abs(rechargedDiagnosis.rechargedDiff || 0).toFixed(2)}`}
+              </span>
+            </div>
+            <div style={{ fontSize: "13px", marginTop: "6px", lineHeight: "1.5" }}>
+              {rechargedDiagnosis.summary}
+            </div>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: "8px", marginTop: "10px", fontSize: "12px" }}>
+              <span style={{ background: "#ffffff", border: "1px solid #bae6fd", borderRadius: "6px", padding: "4px 10px", color: "#0369a1" }}>
+                <strong>Fee revenue matched:</strong> £{Number(rechargedDiagnosis.accountingFee || 0).toFixed(2)}
+              </span>
+              <span style={{ background: "#ffffff", border: "1px solid #bae6fd", borderRadius: "6px", padding: "4px 10px", color: "#334155" }}>
+                <strong>Pulse recharged:</strong> £{Number(rechargedDiagnosis.pulseRecharged || 0).toFixed(2)}
+              </span>
+              <span style={{ background: "#ffffff", border: "1px solid #bae6fd", borderRadius: "6px", padding: "4px 10px", color: "#0f172a" }}>
+                <strong>Invoice recharged:</strong> £{Number(rechargedDiagnosis.accountingRecharged || 0).toFixed(2)}
+              </span>
+            </div>
+            {Array.isArray(rechargedDiagnosis.rechargedLines) && rechargedDiagnosis.rechargedLines.length > 0 && (
+              <div style={{ marginTop: "10px", background: "#ffffff", border: "1px solid #bae6fd", borderRadius: "6px", padding: "8px 10px" }}>
+                <div style={{ fontSize: "11px", fontWeight: "700", color: "#0369a1", marginBottom: "4px" }}>
+                  Detected recharged invoice lines
+                </div>
+                <div style={{ display: "flex", flexDirection: "column", gap: "3px", fontSize: "12px", color: "#1e293b" }}>
+                  {rechargedDiagnosis.rechargedLines.map((li, lIdx) => (
+                    <div key={lIdx} style={{ display: "flex", justifyContent: "space-between", gap: "12px" }}>
+                      <span style={{ minWidth: 0, overflow: "hidden", textOverflow: "ellipsis" }}>
+                        {li.description || "Recharged expense"}
+                        {li.accountName ? <span style={{ color: "#64748b" }}> ({li.accountName})</span> : null}
+                      </span>
+                      <span style={{ fontWeight: "600", whiteSpace: "nowrap" }}>£{Number(li.amountGbp || 0).toFixed(2)}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+            {rechargedDiagnosis.hasSplitCostMonth && (
+              <div style={{ marginTop: "8px", fontSize: "12px", color: "#92400e", background: "#fffbeb", border: "1px solid #fcd34d", borderRadius: "5px", padding: "6px 10px" }}>
+                This invoice uses split cost months — please review the monthly split in Edit invoice after applying this fix.
+              </div>
+            )}
+          </div>
+        )}
+
         {isDuplicateInvoice && (
           <div style={{
             backgroundColor: "#fffbeb", border: "1.5px solid #f59e0b",
@@ -989,14 +1053,16 @@ export default function TriageAnalysisView({
             color: "#92400e"
           }}>
             <div style={{ fontWeight: "700", fontSize: "14px", display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
-              <span>⚠️ {isAdmin ? "Duplicate Invoice in Spreadsheet Notice" : "Duplicate invoice in Pulse notice"}</span>
+              <span>{rechargedDiagnosis?.isSplitInvoice ? "Split invoice breakdown" : (isAdmin ? "⚠️ Duplicate Invoice in Spreadsheet Notice" : "Duplicate invoice in Pulse notice")}</span>
               <span style={{ background: "#d97706", color: "white", padding: "2px 8px", borderRadius: "4px", fontSize: "11px", fontWeight: "700" }}>
                 {spreadsheetItems.length > 0 ? `${spreadsheetItems.length} ${isAdmin ? "SPREADSHEET ITEMS" : "PULSE ENTRIES"}` : "DUPLICATE INVOICE NO"}
               </span>
               {alert.summary?.invoiceNo && <span style={{ fontSize: "13px", color: "#78350f" }}>Invoice #{alert.summary.invoiceNo}</span>}
             </div>
             <div style={{ fontSize: "13px", marginTop: "6px", lineHeight: "1.5" }}>
-              {spreadsheetItems.length > 0 ? (
+              {rechargedDiagnosis?.isSplitInvoice ? (
+                <>This invoice is split across <strong>{spreadsheetItems.length} jobs in Pulse</strong> against a single accounting invoice.</>
+              ) : spreadsheetItems.length > 0 ? (
                 <>This invoice number appears in <strong>{spreadsheetItems.length} distinct {isAdmin ? "items/jobs in the spreadsheet" : "entries/jobs in Pulse"}</strong>, but only <strong>once in accounting</strong>{isAdmin ? ` (InvComp Row ${alert.rowNumber})` : ""}.</>
               ) : otherDuplicateAlerts.length > 0 ? (
                 <>Invoice <strong>#{alert.summary?.invoiceNo}</strong> also appears in <strong>{otherDuplicateAlerts.length}</strong> other entry/entries in this triage batch{isAdmin ? ` (InvComp Row${otherDuplicateAlerts.length > 1 ? "s" : ""}: ${otherDuplicateAlerts.map(a => a.rowNumber).join(", ")})` : ""}.</>
@@ -1009,7 +1075,7 @@ export default function TriageAnalysisView({
             {spreadsheetItems.length > 0 && (
               <div style={{ marginTop: "12px", background: "white", border: "1px solid #fcd34d", borderRadius: "6px", overflow: "hidden" }}>
                 <div style={{ background: "#fef3c7", padding: "6px 10px", fontWeight: "700", fontSize: "12px", color: "#92400e", borderBottom: "1px solid #fde68a" }}>
-                  📊 {isAdmin ? "Spreadsheet Breakdown" : "Pulse breakdown"} ({spreadsheetItems.length} items for Invoice #{alert.summary?.invoiceNo})
+                  {isAdmin ? "Spreadsheet breakdown" : "Pulse breakdown"} ({spreadsheetItems.length} items for Invoice #{alert.summary?.invoiceNo})
                 </div>
                 <div style={{ overflowX: "auto" }}>
                   <table style={{ width: "100%", fontSize: "12px", borderCollapse: "collapse", textAlign: "left" }}>
@@ -1017,6 +1083,7 @@ export default function TriageAnalysisView({
                       <tr style={{ background: "#fffdf5", borderBottom: "1px solid #fde68a", fontSize: "11px", color: "#78350f" }}>
                         <th style={{ padding: "6px 8px" }}>{isAdmin ? "Spreadsheet Job / Item" : "Pulse job / item"}</th>
                         <th style={{ padding: "6px 8px", textAlign: "right" }}>Excl VAT</th>
+                        {hasRechargedInBreakdown && <th style={{ padding: "6px 8px", textAlign: "right" }}>Of which recharged</th>}
                         <th style={{ padding: "6px 8px", textAlign: "right" }}>VAT</th>
                         <th style={{ padding: "6px 8px", textAlign: "right" }}>Gross</th>
                         <th style={{ padding: "6px 8px" }}>Sent</th>
@@ -1027,12 +1094,13 @@ export default function TriageAnalysisView({
                       {spreadsheetItems.map((item, idx) => (
                         <tr key={idx} style={{ borderBottom: "1px solid #fef3c7" }}>
                           <td style={{ padding: "6px 8px", fontWeight: "600", color: "#111827" }}>
-                            {item.job || "(No job name)"}
-                            {item.client && <div style={{ fontSize: "10px", color: "#6b7280", fontWeight: "normal" }}>{item.client}</div>}
+                            {item.job || item.jobName || "(No job name)"}
+                            {(item.client || item.clientName) && <div style={{ fontSize: "10px", color: "#6b7280", fontWeight: "normal" }}>{item.client || item.clientName}</div>}
                           </td>
-                          <td style={{ padding: "6px 8px", textAlign: "right" }}>£{item.netAmount.toFixed(2)}</td>
-                          <td style={{ padding: "6px 8px", textAlign: "right" }}>£{item.vatAmount.toFixed(2)}</td>
-                          <td style={{ padding: "6px 8px", textAlign: "right", fontWeight: "600" }}>£{item.grossAmount.toFixed(2)}</td>
+                          <td style={{ padding: "6px 8px", textAlign: "right" }}>£{Number(item.netAmount || 0).toFixed(2)}</td>
+                          {hasRechargedInBreakdown && <td style={{ padding: "6px 8px", textAlign: "right", color: "#0369a1" }}>£{Number(item.rechargedAmount || 0).toFixed(2)}</td>}
+                          <td style={{ padding: "6px 8px", textAlign: "right" }}>£{Number(item.vatAmount || 0).toFixed(2)}</td>
+                          <td style={{ padding: "6px 8px", textAlign: "right", fontWeight: "600" }}>£{Number(item.grossAmount || 0).toFixed(2)}</td>
                           <td style={{ padding: "6px 8px", color: "#4b5563" }}>{item.sentDate || "-"}</td>
                           <td style={{ padding: "6px 8px" }}>
                             <span style={{ fontSize: "10px", padding: "1px 5px", borderRadius: "3px", background: "#f3f4f6", color: "#374151" }}>
@@ -1046,13 +1114,18 @@ export default function TriageAnalysisView({
                       <tr style={{ background: "#fff7ed", fontWeight: "700", borderTop: "1.5px solid #fed7aa", color: "#9a3412" }}>
                         <td style={{ padding: "6px 8px" }}>{isAdmin ? "Spreadsheet Total" : "Pulse total"} ({spreadsheetItems.length} items):</td>
                         <td style={{ padding: "6px 8px", textAlign: "right" }}>
-                          £{spreadsheetItems.reduce((s, it) => s + it.netAmount, 0).toFixed(2)}
+                          £{spreadsheetItems.reduce((s, it) => s + (Number(it.netAmount) || 0), 0).toFixed(2)}
+                        </td>
+                        {hasRechargedInBreakdown && (
+                          <td style={{ padding: "6px 8px", textAlign: "right" }}>
+                            £{spreadsheetItems.reduce((s, it) => s + (Number(it.rechargedAmount) || 0), 0).toFixed(2)}
+                          </td>
+                        )}
+                        <td style={{ padding: "6px 8px", textAlign: "right" }}>
+                          £{spreadsheetItems.reduce((s, it) => s + (Number(it.vatAmount) || 0), 0).toFixed(2)}
                         </td>
                         <td style={{ padding: "6px 8px", textAlign: "right" }}>
-                          £{spreadsheetItems.reduce((s, it) => s + it.vatAmount, 0).toFixed(2)}
-                        </td>
-                        <td style={{ padding: "6px 8px", textAlign: "right" }}>
-                          £{spreadsheetItems.reduce((s, it) => s + it.grossAmount, 0).toFixed(2)}
+                          £{spreadsheetItems.reduce((s, it) => s + (Number(it.grossAmount) || 0), 0).toFixed(2)}
                         </td>
                         <td colSpan={2}></td>
                       </tr>
@@ -1061,6 +1134,11 @@ export default function TriageAnalysisView({
                         <td style={{ padding: "6px 8px", textAlign: "right" }}>
                           £{(parseFloat(String(alert.data?.accounting?.[3] || "0").replace(/,/g, "")) || alert.summary?.amount || 0).toFixed(2)}
                         </td>
+                        {hasRechargedInBreakdown && (
+                          <td style={{ padding: "6px 8px", textAlign: "right" }}>
+                            £{Number(rechargedDiagnosis?.accountingRecharged ?? alert.summary?.rechargedAmount ?? alert.detectedRechargedAmount ?? 0).toFixed(2)}
+                          </td>
+                        )}
                         <td style={{ padding: "6px 8px", textAlign: "right" }}>
                           £{(parseFloat(String(alert.data?.accounting?.[4] || "0").replace(/,/g, "")) || 0).toFixed(2)}
                         </td>
@@ -2203,6 +2281,7 @@ export default function TriageAnalysisView({
                           isDuplicateInvoice: patch.isDuplicateInvoice,
                           spreadsheetItems: patch.spreadsheetItems,
                           pulseAmounts: patch.pulseAmounts,
+                          rechargedDiagnosis: patch.rechargedDiagnosis || null,
                           data: {
                             ...(newAlerts[idx].data || {}),
                             flags: Array.isArray(patch.liveFlags) ? patch.liveFlags : newAlerts[idx].data?.flags,

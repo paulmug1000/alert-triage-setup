@@ -30,6 +30,7 @@ import {
   flushPendingClientRecomputes,
   isVirtualSupabaseSheetId,
   colIdx0ToLetter,
+  getTabWriteRevision_,
   CORE_CLIENT_TABS,
 } from "./masterEngineService.js";
 import { isCashCellEditable } from "./cashEditService.js";
@@ -466,9 +467,11 @@ export function computeThreeWayTabMerge({
   supaFormulas = [],
   supaNotes = {},
   applyOutboundToBaseline = true,
+  allowInbound = true,
   maxRowBound = null,
 }) {
-  const isOutboundOnly = BRIDGE_OUTBOUND_ONLY_SET.has(tabName);
+  const isOutboundOnly = !allowInbound || BRIDGE_OUTBOUND_ONLY_SET.has(tabName);
+  const forceHealSheetDrift = !allowInbound && !BRIDGE_OUTBOUND_ONLY_SET.has(tabName);
   const supportsNotes = BRIDGE_NOTE_TABS.has(tabName);
 
   const headerRow =
@@ -545,6 +548,14 @@ export function computeThreeWayTabMerge({
         !areBridgeCellsEquivalent(supaVal, baseVal) &&
         areBridgeCellsEquivalent(sheetVal, baseVal);
 
+      const isIdenticalLocalFormulaRecalc =
+        isEditablePos &&
+        isSheetFormula &&
+        isSupaFormula &&
+        !isExternalSheetFormula &&
+        String(sheetForm) === String(supaForm || "") &&
+        areBridgeCellsEquivalent(sheetVal, baseVal);
+
       const editableSheetFormulaNeedsPull =
         !isOutboundOnly &&
         isEditablePos &&
@@ -552,6 +563,7 @@ export function computeThreeWayTabMerge({
         !isSheetErrorVal &&
         !didSupaEditFormula &&
         !didSupaOverrideDefaultFormula &&
+        !isIdenticalLocalFormulaRecalc &&
         (!areBridgeCellsEquivalent(sheetVal, supaVal) || String(sheetForm) !== String(supaForm || ""));
 
       const inChanged =
@@ -563,7 +575,8 @@ export function computeThreeWayTabMerge({
       const outChanged =
         !isPureFormulaRecalcDrift &&
         !(isEditablePos && isSheetFormula && !didSupaEditFormula && !didSupaOverrideDefaultFormula) &&
-        !areBridgeCellsEquivalent(supaVal, baseVal);
+        (!areBridgeCellsEquivalent(supaVal, baseVal) ||
+          (forceHealSheetDrift && !areBridgeCellsEquivalent(supaVal, sheetVal)));
 
       if (inChanged && outChanged) {
         if (areBridgeCellsEquivalent(sheetVal, supaVal)) {
@@ -664,7 +677,7 @@ export function computeThreeWayTabMerge({
       const sN = safeSheetNotes[k] || "";
       const uN = safeSupaNotes[k] || "";
       const inNoteChanged = !isOutboundOnly && sN !== bN;
-      const outNoteChanged = uN !== bN;
+      const outNoteChanged = forceHealSheetDrift ? uN !== bN || uN !== sN : uN !== bN;
       const cellA1 = `${colIdx0ToLetter(coords.c0)}${coords.r0 + 1}`;
 
       if (inNoteChanged && outNoteChanged) {
@@ -942,19 +955,57 @@ function buildUpdateCellsNoteRequests_(gid, noteChanges = []) {
   if (gid === null || gid === undefined || !Array.isArray(noteChanges) || noteChanges.length === 0) {
     return [];
   }
-  return noteChanges.map((n) => ({
-    updateCells: {
-      range: {
-        sheetId: gid,
-        startRowIndex: n.row0,
-        endRowIndex: n.row0 + 1,
-        startColumnIndex: n.col0,
-        endColumnIndex: n.col0 + 1,
-      },
-      rows: [{ values: [{ note: String(n.to ?? "") }] }],
-      fields: "note",
-    },
-  }));
+  const byRow = new Map();
+  for (const n of noteChanges) {
+    if (!n || !Number.isInteger(n.row0) || !Number.isInteger(n.col0)) continue;
+    if (!byRow.has(n.row0)) byRow.set(n.row0, []);
+    byRow.get(n.row0).push(n);
+  }
+  const requests = [];
+  const sortedRows = [...byRow.keys()].sort((a, b) => a - b);
+  for (const r0 of sortedRows) {
+    const rowItems = byRow.get(r0).sort((a, b) => a.col0 - b.col0);
+    let runStartCol = null;
+    let runEndCol = null;
+    let runNotes = [];
+    const flushRun = () => {
+      if (runStartCol === null) return;
+      requests.push({
+        updateCells: {
+          range: {
+            sheetId: gid,
+            startRowIndex: r0,
+            endRowIndex: r0 + 1,
+            startColumnIndex: runStartCol,
+            endColumnIndex: runEndCol,
+          },
+          rows: [{ values: runNotes.map((txt) => ({ note: txt })) }],
+          fields: "note",
+        },
+      });
+      runStartCol = null;
+      runEndCol = null;
+      runNotes = [];
+    };
+    for (const item of rowItems) {
+      const txt = String(item.to ?? "");
+      if (runStartCol === null) {
+        runStartCol = item.col0;
+        runEndCol = item.col0 + 1;
+        runNotes = [txt];
+      } else if (item.col0 === runEndCol) {
+        runEndCol = item.col0 + 1;
+        runNotes.push(txt);
+      } else {
+        flushRun();
+        runStartCol = item.col0;
+        runEndCol = item.col0 + 1;
+        runNotes = [txt];
+      }
+    }
+    flushRun();
+  }
+  return requests;
 }
 
 async function fetchDriveVersionMeta_(rawDrive, spreadsheetId) {
@@ -1363,23 +1414,28 @@ function rewriteStructuralRequestSheetId_(req, realGid) {
   return cloned;
 }
 
-async function acquireRedisBridgeLock_(normKey, ttlSecs = 30) {
-  if (!redisClient?.isOpen) return true;
+async function acquireRedisBridgeLock_(normKey, ttlSecs = 90) {
+  if (!redisClient?.isOpen) return "no-redis";
   try {
-    const res = await redisClient.set(`pulse:sheet_bridge_lock:${normKey}`, String(Date.now()), {
+    const token = `${Date.now()}:${Math.random().toString(36).slice(2)}`;
+    const res = await redisClient.set(`pulse:sheet_bridge_lock:${normKey}`, token, {
       NX: true,
       EX: ttlSecs,
     });
-    return res === "OK";
+    return res === "OK" ? token : null;
   } catch {
-    return true;
+    return "no-redis";
   }
 }
 
-async function releaseRedisBridgeLock_(normKey) {
-  if (!redisClient?.isOpen) return;
+async function releaseRedisBridgeLock_(normKey, token) {
+  if (!redisClient?.isOpen || !token || token === "no-redis") return;
+  const lockKey = `pulse:sheet_bridge_lock:${normKey}`;
   try {
-    await redisClient.del(`pulse:sheet_bridge_lock:${normKey}`);
+    const cur = await redisClient.get(lockKey);
+    if (cur === token) {
+      await redisClient.del(lockKey);
+    }
   } catch { }
 }
 
@@ -1399,7 +1455,14 @@ export async function ensureClientSheetBridgeFreshOnRead(ctx, { throttleMs = REA
     return null;
   }
   const key = normalizeKey_(ctx.clientName);
-  if (!key || _suppressOutboundByClient.has(key)) return null;
+  if (
+    !key ||
+    _suppressOutboundByClient.has(key) ||
+    _inFlightBridgeByClient.has(key) ||
+    _pendingOutboundByClient.has(key)
+  ) {
+    return null;
+  }
 
   const now = Date.now();
   if (now - (_lastReadCheckByClient.get(key) || 0) < throttleMs) {
@@ -1530,8 +1593,8 @@ export async function checkAndSyncClientSheetBridge(
   }
 
   const runPromise = (async () => {
-    const lockOk = await acquireRedisBridgeLock_(key, 30);
-    if (!lockOk && !force) {
+    const lockToken = await acquireRedisBridgeLock_(key, 90);
+    if (!lockToken && !force) {
       return { skipped: true, reason: "Another bridge sync is already in progress." };
     }
 
@@ -1575,6 +1638,7 @@ export async function checkAndSyncClientSheetBridge(
         direction === "both";
       const wantsOutbound = direction === "outbound" || direction === "both";
       const forceInboundFetch = direction === "inbound" || force;
+      const canPullInbound = Boolean(wantsInbound && (driveVersionChanged || forceInboundFetch));
 
       // Fast-path exit on pure inbound read check (~60ms Drive metadata check only!)
       if (direction === "inbound_check" && !driveVersionChanged && !force) {
@@ -1596,9 +1660,7 @@ export async function checkAndSyncClientSheetBridge(
       }
 
       const queuedStructOps = _pendingStructuralOpsByClient.get(key) || [];
-      const needRealSheetFetch =
-        (wantsInbound && (driveVersionChanged || forceInboundFetch)) ||
-        wantsOutbound;
+      const needRealSheetFetch = canPullInbound || wantsOutbound;
 
       const structDirtyTabs = queuedStructOps.map((op) => op.tabName).filter(Boolean);
       const scopedDirtyTabs = [
@@ -1612,21 +1674,23 @@ export async function checkAndSyncClientSheetBridge(
       const canScopeToDirtyTabsOnly =
         wantsOutbound &&
         !force &&
-        !(wantsInbound && (driveVersionChanged || forceInboundFetch)) &&
+        !canPullInbound &&
         scopedDirtyTabs.length > 0;
 
       let sheetBundle = null;
       const preloadedSupaByTab = createSafeMap_();
+      const preloadedRevByTab = createSafeMap_();
       if (needRealSheetFetch) {
         const tabsToLoad = canScopeToDirtyTabsOnly
           ? [...scopedDirtyTabs, ...(scopedDirtyTabs.includes("Outgoings") ? ["OutgNotes"] : [])]
-          : wantsInbound && (driveVersionChanged || forceInboundFetch)
+          : canPullInbound
             ? [...BRIDGE_BIDIRECTIONAL_TABS, "KeyInfo", "OutgNotes"]
             : [...BRIDGE_ALL_SYNCED_TABS, "OutgNotes"];
         const minRowHorizonByTab = createSafeMap_();
         await Promise.all(
           ["Confirmed", "Pipeline"].map(async (tName) => {
             if (!tabsToLoad.includes(tName)) return;
+            preloadedRevByTab[tName] = getTabWriteRevision_(ctx.clientName, "client", tName);
             const supaRec = await getOrLoadVirtualTabGrid_(ctx, "client", tName, rawSheets, {
               includeNotes: BRIDGE_NOTE_TABS.has(tName),
             }).catch(() => null);
@@ -1653,6 +1717,7 @@ export async function checkAndSyncClientSheetBridge(
       let outboundOutgoingsNoteChanges = [];
       const nextBaselineTabs = { ...baseline.tabs };
       const maxTargetRowByTab = createSafeMap_();
+      const mergedRevByTab = createSafeMap_();
 
       const tabsToProcess = canScopeToDirtyTabsOnly
         ? scopedDirtyTabs
@@ -1664,12 +1729,17 @@ export async function checkAndSyncClientSheetBridge(
         const sheetTab = sheetBundle?.resultByTab?.[tabName];
         if (!sheetTab) continue;
 
-        const supaRec =
-          preloadedSupaByTab[tabName] ||
-          (await getOrLoadVirtualTabGrid_(ctx, "client", tabName, rawSheets, {
+        const curRev = getTabWriteRevision_(ctx.clientName, "client", tabName);
+        const hasFreshPreload = Boolean(preloadedSupaByTab[tabName]) && preloadedRevByTab[tabName] === curRev;
+        const supaRec = hasFreshPreload
+          ? preloadedSupaByTab[tabName]
+          : (await getOrLoadVirtualTabGrid_(ctx, "client", tabName, rawSheets, {
             includeNotes: BRIDGE_NOTE_TABS.has(tabName),
           }).catch(() => null));
         if (!supaRec) continue;
+        mergedRevByTab[tabName] = hasFreshPreload
+          ? curRev
+          : getTabWriteRevision_(ctx.clientName, "client", tabName);
 
         tabGridsMap[tabName] = {
           supaValues: supaRec.values_grid || [],
@@ -1688,6 +1758,7 @@ export async function checkAndSyncClientSheetBridge(
           supaFormulas: supaRec.formulas_grid || supaRec.values_grid || [],
           supaNotes: supaRec.notes_grid || {},
           applyOutboundToBaseline: Boolean(wantsOutbound && effectiveMode === "live"),
+          allowInbound: canPullInbound,
           maxRowBound: sheetTab.scannedRowLimit || null,
         });
         mergeResults.push({ tabName, merge, supaRec, sheetTab });
@@ -1821,27 +1892,33 @@ export async function checkAndSyncClientSheetBridge(
           );
         }
 
-        // 2. Write minimal coalesced cell-diff batch
+        // 2. Write minimal coalesced cell-diff batch (chunked to prevent Google Sheets 503 timeouts)
         if (outboundValueRanges.length > 0) {
-          await withRetry(() =>
-            rawSheets.spreadsheets.values.batchUpdate({
-              spreadsheetId: ctx.clientSheetId,
-              requestBody: {
-                valueInputOption: "USER_ENTERED",
-                data: outboundValueRanges,
-              },
-            })
-          );
+          for (let i = 0; i < outboundValueRanges.length; i += 200) {
+            const valChunk = outboundValueRanges.slice(i, i + 200);
+            await withRetry(() =>
+              rawSheets.spreadsheets.values.batchUpdate({
+                spreadsheetId: ctx.clientSheetId,
+                requestBody: {
+                  valueInputOption: "USER_ENTERED",
+                  data: valChunk,
+                },
+              })
+            );
+          }
         }
 
-        // 3. Apply note updates
+        // 3. Apply note updates (coalesced per row and chunked to avoid backendError timeouts)
         if (outboundNoteRequests.length > 0) {
-          await withRetry(() =>
-            rawSheets.spreadsheets.batchUpdate({
-              spreadsheetId: ctx.clientSheetId,
-              requestBody: { requests: outboundNoteRequests },
-            })
-          );
+          for (let i = 0; i < outboundNoteRequests.length; i += 50) {
+            const noteChunk = outboundNoteRequests.slice(i, i + 50);
+            await withRetry(() =>
+              rawSheets.spreadsheets.batchUpdate({
+                spreadsheetId: ctx.clientSheetId,
+                requestBody: { requests: noteChunk },
+              })
+            );
+          }
         }
 
         const postMeta = await fetchDriveVersionMeta_(rawDrive, ctx.clientSheetId).catch(() => null);
@@ -1853,8 +1930,15 @@ export async function checkAndSyncClientSheetBridge(
         _pendingStructuralOpsByClient.delete(key);
       }
 
-      if (redisClient?.isOpen && wantsOutbound && (effectiveMode === "live" || !hasOutboundWork) && tabsToProcess.length > 0) {
-        redisClient.sRem(`pulse:sheet_bridge_dirty:${key}`, tabsToProcess).catch(() => { });
+      const cleanSyncedTabs = tabsToProcess.filter(
+        (t) => getTabWriteRevision_(ctx.clientName, "client", t) === mergedRevByTab[t]
+      );
+      const dirtiedMidFlightTabs = tabsToProcess.filter(
+        (t) => getTabWriteRevision_(ctx.clientName, "client", t) !== mergedRevByTab[t]
+      );
+
+      if (redisClient?.isOpen && wantsOutbound && (effectiveMode === "live" || !hasOutboundWork) && cleanSyncedTabs.length > 0) {
+        redisClient.sRem(`pulse:sheet_bridge_dirty:${key}`, cleanSyncedTabs).catch(() => { });
       }
 
       // Persist updated baseline whenever inbound applied in live/manual mode, outbound committed in live mode, or baseline was missing
@@ -1948,6 +2032,10 @@ export async function checkAndSyncClientSheetBridge(
       };
       await updateClientBridgeState_(supabase, ctx.clientName, statePatch, logEntry);
 
+      if (wantsOutbound && effectiveMode === "live" && dirtiedMidFlightTabs.length > 0) {
+        scheduleOutboundSheetBridgeSync(ctx.clientName, dirtiedMidFlightTabs);
+      }
+
       return {
         success: true,
         mode: effectiveMode,
@@ -1980,7 +2068,7 @@ export async function checkAndSyncClientSheetBridge(
       ).catch(() => { });
       throw err;
     } finally {
-      if (lockOk) await releaseRedisBridgeLock_(key);
+      if (lockToken && lockToken !== "no-redis") await releaseRedisBridgeLock_(key, lockToken);
     }
   })();
 

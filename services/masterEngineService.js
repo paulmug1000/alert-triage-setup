@@ -152,7 +152,7 @@ function bumpTabWriteRevision_(clientName, sheetRole, tabName) {
   return next;
 }
 
-function getTabWriteRevision_(clientName, sheetRole, tabName) {
+export function getTabWriteRevision_(clientName, sheetRole, tabName) {
   const key = `${String(clientName || "").trim().toLowerCase()}::${sheetRole}::${tabName}`;
   return _tabWriteRevisionMap.get(key) || 0;
 }
@@ -1576,6 +1576,11 @@ export async function saveVirtualTabGrid_(
       Object.prototype.hasOwnProperty.call(MASTER_COMP_TYPE_BY_TAB, tabName)
     ) {
       await syncMasterContextGridsToConfig(ctx, { [tabName]: compactedValues });
+      if (tabName === "KeyInfo") {
+        await syncStructuredKeyInfoFromGrid_(ctx, valuesGrid).catch((e) =>
+          console.warn("[masterEngineService] KeyInfo relational sync warning:", e.message)
+        );
+      }
       return;
     }
   }
@@ -1843,10 +1848,28 @@ async function recomputeMasterFormulasAfterVirtualWrite_(ctx, updatedTabNames, r
   const recordsByTab = {};
   const clientKey = String(ctx.clientName || "").toLowerCase();
   const missingMasterTabs = [];
+  let nativeCompTabsSet = null;
+  if (ctx.masterComputeMode === "native") {
+    try {
+      const { MASTER_COMP_TYPE_BY_TAB } = await import("./nativeMasterComparisonService.js");
+      nativeCompTabsSet = new Set([
+        "KeyInfo",
+        "DataChgAlert",
+        "PLAdds",
+        ...Object.keys(MASTER_COMP_TYPE_BY_TAB || {}),
+      ]);
+    } catch { }
+  }
   for (const t of masterTabsNeeded) {
     const cached = _gridMemoryCache.get(`${clientKey}::master::${t}`);
     if (cached && cached.expiresAt > Date.now() && !cached.record._valuesOnlyLoaded) {
       recordsByTab[t] = cached.record;
+    } else if (ctx.masterReadMode === "relational" && PHASE4_MASTER_TAB_SET_.has(t)) {
+      // Phase 4 relational tables are loaded via getOrLoadVirtualTabGrid_ below
+      continue;
+    } else if (nativeCompTabsSet && nativeCompTabsSet.has(t)) {
+      // Phase 6B native master context & comparison tabs are loaded via getOrLoadVirtualTabGrid_ below
+      continue;
     } else {
       missingMasterTabs.push(t);
     }
@@ -3354,7 +3377,38 @@ export async function handleVirtualSheetsCall({
     const isUnformatted = params.valueRenderOption === "UNFORMATTED_VALUE";
     const isFormulaReq = params.valueRenderOption === "FORMULA";
     let rec = null;
+    if (sheetRole === "master" && ctx.masterComputeMode === "native" && !isFormulaReq) {
+      try {
+        const {
+          MASTER_COMP_TYPE_BY_TAB,
+          loadMasterContextTabFromConfig,
+          loadPersistedOrEvaluateMasterComparisonTab,
+        } = await import("./nativeMasterComparisonService.js");
+        if (parsed.tabName === "KeyInfo" || parsed.tabName === "DataChgAlert" || parsed.tabName === "PLAdds") {
+          const ctxGrid = await loadMasterContextTabFromConfig(ctx, parsed.tabName);
+          if (Array.isArray(ctxGrid) && ctxGrid.length > 0) {
+            rec = {
+              values_grid: ctxGrid,
+              formulas_grid: ctxGrid,
+              notes_grid: {},
+            };
+          }
+        } else if (Object.prototype.hasOwnProperty.call(MASTER_COMP_TYPE_BY_TAB, parsed.tabName)) {
+          const compGrid = await loadPersistedOrEvaluateMasterComparisonTab(ctx, parsed.tabName);
+          if (Array.isArray(compGrid)) {
+            rec = {
+              values_grid: compGrid,
+              formulas_grid: compGrid,
+              notes_grid: {},
+            };
+          }
+        }
+      } catch (natMasterErr) {
+        console.warn(`[masterEngineService] Native master get fallback for ${ctx.clientName}/${parsed.tabName}:`, natMasterErr?.message);
+      }
+    }
     if (
+      !rec &&
       sheetRole === "master" &&
       ctx.masterReadMode === "relational" &&
       !isFormulaReq &&
@@ -3533,11 +3587,42 @@ export async function handleVirtualSheetsCall({
           }
         }
       }
-      if (uncachedTabs.length > 0 && supabase) {
+      if (uncachedTabs.length > 0 && supabase && ctx.clientComputeMode === "native") {
+        try {
+          const { loadNativeClientTabRecordsBatch } = await import("./nativeClientCalcService.js");
+          const loadedMap = await loadNativeClientTabRecordsBatch(ctx, uncachedTabs, {
+            source: "db",
+            valuesOnly: useValuesOnly,
+            includeNotes: !useValuesOnly,
+          });
+          for (const t of uncachedTabs) {
+            const rec = loadedMap?.[t];
+            if (!rec || !Array.isArray(rec.values_grid) || rec.values_grid.length === 0) continue;
+            const fullRec = {
+              client_id: ctx.clientId,
+              client_name: ctx.clientName,
+              sheet_role: "client",
+              tab_name: t,
+              ...rec,
+              _valuesOnlyLoaded: useValuesOnly,
+              _notesLoaded: !useValuesOnly,
+            };
+            byTab.set(t, fullRec);
+            const existing = _gridMemoryCache.get(`${clientKeyLower}::client::${t}`);
+            if (shouldStoreClientRecordInCache_(existing, { valuesOnly: useValuesOnly, includeNotes: false })) {
+              setGridMemoryCache_(`${clientKeyLower}::client::${t}`, fullRec);
+            }
+          }
+        } catch (natErr) {
+          console.warn(`[masterEngineService] Native client batchGet fallback (${ctx.clientName}):`, natErr?.message);
+        }
+      }
+      const gridUncachedTabs = uncachedTabs.filter((t) => !byTab.has(t));
+      if (gridUncachedTabs.length > 0 && supabase) {
         const dbRole = _useClientRoleFallback ? "master" : "client";
         const targetNames = _useClientRoleFallback
-          ? uncachedTabs.map((t) => `Client::${t}`)
-          : uncachedTabs;
+          ? gridUncachedTabs.map((t) => `Client::${t}`)
+          : gridUncachedTabs;
         const selectCols = useValuesOnly
           ? "id, client_id, client_name, sheet_role, tab_name, values_grid, row_count, col_count, updated_at"
           : "id, client_id, client_name, sheet_role, tab_name, values_grid, formulas_grid, notes_grid, row_count, col_count, updated_at";
@@ -3564,7 +3649,7 @@ export async function handleVirtualSheetsCall({
           }
           return loadedMap;
         })();
-        for (const t of uncachedTabs) {
+        for (const t of gridUncachedTabs) {
           const fKey = `${clientKeyLower}::client::${t}${flightSuffix}`;
           _inFlightGridLoads.set(
             fKey,
@@ -3574,7 +3659,7 @@ export async function handleVirtualSheetsCall({
         try {
           await batchPromise;
         } finally {
-          for (const t of uncachedTabs) {
+          for (const t of gridUncachedTabs) {
             const fKey = `${clientKeyLower}::client::${t}${flightSuffix}`;
             _inFlightGridLoads.delete(fKey);
           }
@@ -3598,9 +3683,64 @@ export async function handleVirtualSheetsCall({
       }
     } else {
       const clientKeyLower = ctx.clientName.toLowerCase();
+      if (sheetRole === "master" && ctx.masterComputeMode === "native" && !isFormulaReq) {
+        try {
+          const {
+            MASTER_COMP_TYPE_BY_TAB,
+            loadMasterContextTabFromConfig,
+            loadPersistedOrEvaluateMasterComparisonTab,
+          } = await import("./nativeMasterComparisonService.js");
+          const nativeCtxTabs = uniqueTabs.filter((t) => !byTab.has(t) && (t === "KeyInfo" || t === "DataChgAlert" || t === "PLAdds"));
+          const nativeCompTabs = uniqueTabs.filter((t) => !byTab.has(t) && Object.prototype.hasOwnProperty.call(MASTER_COMP_TYPE_BY_TAB, t));
+          if (nativeCtxTabs.length > 0 || nativeCompTabs.length > 0) {
+            await Promise.all([
+              ...nativeCtxTabs.map(async (t) => {
+                const ctxGrid = await loadMasterContextTabFromConfig(ctx, t);
+                if (Array.isArray(ctxGrid) && ctxGrid.length > 0) {
+                  const recOut = {
+                    client_id: ctx.clientId,
+                    client_name: ctx.clientName,
+                    sheet_role: "master",
+                    tab_name: t,
+                    values_grid: ctxGrid,
+                    formulas_grid: ctxGrid,
+                    notes_grid: {},
+                    row_count: ctxGrid.length,
+                    col_count: ctxGrid.reduce((m, r) => Math.max(m, Array.isArray(r) ? r.length : 0), 0),
+                    updated_at: new Date().toISOString(),
+                  };
+                  byTab.set(t, recOut);
+                  setGridMemoryCache_(`${clientKeyLower}::master::${t}`, recOut);
+                }
+              }),
+              ...nativeCompTabs.map(async (t) => {
+                const compGrid = await loadPersistedOrEvaluateMasterComparisonTab(ctx, t);
+                if (Array.isArray(compGrid)) {
+                  const recOut = {
+                    client_id: ctx.clientId,
+                    client_name: ctx.clientName,
+                    sheet_role: "master",
+                    tab_name: t,
+                    values_grid: compGrid,
+                    formulas_grid: compGrid,
+                    notes_grid: {},
+                    row_count: compGrid.length,
+                    col_count: compGrid.reduce((m, r) => Math.max(m, Array.isArray(r) ? r.length : 0), 0),
+                    updated_at: new Date().toISOString(),
+                  };
+                  byTab.set(t, recOut);
+                  setGridMemoryCache_(`${clientKeyLower}::master::${t}`, recOut);
+                }
+              }),
+            ]);
+          }
+        } catch (natMasterErr) {
+          console.warn(`[masterEngineService] Native master batchGet fallback for ${ctx.clientName}:`, natMasterErr?.message);
+        }
+      }
       const relationalPhase4Tabs =
         sheetRole === "master" && ctx.masterReadMode === "relational" && !isFormulaReq
-          ? uniqueTabs.filter((t) => PHASE4_MASTER_TAB_SET_.has(t))
+          ? uniqueTabs.filter((t) => !byTab.has(t) && PHASE4_MASTER_TAB_SET_.has(t))
           : [];
       if (relationalPhase4Tabs.length > 0) {
         try {
@@ -4158,18 +4298,30 @@ export async function handleVirtualSheetsCall({
     let allTabs = [];
     if (sheetRole === "client") {
       if (!includeGridData) {
-        const { data: tabRows } = await supabase
-          .from("master_sheet_grids")
-          .select("tab_name, sheet_role, row_count, col_count")
-          .eq("client_name", ctx.clientName)
-          .or("sheet_role.eq.client,and(sheet_role.eq.master,tab_name.like.Client::%)")
-          .order("tab_name", { ascending: true });
-        const seen = new Set();
-        for (const r of tabRows || []) {
-          const cleanTab = r.tab_name.startsWith("Client::") ? r.tab_name.slice(8) : r.tab_name;
-          if (seen.has(cleanTab)) continue;
-          seen.add(cleanTab);
-          allTabs.push({ ...r, tab_name: cleanTab, sheet_role: "client" });
+        if (ctx.clientComputeMode === "native") {
+          const { data: bpRows } = await supabase
+            .from("pulse_client_tab_blueprints")
+            .select("tab_name, row_count, col_count")
+            .eq("client_id", ctx.clientId)
+            .order("tab_name", { ascending: true });
+          for (const r of bpRows || []) {
+            allTabs.push({ ...r, sheet_role: "client" });
+          }
+        }
+        if (allTabs.length === 0) {
+          const { data: tabRows } = await supabase
+            .from("master_sheet_grids")
+            .select("tab_name, sheet_role, row_count, col_count")
+            .eq("client_name", ctx.clientName)
+            .or("sheet_role.eq.client,and(sheet_role.eq.master,tab_name.like.Client::%)")
+            .order("tab_name", { ascending: true });
+          const seen = new Set();
+          for (const r of tabRows || []) {
+            const cleanTab = r.tab_name.startsWith("Client::") ? r.tab_name.slice(8) : r.tab_name;
+            if (seen.has(cleanTab)) continue;
+            seen.add(cleanTab);
+            allTabs.push({ ...r, tab_name: cleanTab, sheet_role: "client" });
+          }
         }
       } else if (targetTabNames && targetTabNames.size > 0) {
         const fieldsStr = String(params.fields || "");
@@ -4210,22 +4362,47 @@ export async function handleVirtualSheetsCall({
       } else {
         const fieldsStr = String(params.fields || "");
         const needFormulas = !fieldsStr || fieldsStr.includes("userEnteredValue");
-        const selectCols = needFormulas
-          ? "tab_name, sheet_role, row_count, col_count, values_grid, formulas_grid, notes_grid"
-          : "tab_name, sheet_role, row_count, col_count, values_grid, notes_grid";
-        const { data: tabRows } = await supabase
-          .from("master_sheet_grids")
-          .select(selectCols)
-          .eq("client_name", ctx.clientName)
-          .or("sheet_role.eq.client,and(sheet_role.eq.master,tab_name.like.Client::%)")
-          .order("tab_name", { ascending: true });
-        const seen = new Set();
-        for (const r of tabRows || []) {
-          const cleanTab = r.tab_name.startsWith("Client::") ? r.tab_name.slice(8) : r.tab_name;
-          if (seen.has(cleanTab)) continue;
-          seen.add(cleanTab);
-          expandClientTabFromStorage_(r, cleanTab, { valuesOnly: !needFormulas });
-          allTabs.push(r);
+        if (ctx.clientComputeMode === "native") {
+          try {
+            const { data: bpRows } = await supabase
+              .from("pulse_client_tab_blueprints")
+              .select("tab_name")
+              .eq("client_id", ctx.clientId)
+              .order("tab_name", { ascending: true });
+            const bpTabs = (bpRows || []).map((r) => r.tab_name).filter(Boolean);
+            if (bpTabs.length > 0) {
+              const { loadNativeClientTabRecordsBatch } = await import("./nativeClientCalcService.js");
+              const loadedMap = await loadNativeClientTabRecordsBatch(ctx, bpTabs, {
+                source: "db",
+                valuesOnly: !needFormulas,
+                includeNotes: true,
+              });
+              for (const tName of bpTabs) {
+                if (loadedMap?.[tName]) allTabs.push(loadedMap[tName]);
+              }
+            }
+          } catch (natErr) {
+            console.warn(`[masterEngineService] Native client spreadsheets.get fallback (${ctx.clientName}):`, natErr?.message);
+          }
+        }
+        if (allTabs.length === 0) {
+          const selectCols = needFormulas
+            ? "tab_name, sheet_role, row_count, col_count, values_grid, formulas_grid, notes_grid"
+            : "tab_name, sheet_role, row_count, col_count, values_grid, notes_grid";
+          const { data: tabRows } = await supabase
+            .from("master_sheet_grids")
+            .select(selectCols)
+            .eq("client_name", ctx.clientName)
+            .or("sheet_role.eq.client,and(sheet_role.eq.master,tab_name.like.Client::%)")
+            .order("tab_name", { ascending: true });
+          const seen = new Set();
+          for (const r of tabRows || []) {
+            const cleanTab = r.tab_name.startsWith("Client::") ? r.tab_name.slice(8) : r.tab_name;
+            if (seen.has(cleanTab)) continue;
+            seen.add(cleanTab);
+            expandClientTabFromStorage_(r, cleanTab, { valuesOnly: !needFormulas });
+            allTabs.push(r);
+          }
         }
       }
     } else {
@@ -4567,19 +4744,33 @@ export async function handleVirtualSheetsCall({
     }
 
     let tabMetaRows = [];
+    let usingBlueprintMeta = false;
     if (sheetRole === "client") {
-      const { data: rows } = await supabase
-        .from("master_sheet_grids")
-        .select("id, tab_name, sheet_role")
-        .eq("client_name", ctx.clientName)
-        .or("sheet_role.eq.client,and(sheet_role.eq.master,tab_name.like.Client::%)")
-        .order("tab_name", { ascending: true });
-      const seen = new Set();
-      for (const r of rows || []) {
-        const cleanTab = r.tab_name.startsWith("Client::") ? r.tab_name.slice(8) : r.tab_name;
-        if (seen.has(cleanTab)) continue;
-        seen.add(cleanTab);
-        tabMetaRows.push({ id: r.id, tab_name: cleanTab, sheet_role: "client" });
+      if (ctx.clientComputeMode === "native") {
+        const { data: bpRows } = await supabase
+          .from("pulse_client_tab_blueprints")
+          .select("id, tab_name")
+          .eq("client_id", ctx.clientId)
+          .order("tab_name", { ascending: true });
+        if (Array.isArray(bpRows) && bpRows.length > 0) {
+          tabMetaRows = bpRows.map((r) => ({ id: r.id, tab_name: r.tab_name, sheet_role: "client" }));
+          usingBlueprintMeta = true;
+        }
+      }
+      if (tabMetaRows.length === 0) {
+        const { data: rows } = await supabase
+          .from("master_sheet_grids")
+          .select("id, tab_name, sheet_role")
+          .eq("client_name", ctx.clientName)
+          .or("sheet_role.eq.client,and(sheet_role.eq.master,tab_name.like.Client::%)")
+          .order("tab_name", { ascending: true });
+        const seen = new Set();
+        for (const r of rows || []) {
+          const cleanTab = r.tab_name.startsWith("Client::") ? r.tab_name.slice(8) : r.tab_name;
+          if (seen.has(cleanTab)) continue;
+          seen.add(cleanTab);
+          tabMetaRows.push({ id: r.id, tab_name: cleanTab, sheet_role: "client" });
+        }
       }
     } else {
       const { data: rows } = await supabase
@@ -4620,7 +4811,7 @@ export async function handleVirtualSheetsCall({
         if (meta && props.title && props.title !== meta.tab_name) {
           const oldTabName = meta.tab_name;
           await supabase
-            .from("master_sheet_grids")
+            .from(usingBlueprintMeta ? "pulse_client_tab_blueprints" : "master_sheet_grids")
             .update({ tab_name: props.title })
             .eq("id", meta.id);
           meta.tab_name = props.title;
@@ -4634,7 +4825,10 @@ export async function handleVirtualSheetsCall({
       } else if (req.deleteSheet?.sheetId !== undefined) {
         const meta = metaBySheetId.get(req.deleteSheet.sheetId);
         if (meta) {
-          await supabase.from("master_sheet_grids").delete().eq("id", meta.id);
+          await supabase
+            .from(usingBlueprintMeta ? "pulse_client_tab_blueprints" : "master_sheet_grids")
+            .delete()
+            .eq("id", meta.id);
           metaBySheetId.delete(req.deleteSheet.sheetId);
           dirtyTargets.delete(meta.tab_name);
           if (sheetRole === "recon") {

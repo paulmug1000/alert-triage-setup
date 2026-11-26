@@ -167,7 +167,7 @@ export async function getAllClients(sheets, sessionUser = { isAdmin: true }, byp
     if (await isSupabaseControlPlaneActive()) {
       try {
         const sb = getSupabaseAdmin();
-        const [{ data: sbClients, error: sbErr }, { data: kiRows }, { data: kiGridRows }, cmMap] = await Promise.all([
+        const [{ data: sbClients, error: sbErr }, { data: kiRows }, { data: kiGridRows }, { data: finCfgRows }, cmMap] = await Promise.all([
           sb.from("clients").select("*").order("client_name", { ascending: true }),
           sb
             .from("tenant_key_info")
@@ -179,6 +179,11 @@ export async function getAllClients(sheets, sessionUser = { isAdmin: true }, byp
             .select("client_name, values_grid")
             .eq("tab_name", "KeyInfo")
             .eq("sheet_role", "client")
+            .then((r) => r)
+            .catch(() => ({ data: [] })),
+          sb
+            .from("pulse_financial_configs")
+            .select("client_name, client_key_info_grid")
             .then((r) => r)
             .catch(() => ({ data: [] })),
           getClientManagerClientMap(sheets, acId),
@@ -196,6 +201,15 @@ export async function getAllClients(sheets, sessionUser = { isAdmin: true }, byp
               const rawD16 = g.values_grid?.[15]?.[3];
               if (rawD16 !== undefined && rawD16 !== null && String(rawD16).trim() !== "") {
                 kiGridD16ByName.set(String(g.client_name).trim().toLowerCase(), String(rawD16).trim());
+              }
+            }
+          }
+          const finCfgD16ByName = new Map();
+          for (const g of finCfgRows || []) {
+            if (g.client_name && Array.isArray(g.client_key_info_grid)) {
+              const rawD16 = g.client_key_info_grid?.[15]?.[3];
+              if (rawD16 !== undefined && rawD16 !== null && String(rawD16).trim() !== "") {
+                finCfgD16ByName.set(String(g.client_name).trim().toLowerCase(), String(rawD16).trim());
               }
             }
           }
@@ -226,7 +240,10 @@ export async function getAllClients(sheets, sessionUser = { isAdmin: true }, byp
             const webAppUrl = String(c.master_deployment_url || c.web_app_url || c.metadata?.webAppUrl || "").trim();
             const hasWebAppUrl = Boolean(webAppUrl) || c.master_mode === "supabase";
             const invMethod = String(ki?.invoice_method || c.metadata?.invoiceMethod || "").trim();
-            const d16Val = kiGridD16ByName.get(clientName.toLowerCase());
+            const d16Val =
+              (c.financials_read_mode === "relational" || c.client_compute_mode === "native"
+                ? finCfgD16ByName.get(clientName.toLowerCase())
+                : undefined) ?? kiGridD16ByName.get(clientName.toLowerCase());
             const splitEnabled = d16Val !== undefined
               ? d16Val.toLowerCase() === "yes"
               : Boolean(c.metadata?.splitEnabled || invMethod.toLowerCase().includes("split"));

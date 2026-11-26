@@ -22,7 +22,7 @@ import { postGasWebAppLocked } from "../utils/helpers.js";
 import { assertExternalCrmSpreadsheet } from "./googleSheetService.js";
 import { clearAllClientsMemoryCache, getClientWebAppUrl } from "./workspaces.js";
 import { clearSsrClientsMemoryCache } from "./ssrSession.js";
-import { resolveSupabaseSheetContext } from "./masterEngineService.js";
+import { resolveSupabaseSheetContext, getOrLoadVirtualTabGrid_ } from "./masterEngineService.js";
 import { memoryCache, del2TierCache, invalidatePmaClientCache, invalidateAllClientsRedisKeys } from "./cacheService.js";
 import { getSupabaseAdmin } from "./supabaseClient.js";
 import { clearPortalFeatureFlagsMemoryCache } from "./portalDataService.js";
@@ -192,100 +192,150 @@ async function readSparseTabsFromSupabase_({ clientName, masterSheetId, clientSh
 
   if (supaCtx?.masterMode === "supabase") {
     const dbClientName = supaCtx.clientName || clientName;
+    const useNativeOrRelMaster =
+      supaCtx.masterComputeMode === "native" || supaCtx.masterReadMode === "relational";
 
-    // InvAppList: F1 (row 0, col 5) and N4:N20 (rows 3..19, col 13)
-    const invCols = ["tab_name", "f1:values_grid->0->5"];
-    for (let r = 3; r <= 19; r++) {
-      invCols.push(`r${r}:values_grid->${r}->13`);
-    }
-    tasks.push(
-      sb
-        .from("master_sheet_grids")
-        .select(invCols.join(", "))
-        .eq("client_name", dbClientName)
-        .eq("sheet_role", "master")
-        .eq("tab_name", "InvAppList")
-        .maybeSingle()
-        .then(({ data, error }) => {
-          if (!error && data?.tab_name) {
-            const invF1 = String(formatCellForDisplay("master", "InvAppList", 0, 5, data.f1) || "StripPre").trim();
+    if (useNativeOrRelMaster) {
+      tasks.push(
+        Promise.all([
+          getOrLoadVirtualTabGrid_(supaCtx, "master", "InvAppList", null, { valuesOnly: true }).catch(() => null),
+          getOrLoadVirtualTabGrid_(supaCtx, "master", "JnlAppList", null, { valuesOnly: true }).catch(() => null),
+          getOrLoadVirtualTabGrid_(supaCtx, "master", "CRMList", null, { valuesOnly: true }).catch(() => null),
+          getOrLoadVirtualTabGrid_(supaCtx, "master", "DataFromCRM", null, { valuesOnly: true }).catch(() => null),
+        ]).then(([invRec, jnlRec, crmListRec, dfcRec]) => {
+          const invG = invRec?.values_grid;
+          if (Array.isArray(invG) && invG.length > 0) {
+            const invF1 = String(formatCellForDisplay("master", "InvAppList", 0, 5, invG?.[0]?.[5]) || "StripPre").trim();
             const rawInvRows = [];
             for (let r = 3; r <= 19; r++) {
-              const v = formatCellForDisplay("master", "InvAppList", r, 13, data[`r${r}`]);
-              rawInvRows.push([v]);
+              rawInvRows.push([formatCellForDisplay("master", "InvAppList", r, 13, invG?.[r]?.[13])]);
             }
             result.invAppList = { invF1, rawInvRows };
           }
-        })
-        .catch(() => { })
-    );
-
-    // JnlAppList: F2 (row 1, col 5)
-    tasks.push(
-      sb
-        .from("master_sheet_grids")
-        .select("tab_name, f2:values_grid->1->5")
-        .eq("client_name", dbClientName)
-        .eq("sheet_role", "master")
-        .eq("tab_name", "JnlAppList")
-        .maybeSingle()
-        .then(({ data, error }) => {
-          if (!error && data?.tab_name) {
-            result.jnlAppList = String(formatCellForDisplay("master", "JnlAppList", 1, 5, data.f2) || "Actual").trim() || "Actual";
+          const jnlG = jnlRec?.values_grid;
+          if (Array.isArray(jnlG) && jnlG.length > 0) {
+            result.jnlAppList = String(formatCellForDisplay("master", "JnlAppList", 1, 5, jnlG?.[1]?.[5]) || "Actual").trim() || "Actual";
           }
-        })
-        .catch(() => { })
-    );
-
-    // CRMList: row 2 (index 1) -> A2:M2 (0..12), AB2:AN2 (27..39), DD2 (107), DF2 (109), DH2 (111), EE2 (134)
-    tasks.push(
-      sb
-        .from("master_sheet_grids")
-        .select("tab_name, row2:values_grid->1")
-        .eq("client_name", dbClientName)
-        .eq("sheet_role", "master")
-        .eq("tab_name", "CRMList")
-        .maybeSingle()
-        .then(({ data, error }) => {
-          if (!error && data?.tab_name && Array.isArray(data.row2)) {
-            const row2 = data.row2;
+          const crmRow2 = crmListRec?.values_grid?.[1];
+          if (Array.isArray(crmRow2)) {
             const crmFormatRules = [];
             for (let c = 0; c <= 12; c++) {
-              crmFormatRules.push(String(formatCellForDisplay("master", "CRMList", 1, c, row2[c]) || "").trim());
+              crmFormatRules.push(String(formatCellForDisplay("master", "CRMList", 1, c, crmRow2[c]) || "").trim());
             }
             const crmMappedCols = [];
             for (let c = 27; c <= 39; c++) {
-              crmMappedCols.push(String(formatCellForDisplay("master", "CRMList", 1, c, row2[c]) || "").trim());
+              crmMappedCols.push(String(formatCellForDisplay("master", "CRMList", 1, c, crmRow2[c]) || "").trim());
             }
             result.crmListRow2 = {
               crmFormatRules,
               crmMappedCols,
-              confirmedLikelihood: String(formatCellForDisplay("master", "CRMList", 1, 107, row2[107]) || "").trim(),
-              confirmedStatus: String(formatCellForDisplay("master", "CRMList", 1, 109, row2[109]) || "").trim(),
-              confirmedOperator: String(formatCellForDisplay("master", "CRMList", 1, 111, row2[111]) || "Or").trim(),
-              pipelineExcludedStatuses: String(formatCellForDisplay("master", "CRMList", 1, 134, row2[134]) || "").trim(),
+              confirmedLikelihood: String(formatCellForDisplay("master", "CRMList", 1, 107, crmRow2[107]) || "").trim(),
+              confirmedStatus: String(formatCellForDisplay("master", "CRMList", 1, 109, crmRow2[109]) || "").trim(),
+              confirmedOperator: String(formatCellForDisplay("master", "CRMList", 1, 111, crmRow2[111]) || "Or").trim(),
+              pipelineExcludedStatuses: String(formatCellForDisplay("master", "CRMList", 1, 134, crmRow2[134]) || "").trim(),
             };
           }
-        })
-        .catch(() => { })
-    );
-
-    // DataFromCRM: row 1 headers only (index 0)
-    tasks.push(
-      sb
-        .from("master_sheet_grids")
-        .select("tab_name, row1:values_grid->0")
-        .eq("client_name", dbClientName)
-        .eq("sheet_role", "master")
-        .eq("tab_name", "DataFromCRM")
-        .maybeSingle()
-        .then(({ data, error }) => {
-          if (!error && data?.tab_name && Array.isArray(data.row1)) {
-            result.dataFromCrmRow1 = data.row1.map((h) => String(h ?? "").trim()).filter(Boolean);
+          const dfcRow1 = dfcRec?.values_grid?.[0];
+          if (Array.isArray(dfcRow1)) {
+            result.dataFromCrmRow1 = dfcRow1.map((h) => String(h ?? "").trim()).filter(Boolean);
           }
         })
-        .catch(() => { })
-    );
+      );
+    } else {
+      // InvAppList: F1 (row 0, col 5) and N4:N20 (rows 3..19, col 13)
+      const invCols = ["tab_name", "f1:values_grid->0->5"];
+      for (let r = 3; r <= 19; r++) {
+        invCols.push(`r${r}:values_grid->${r}->13`);
+      }
+      tasks.push(
+        sb
+          .from("master_sheet_grids")
+          .select(invCols.join(", "))
+          .eq("client_name", dbClientName)
+          .eq("sheet_role", "master")
+          .eq("tab_name", "InvAppList")
+          .maybeSingle()
+          .then(({ data, error }) => {
+            if (!error && data?.tab_name) {
+              const invF1 = String(formatCellForDisplay("master", "InvAppList", 0, 5, data.f1) || "StripPre").trim();
+              const rawInvRows = [];
+              for (let r = 3; r <= 19; r++) {
+                const v = formatCellForDisplay("master", "InvAppList", r, 13, data[`r${r}`]);
+                rawInvRows.push([v]);
+              }
+              result.invAppList = { invF1, rawInvRows };
+            }
+          })
+          .catch(() => { })
+      );
+
+      // JnlAppList: F2 (row 1, col 5)
+      tasks.push(
+        sb
+          .from("master_sheet_grids")
+          .select("tab_name, f2:values_grid->1->5")
+          .eq("client_name", dbClientName)
+          .eq("sheet_role", "master")
+          .eq("tab_name", "JnlAppList")
+          .maybeSingle()
+          .then(({ data, error }) => {
+            if (!error && data?.tab_name) {
+              result.jnlAppList = String(formatCellForDisplay("master", "JnlAppList", 1, 5, data.f2) || "Actual").trim() || "Actual";
+            }
+          })
+          .catch(() => { })
+      );
+
+      // CRMList: row 2 (index 1) -> A2:M2 (0..12), AB2:AN2 (27..39), DD2 (107), DF2 (109), DH2 (111), EE2 (134)
+      tasks.push(
+        sb
+          .from("master_sheet_grids")
+          .select("tab_name, row2:values_grid->1")
+          .eq("client_name", dbClientName)
+          .eq("sheet_role", "master")
+          .eq("tab_name", "CRMList")
+          .maybeSingle()
+          .then(({ data, error }) => {
+            if (!error && data?.tab_name && Array.isArray(data.row2)) {
+              const row2 = data.row2;
+              const crmFormatRules = [];
+              for (let c = 0; c <= 12; c++) {
+                crmFormatRules.push(String(formatCellForDisplay("master", "CRMList", 1, c, row2[c]) || "").trim());
+              }
+              const crmMappedCols = [];
+              for (let c = 27; c <= 39; c++) {
+                crmMappedCols.push(String(formatCellForDisplay("master", "CRMList", 1, c, row2[c]) || "").trim());
+              }
+              result.crmListRow2 = {
+                crmFormatRules,
+                crmMappedCols,
+                confirmedLikelihood: String(formatCellForDisplay("master", "CRMList", 1, 107, row2[107]) || "").trim(),
+                confirmedStatus: String(formatCellForDisplay("master", "CRMList", 1, 109, row2[109]) || "").trim(),
+                confirmedOperator: String(formatCellForDisplay("master", "CRMList", 1, 111, row2[111]) || "Or").trim(),
+                pipelineExcludedStatuses: String(formatCellForDisplay("master", "CRMList", 1, 134, row2[134]) || "").trim(),
+              };
+            }
+          })
+          .catch(() => { })
+      );
+
+      // DataFromCRM: row 1 headers only (index 0)
+      tasks.push(
+        sb
+          .from("master_sheet_grids")
+          .select("tab_name, row1:values_grid->0")
+          .eq("client_name", dbClientName)
+          .eq("sheet_role", "master")
+          .eq("tab_name", "DataFromCRM")
+          .maybeSingle()
+          .then(({ data, error }) => {
+            if (!error && data?.tab_name && Array.isArray(data.row1)) {
+              result.dataFromCrmRow1 = data.row1.map((h) => String(h ?? "").trim()).filter(Boolean);
+            }
+          })
+          .catch(() => { })
+      );
+    }
   }
 
   if (clientSheetId && clientSupaCtx?.clientMode === "supabase") {
@@ -293,6 +343,16 @@ async function readSparseTabsFromSupabase_({ clientName, masterSheetId, clientSh
     tasks.push(
       (async () => {
         try {
+          if (clientSupaCtx.clientComputeMode === "native" || clientSupaCtx.inputsReadMode === "relational") {
+            const outRec = await getOrLoadVirtualTabGrid_(clientSupaCtx, "client", "Outgoings", null, { valuesOnly: true }).catch(() => null);
+            const rawA112 = outRec?.values_grid?.[111]?.[0];
+            if (outRec?.values_grid?.length > 111 && rawA112 !== undefined) {
+              const formatted = formatCellForDisplay("client", "Outgoings", 111, 0, rawA112);
+              result.outgoingsA112 = String(formatted ?? "0%").trim() || "0%";
+              return;
+            }
+          }
+
           let { data, error } = await sb
             .from("master_sheet_grids")
             .select("tab_name, a112:values_grid->111->0")

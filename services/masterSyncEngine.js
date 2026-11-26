@@ -404,7 +404,7 @@ export async function updateOverdueInvoicesInConfirmedNative(sheets, ctxOrName) 
 }
 
 /**
- * 2A. Verbatim GAS `syncDirectCostsToClientSheet`
+ * 2A. Verbatim GAS `PushExpDetails`
  */
 export async function pushMatchedDirectCostsNative(sheets, ctxOrName) {
   const ctx =
@@ -418,10 +418,10 @@ export async function pushMatchedDirectCostsNative(sheets, ctxOrName) {
     sheets,
     autoReconcileFn: autoReconcileClientBankTransactions,
     includeReconMonthly: false,
-    executionMeta: { functionName: "syncDirectCostsToClientSheet", triggerSource: "Manual (PMA)" },
+    executionMeta: { functionName: "PushExpDetails", triggerSource: "Manual (PMA)" },
   });
   const gas = createMasterGasInstance(env);
-  const res = await gas.syncDirectCostsToClientSheet(true);
+  const res = await gas.PushExpDetails(true);
   await env.finalizeExecution({ summary: `Pushed ${res?.count || res?.updatedCount || 0} direct cost(s)` });
   return res || { updatedCount: 0 };
 }
@@ -1214,16 +1214,19 @@ export async function dispatchDueNativeMasterSyncs({
   }
 
   try {
-    const [{ data: schedRows }, { data: clientRows }, { data: dcaRows }, { data: setupStateRows }] = await Promise.all([
+    const [{ data: schedRows }, { data: clientRows }, { data: dcaRows }, { data: nativeSyncCfgRows }, { data: setupStateRows }] = await Promise.all([
       supabase.from("sync_schedules").select("*"),
       supabase
         .from("clients")
-        .select("client_name, status, metadata, master_mode, master_sheet_id, client_sheet_id, recon_sheet_id"),
+        .select("id, client_name, status, metadata, client_mode, master_mode, client_compute_mode, master_compute_mode, master_sheet_id, client_sheet_id, recon_sheet_id"),
       supabase
         .from("master_sheet_grids")
         .select("client_name, values_grid")
         .eq("sheet_role", "master")
         .eq("tab_name", "DataChgAlert"),
+      supabase
+        .from("pulse_master_sync_configs")
+        .select("client_name, data_chg_alert_grid"),
       supabase.from("client_setup_state").select("client_name, setup_status"),
     ]);
     if (!Array.isArray(schedRows) || schedRows.length === 0) return { dispatched: 0, syncs: [] };
@@ -1253,6 +1256,18 @@ export async function dispatchDueNativeMasterSyncs({
     if (Array.isArray(dcaRows)) {
       for (const r of dcaRows) {
         if (r.client_name) dcaMap.set(r.client_name, r.values_grid);
+      }
+    }
+    if (Array.isArray(nativeSyncCfgRows)) {
+      for (const cfg of nativeSyncCfgRows) {
+        if (
+          cfg.client_name &&
+          supabaseClientRowByName.get(cfg.client_name)?.master_compute_mode === "native" &&
+          Array.isArray(cfg.data_chg_alert_grid) &&
+          cfg.data_chg_alert_grid.length > 0
+        ) {
+          dcaMap.set(cfg.client_name, cfg.data_chg_alert_grid);
+        }
       }
     }
 
@@ -1369,7 +1384,7 @@ export async function dispatchDueNativeMasterSyncs({
     const candidateNames = dueCandidates.map((item) => item.clientName);
 
     if (candidateNames.length > 0) {
-      const [{ data: masterMetaRows }, { data: localGridRows }] = await Promise.all([
+      const [{ data: masterMetaRows }, { data: localGridRows }, { data: nativeSyncCfgMeta }, { data: bpUpdatedRows }, { data: reconCfgRows }, { data: reconPeriodRows }] = await Promise.all([
         supabase
           .from("master_sheet_grids")
           .select("client_name, tab_name, values_grid")
@@ -1381,6 +1396,23 @@ export async function dispatchDueNativeMasterSyncs({
           .select("client_name, sheet_role, tab_name, updated_at")
           .in("sheet_role", ["client", "recon"])
           .in("client_name", candidateNames),
+        supabase
+          .from("pulse_master_sync_configs")
+          .select("client_name, master_key_info_grid, crm_list_config")
+          .in("client_name", candidateNames),
+        supabase
+          .from("pulse_client_tab_blueprints")
+          .select("client_name, tab_name, updated_at")
+          .in("tab_name", ["Pipeline", "Confirmed", "Outgoings", "OutgNotes"])
+          .in("client_name", candidateNames),
+        supabase
+          .from("pulse_recon_configs")
+          .select("client_name, updated_at")
+          .in("client_name", candidateNames),
+        supabase
+          .from("bank_recon_periods")
+          .select("client_name, updated_at")
+          .in("client_name", candidateNames),
       ]);
 
       const kiByClient = new Map();
@@ -1388,6 +1420,17 @@ export async function dispatchDueNativeMasterSyncs({
       for (const r of masterMetaRows || []) {
         if (r.tab_name === "KeyInfo") kiByClient.set(r.client_name, r.values_grid || []);
         else if (r.tab_name === "CRMList") crmListByClient.set(r.client_name, r.values_grid || []);
+      }
+      for (const cfg of nativeSyncCfgMeta || []) {
+        if (!cfg.client_name) continue;
+        if (supabaseClientRowByName.get(cfg.client_name)?.master_compute_mode === "native") {
+          if (Array.isArray(cfg.master_key_info_grid) && cfg.master_key_info_grid.length > 0) {
+            kiByClient.set(cfg.client_name, cfg.master_key_info_grid);
+          }
+          if (Array.isArray(cfg.crm_list_config?.headerRows) && cfg.crm_list_config.headerRows.length > 0) {
+            crmListByClient.set(cfg.client_name, cfg.crm_list_config.headerRows);
+          }
+        }
       }
 
       const maxClientJobsUpdatedByClient = new Map();
@@ -1406,6 +1449,25 @@ export async function dispatchDueNativeMasterSyncs({
           if (ms > (maxExpenseSheetsUpdatedByClient.get(r.client_name) || 0)) {
             maxExpenseSheetsUpdatedByClient.set(r.client_name, ms);
           }
+        }
+      }
+      for (const r of bpUpdatedRows || []) {
+        if (!r.client_name || supabaseClientRowByName.get(r.client_name)?.client_compute_mode !== "native") continue;
+        const ms = r.updated_at ? new Date(r.updated_at).getTime() : 0;
+        if (Number.isNaN(ms) || ms <= 0) continue;
+        if (JOB_TABS.has(r.tab_name) && ms > (maxClientJobsUpdatedByClient.get(r.client_name) || 0)) {
+          maxClientJobsUpdatedByClient.set(r.client_name, ms);
+        }
+        if (EXPENSE_TABS.has(r.tab_name) && ms > (maxExpenseSheetsUpdatedByClient.get(r.client_name) || 0)) {
+          maxExpenseSheetsUpdatedByClient.set(r.client_name, ms);
+        }
+      }
+      for (const r of [...(reconCfgRows || []), ...(reconPeriodRows || [])]) {
+        if (!r.client_name) continue;
+        const ms = r.updated_at ? new Date(r.updated_at).getTime() : 0;
+        if (Number.isNaN(ms) || ms <= 0) continue;
+        if (ms > (maxExpenseSheetsUpdatedByClient.get(r.client_name) || 0)) {
+          maxExpenseSheetsUpdatedByClient.set(r.client_name, ms);
         }
       }
 
@@ -1537,7 +1599,7 @@ export async function dispatchDueNativeMasterSyncs({
                 .from("sync_schedules")
                 .update({ ...schedPatch, flags: nextFlags })
                 .eq("client_name", item.clientName)
-                .catch(() => {});
+                .catch(() => { });
             }
           })
         );
@@ -1761,6 +1823,7 @@ export async function runNativeMasterAmdAction({
   clientName = "APPTEST",
   amdAction = "",
   userEmail = "Admin",
+  dryRun = false,
 }) {
   const cfg = AMD_ACTION_CONFIG[amdAction];
   if (!cfg) {
@@ -1778,6 +1841,7 @@ export async function runNativeMasterAmdAction({
       functionName: cfg.fnName,
       triggerSource: `Manual (${userEmail})`,
     },
+    dryRun,
   });
   const gas = createMasterGasInstance(env);
 
@@ -1862,11 +1926,13 @@ export async function runNativeMasterAmdAction({
 
   await env.finalizeExecution({ summary: summaryText });
 
-  if (amdAction === "pull_crm" && ctx.clientName === "Beyond the Blueprint") {
-    await syncBeyondTheBlueprintConversations_({ masterSS: env.masterSS, ctx, sheets });
+  if (!dryRun) {
+    if (amdAction === "pull_crm" && ctx.clientName === "Beyond the Blueprint") {
+      await syncBeyondTheBlueprintConversations_({ masterSS: env.masterSS, ctx, sheets });
+    }
+    markMasterComparisonsFresh(ctx.clientName);
+    await invalidateClientActivityCache(ctx.clientName).catch(() => { });
   }
-  markMasterComparisonsFresh(ctx.clientName);
-  await invalidateClientActivityCache(ctx.clientName).catch(() => { });
 
   const comparisons = summarizeComparisonsFromMasterSS_(env.masterSS, ctx.clientName);
 

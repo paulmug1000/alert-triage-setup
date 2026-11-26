@@ -221,7 +221,7 @@ export async function evaluateNativeMasterComparisonsInMemory(
       includeSalaries: false,
       includeOutgoings: true,
       includeOutgNotes: true,
-      includeNb: false,
+      includeNbToFind: false,
       includeBudget: false,
       includeCash: false,
     }),

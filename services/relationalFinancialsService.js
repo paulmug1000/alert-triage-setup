@@ -85,6 +85,8 @@ export function invalidateClientRelationalFinancialsCache(clientName) {
     return;
   }
   _financialsBundleCache.delete(key);
+  _financialsBundleCache.delete(`${key}::vo`);
+  _financialsBundleCache.delete(`${key}::wf`);
 }
 
 function str_(v) {
@@ -634,7 +636,7 @@ export async function getPhase5FinancialsOverviewStats() {
 async function loadExpandedPhase5TabRecords_(
   supabase,
   clientName,
-  { valuesOnly = false, preloadedGrids = null } = {}
+  { valuesOnly = false, preloadedGrids = null, ctx = null } = {}
 ) {
   const byTab = {};
   const missingTabs = [];
@@ -677,7 +679,51 @@ async function loadExpandedPhase5TabRecords_(
 
   if (missingTabs.length === 0) return byTab;
 
-  const targetNames = [...missingTabs, ...missingTabs.map((t) => `Client::${t}`)];
+  if (ctx && (ctx.financialsReadMode === "relational" || ctx.clientComputeMode === "native")) {
+    try {
+      const bundle = await preloadClientRelationalFinancialsBundle(ctx, {
+        source: "db",
+        includeFormulas: !valuesOnly,
+      });
+      if (bundle) {
+        for (const t of missingTabs) {
+          const recon = reconstructRelationalFinancialTabFromBundle(bundle, t, {
+            includeFormulas: !valuesOnly,
+          });
+          if (recon && Array.isArray(recon.values_grid) && recon.values_grid.length > 0) {
+            byTab[t] = recon;
+          }
+        }
+      }
+    } catch (relErr) {
+      console.warn(`[relationalFinancialsService] Phase 5 missing-tab reconstruction fallback (${ctx.clientName}):`, relErr?.message);
+    }
+
+    const stillMissingForNative = missingTabs.filter((t) => !byTab[t]);
+    if (stillMissingForNative.length > 0 && ctx.clientComputeMode === "native") {
+      try {
+        const { loadNativeClientTabRecordsBatch } = await import("./nativeClientCalcService.js");
+        const nativeMap = await loadNativeClientTabRecordsBatch(ctx, stillMissingForNative, {
+          source: "db",
+          valuesOnly,
+          includeNotes: true,
+        });
+        for (const t of stillMissingForNative) {
+          const rec = nativeMap?.[t];
+          if (rec && Array.isArray(rec.values_grid) && rec.values_grid.length > 0) {
+            byTab[t] = rec;
+          }
+        }
+      } catch (natErr) {
+        console.warn(`[relationalFinancialsService] Phase 6A missing-tab load fallback (${ctx.clientName}):`, natErr?.message);
+      }
+    }
+  }
+
+  const remainingMissing = missingTabs.filter((t) => !byTab[t]);
+  if (remainingMissing.length === 0) return byTab;
+
+  const targetNames = [...remainingMissing, ...remainingMissing.map((t) => `Client::${t}`)];
   const selectCols = valuesOnly
     ? "tab_name, sheet_role, row_count, col_count, values_grid, notes_grid, updated_at"
     : "tab_name, sheet_role, row_count, col_count, values_grid, formulas_grid, notes_grid, updated_at";
@@ -689,7 +735,7 @@ async function loadExpandedPhase5TabRecords_(
     .in("tab_name", targetNames);
   if (error) throw new Error(`Failed loading client grids for ${clientName}: ${error.message}`);
 
-  for (const t of missingTabs) {
+  for (const t of remainingMissing) {
     const rec =
       (rows || []).find((r) => r.sheet_role === "client" && r.tab_name === t) ||
       (rows || []).find((r) => r.sheet_role === "master" && r.tab_name === `Client::${t}`) ||
@@ -723,6 +769,7 @@ async function runSingleFinancialsReconcilePass_(ctx, tabNames = null, options =
   const tabRecordsByTab = await loadExpandedPhase5TabRecords_(supabase, ctx.clientName, {
     valuesOnly: false,
     preloadedGrids: options?.preloadedGrids || null,
+    ctx: options?.forceFullUpsert ? null : ctx,
   });
 
   const parsed = parseClientFinancialsFromTabRecords({

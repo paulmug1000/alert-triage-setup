@@ -777,6 +777,7 @@ export function useTriageEngine({
               isDuplicateInvoice: patch.isDuplicateInvoice,
               spreadsheetItems: patch.spreadsheetItems,
               pulseAmounts: patch.pulseAmounts,
+              rechargedDiagnosis: patch.rechargedDiagnosis || null,
               data: {
                 ...(newAlerts[idx].data || {}),
                 flags: Array.isArray(patch.liveFlags) ? patch.liveFlags : newAlerts[idx].data?.flags,

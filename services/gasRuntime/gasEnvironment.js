@@ -929,19 +929,34 @@ class VirtualRange {
   setFontColor() {
     return this;
   }
+  setFontColors() {
+    return this;
+  }
   setFontFamily() {
     return this;
   }
   setFontLine() {
     return this;
   }
+  setFontLines() {
+    return this;
+  }
   setFontSize() {
+    return this;
+  }
+  setFontSizes() {
     return this;
   }
   setFontStyle() {
     return this;
   }
+  setFontStyles() {
+    return this;
+  }
   setFontWeight() {
+    return this;
+  }
+  setFontWeights() {
     return this;
   }
   setVerticalAlignment() {
@@ -1087,19 +1102,40 @@ class VirtualRangeList {
   setFontWeight() {
     return this;
   }
+  setFontWeights() {
+    return this;
+  }
   setFontColor() {
+    return this;
+  }
+  setFontColors() {
+    return this;
+  }
+  setFontColors() {
     return this;
   }
   setFontLine() {
     return this;
   }
+  setFontLines() {
+    return this;
+  }
   setFontStyle() {
+    return this;
+  }
+  setFontStyles() {
     return this;
   }
   setFontSize() {
     return this;
   }
+  setFontSizes() {
+    return this;
+  }
   setFontFamily() {
+    return this;
+  }
+  setFontFamilies() {
     return this;
   }
   setBackground(color) {
@@ -1711,6 +1747,7 @@ export async function createGasEnvironment({
   executionMeta = null,
   loadTabsMode = "all",
   includeReconMonthly = true,
+  dryRun = false,
 }) {
   const supabase = getSupabaseAdmin();
   if (!supabase) throw new Error("Supabase is not configured.");
@@ -1882,6 +1919,121 @@ export async function createGasEnvironment({
     vs._loadedValuesJson = JSON.stringify(compactedVals);
     vs._loadedNotesJson = JSON.stringify(row.notes_grid || {});
     targetSS.sheetsByName.set(row.tab_name, vs);
+  }
+
+  const applyRelationalGridToVirtualSS_ = (targetSS, tabName, rawGrid, notesObj = {}) => {
+    if (!tabName || !Array.isArray(rawGrid)) return;
+    const compactedVals = compactGrid2D(rawGrid);
+    const fGrid =
+      targetSS.sheetRole === "master" && tabName === "Year0Data" && Array.isArray(y0FormulasGrid)
+        ? y0FormulasGrid
+        : compactedVals;
+    const existingVs = targetSS.sheetsByName.get(tabName);
+    const maxCols = compactedVals.reduce((m, r) => Math.max(m, Array.isArray(r) ? r.length : 0), 0);
+    if (existingVs) {
+      existingVs.valuesGrid = compactedVals;
+      existingVs.formulasGrid = fGrid;
+      existingVs.notesGrid = notesObj || {};
+      existingVs._loadedValuesJson = JSON.stringify(compactedVals);
+      existingVs._loadedNotesJson = JSON.stringify(notesObj || {});
+      existingVs.dirty = false;
+    } else {
+      const vs = new VirtualSheet(
+        targetSS,
+        tabName,
+        compactedVals,
+        fGrid,
+        notesObj || {},
+        idxCounter++,
+        Math.max(1000, compactedVals.length || 0),
+        Math.max(50, maxCols || 0)
+      );
+      vs._loadedValuesJson = JSON.stringify(compactedVals);
+      vs._loadedNotesJson = JSON.stringify(notesObj || {});
+      targetSS.sheetsByName.set(tabName, vs);
+    }
+  };
+
+  if (ctx.masterReadMode === "relational") {
+    try {
+      const {
+        ALL_PHASE4_MASTER_TABS,
+        preloadClientRelationalMasterBundle,
+        reconstructRelationalMasterTabFromBundle,
+      } = await import("../relationalMasterService.js");
+      const phase4TabSet = new Set(ALL_PHASE4_MASTER_TABS);
+      const targetPhase4Tabs = masterTabsFilter.filter((t) => phase4TabSet.has(t));
+      if (targetPhase4Tabs.length > 0) {
+        const mBundle = await preloadClientRelationalMasterBundle(ctx, { source: "db" });
+        for (const t of targetPhase4Tabs) {
+          const rGrid = await reconstructRelationalMasterTabFromBundle(mBundle, t, ctx);
+          if (Array.isArray(rGrid)) {
+            applyRelationalGridToVirtualSS_(masterSS, t, rGrid, {});
+          }
+        }
+      }
+    } catch (relMasterErr) {
+      console.warn(`[gasEnvironment] Phase 4 relational master preload warning (${ctx.clientName}):`, relMasterErr?.message);
+    }
+  }
+
+  if (ctx.masterComputeMode === "native") {
+    try {
+      const {
+        MASTER_COMP_TYPE_BY_TAB,
+        loadMasterContextTabFromConfig,
+        loadPersistedOrEvaluateMasterComparisonTab,
+      } = await import("../nativeMasterComparisonService.js");
+      for (const t of masterTabsFilter) {
+        if (t === "KeyInfo" || t === "DataChgAlert" || t === "PLAdds") {
+          const ctxGrid = await loadMasterContextTabFromConfig(ctx, t);
+          if (Array.isArray(ctxGrid) && ctxGrid.length > 0) {
+            applyRelationalGridToVirtualSS_(masterSS, t, ctxGrid, {});
+          }
+        } else if (Object.prototype.hasOwnProperty.call(MASTER_COMP_TYPE_BY_TAB, t)) {
+          const compGrid = await loadPersistedOrEvaluateMasterComparisonTab(ctx, t);
+          if (Array.isArray(compGrid)) {
+            applyRelationalGridToVirtualSS_(masterSS, t, compGrid, {});
+          }
+        }
+      }
+    } catch (natMasterErr) {
+      console.warn(`[gasEnvironment] Phase 6B native master preload warning (${ctx.clientName}):`, natMasterErr?.message);
+    }
+  }
+
+  if (ctx.reconReadMode === "relational") {
+    try {
+      const {
+        isManagedReconTab,
+        preloadClientRelationalReconBundle,
+        reconstructRelationalReconTabFromBundle,
+      } = await import("../relationalReconService.js");
+      const rBundle = await preloadClientRelationalReconBundle(ctx, { source: "db" });
+      const targetReconTabs = isComparisonsOnly
+        ? ["PLAdds"]
+        : skipReconMonthly
+          ? ["KeyInfo", "PLAdds"]
+          : [
+            ...new Set([
+              ...reconSS.sheetsByName.keys(),
+              "KeyInfo",
+              "PLAdds",
+              "Data",
+              "Template",
+              ...Array.from(rBundle?.periodsByMonthKey?.keys?.() || []),
+            ]),
+          ];
+      for (const t of targetReconTabs) {
+        if (!isManagedReconTab(t)) continue;
+        const relReconRec = reconstructRelationalReconTabFromBundle(rBundle, t);
+        if (relReconRec && Array.isArray(relReconRec.values_grid)) {
+          applyRelationalGridToVirtualSS_(reconSS, t, relReconRec.values_grid, relReconRec.notes_grid || {});
+        }
+      }
+    } catch (relReconErr) {
+      console.warn(`[gasEnvironment] Phase 4C relational recon preload warning (${ctx.clientName}):`, relReconErr?.message);
+    }
   }
 
   // Hydrate persisted ScriptProperties from virtual `GasScriptProps` tab
@@ -2297,6 +2449,16 @@ export async function createGasEnvironment({
 
   // Flush all pending remote mutations & recompute Master formulas & persist dirty Master/Recon grids
   async function flushAll({ persistSupabase = true } = {}) {
+    if (dryRun) {
+      for (const remoteSS of envState.remoteSpreadsheets.values()) {
+        remoteSS.remoteMutationPhases.length = 0;
+      }
+      if (envState.masterFormulasDirty || envState.gridsMutatedAfterRecompute) {
+        envState.recomputeMasterFormulasSync(true);
+      }
+      return;
+    }
+
     let clientSheetWasMutated = false;
 
     for (const [remoteId, remoteSS] of envState.remoteSpreadsheets.entries()) {
@@ -2413,7 +2575,23 @@ export async function createGasEnvironment({
     }
 
     if (persistSupabase) {
+      const NATIVE_MASTER_BYPASS_GRID_TABS = new Set([
+        "KeyInfo",
+        "DataChgAlert",
+        "PLAdds",
+        "InvComp",
+        "InvAppList",
+        "InvDashList",
+        "DirComp",
+        "JnlAppList",
+        "DirDashList",
+        "CRMList",
+        "CRMComp",
+        "PLComp",
+        "TimeComp",
+      ]);
       const upserts = [];
+      const nativeMasterDirtyTabs = [];
       const nowIso = new Date().toISOString();
       const collectUpsert = (sObj, sheetRole) => {
         if (!sObj.dirty) return;
@@ -2427,6 +2605,15 @@ export async function createGasEnvironment({
         }
         sObj._loadedValuesJson = nextValsJson;
         sObj._loadedNotesJson = nextNotesJson;
+        if (
+          ctx.masterComputeMode === "native" &&
+          sheetRole === "master" &&
+          NATIVE_MASTER_BYPASS_GRID_TABS.has(sObj.name)
+        ) {
+          nativeMasterDirtyTabs.push(sObj.name);
+          sObj.dirty = false;
+          return;
+        }
         const maxC = getGridLastCol(sObj.valuesGrid);
         upserts.push({
           client_id: ctx.clientId,
@@ -2471,62 +2658,68 @@ export async function createGasEnvironment({
         }
       }
 
-      if (upserts.length > 0) {
-        const masterMutatedTabs = upserts.filter((u) => u.sheet_role === "master").map((u) => u.tab_name);
-        const reconMutatedTabs = upserts.filter((u) => u.sheet_role === "recon").map((u) => u.tab_name);
-        if (masterMutatedTabs.length > 0) {
-          invalidateMasterEngineCache(ctx.clientName, "master", masterMutatedTabs);
-          if (ctx.masterIngestionMode === "relational") {
-            const { ALL_PHASE4_MASTER_TABS, reconcileClientMasterIngestionFromGrids } = await import(
-              "../relationalMasterService.js"
-            );
-            const phase4Set = new Set(ALL_PHASE4_MASTER_TABS);
-            const phase4Tabs = [...new Set(masterMutatedTabs.filter((t) => phase4Set.has(t)))];
-            if (phase4Tabs.length > 0) {
-              await reconcileClientMasterIngestionFromGrids(ctx, phase4Tabs).catch((err) => {
-                console.warn(
-                  `[gasEnvironment] Phase 4 relational master sync warning for ${ctx.clientName}:`,
-                  err?.message
-                );
-              });
-            }
-          }
-          if (ctx.masterComputeMode === "shadow" || ctx.masterComputeMode === "native") {
-            try {
-              const {
-                syncMasterContextGridsToConfig,
-                computeAndPersistNativeMasterComparisons,
-              } = await import("../nativeMasterComparisonService.js");
-              const partialCtx = {};
-              for (const t of ["KeyInfo", "DataChgAlert", "PLAdds", "CRMComp", "InvComp", "DirComp", "PLComp", "TimeComp"]) {
-                const sObj = masterSS.getSheetByName(t);
-                if (sObj && Array.isArray(sObj.valuesGrid)) {
-                  partialCtx[t] = sObj.valuesGrid;
-                }
-              }
-              await syncMasterContextGridsToConfig(ctx, partialCtx);
-              await computeAndPersistNativeMasterComparisons(ctx, { source: "db" });
-            } catch (natErr) {
+      const masterMutatedTabs = upserts.filter((u) => u.sheet_role === "master").map((u) => u.tab_name);
+      const allMasterMutatedTabs = [...new Set([...masterMutatedTabs, ...nativeMasterDirtyTabs])];
+      const reconMutatedTabs = upserts.filter((u) => u.sheet_role === "recon").map((u) => u.tab_name);
+      if (allMasterMutatedTabs.length > 0) {
+        invalidateMasterEngineCache(ctx.clientName, "master", allMasterMutatedTabs);
+        if (ctx.masterIngestionMode === "relational") {
+          const { ALL_PHASE4_MASTER_TABS, reconcileClientMasterIngestionFromGrids } = await import(
+            "../relationalMasterService.js"
+          );
+          const phase4Set = new Set(ALL_PHASE4_MASTER_TABS);
+          const phase4Tabs = [...new Set(masterMutatedTabs.filter((t) => phase4Set.has(t)))];
+          if (phase4Tabs.length > 0) {
+            await reconcileClientMasterIngestionFromGrids(ctx, phase4Tabs).catch((err) => {
               console.warn(
-                `[gasEnvironment] Phase 6B native comparison sync warning for ${ctx.clientName}:`,
-                natErr?.message
+                `[gasEnvironment] Phase 4 relational master sync warning for ${ctx.clientName}:`,
+                err?.message
               );
-            }
+            });
           }
         }
-        if (reconMutatedTabs.length > 0) {
-          invalidateMasterEngineCache(ctx.clientName, "recon", reconMutatedTabs);
-          if (ctx.reconMode === "relational") {
-            const { isManagedReconTab, reconcileClientReconFromGrids } = await import("../relationalReconService.js");
-            const phase4ReconTabs = [...new Set(reconMutatedTabs.filter((t) => isManagedReconTab(t)))];
-            if (phase4ReconTabs.length > 0) {
-              await reconcileClientReconFromGrids(ctx, phase4ReconTabs).catch((err) => {
-                console.warn(
-                  `[gasEnvironment] Phase 4C relational recon sync warning for ${ctx.clientName}:`,
-                  err?.message
-                );
-              });
+        if (ctx.masterComputeMode === "shadow" || ctx.masterComputeMode === "native") {
+          try {
+            const {
+              syncMasterContextGridsToConfig,
+              computeAndPersistNativeMasterComparisons,
+            } = await import("../nativeMasterComparisonService.js");
+            const partialCtx = {};
+            for (const t of ["KeyInfo", "DataChgAlert", "PLAdds", "CRMComp", "InvComp", "DirComp", "PLComp", "TimeComp"]) {
+              const sObj = masterSS.getSheetByName(t);
+              if (sObj && Array.isArray(sObj.valuesGrid)) {
+                partialCtx[t] = sObj.valuesGrid;
+              }
             }
+            if (nativeMasterDirtyTabs.includes("KeyInfo")) {
+              const kiObj = masterSS.getSheetByName("KeyInfo");
+              if (kiObj && Array.isArray(kiObj.valuesGrid)) {
+                const { saveVirtualTabGrid_ } = await import("../masterEngineService.js");
+                await saveVirtualTabGrid_(ctx, "master", "KeyInfo", kiObj.valuesGrid, kiObj.formulasGrid, kiObj.notesGrid);
+              }
+            }
+            await syncMasterContextGridsToConfig(ctx, partialCtx);
+            await computeAndPersistNativeMasterComparisons(ctx, { source: "db" });
+          } catch (natErr) {
+            console.warn(
+              `[gasEnvironment] Phase 6B native comparison sync warning for ${ctx.clientName}:`,
+              natErr?.message
+            );
+          }
+        }
+      }
+      if (reconMutatedTabs.length > 0) {
+        invalidateMasterEngineCache(ctx.clientName, "recon", reconMutatedTabs);
+        if (ctx.reconMode === "relational") {
+          const { isManagedReconTab, reconcileClientReconFromGrids } = await import("../relationalReconService.js");
+          const phase4ReconTabs = [...new Set(reconMutatedTabs.filter((t) => isManagedReconTab(t)))];
+          if (phase4ReconTabs.length > 0) {
+            await reconcileClientReconFromGrids(ctx, phase4ReconTabs).catch((err) => {
+              console.warn(
+                `[gasEnvironment] Phase 4C relational recon sync warning for ${ctx.clientName}:`,
+                err?.message
+              );
+            });
           }
         }
       }
@@ -3442,7 +3635,9 @@ export async function createGasEnvironment({
       // Persist GAS execution console transcript to virtual `GasExecLogs` tab if applicable
       const fnName = finalMeta?.functionName || executionMeta?.functionName || "";
       const shouldRecord =
-        finalMeta?.recordExecution !== false && (Boolean(fnName) || executionLogs.length > 0);
+        !dryRun &&
+        finalMeta?.recordExecution !== false &&
+        (Boolean(fnName) || executionLogs.length > 0);
       if (shouldRecord) {
         const durationSec = ((Date.now() - execStartedAtMs) / 1000).toFixed(2) + "s";
         const triggerSrc =

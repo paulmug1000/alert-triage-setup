@@ -1225,15 +1225,32 @@ export async function refreshAccountingCatalogSource({
 
     let keyInfoGrid = [];
     let dcaGrid = [];
-    if (sb) {
+    if (sb && supaCtx?.masterComputeMode === "native" && supaCtx?.clientId) {
+      const { data: cfg } = await sb
+        .from("pulse_master_sync_configs")
+        .select("master_key_info_grid, data_chg_alert_grid")
+        .eq("client_id", supaCtx.clientId)
+        .maybeSingle();
+      if (Array.isArray(cfg?.master_key_info_grid) && cfg.master_key_info_grid.length > 0) {
+        keyInfoGrid = cfg.master_key_info_grid;
+      }
+      if (Array.isArray(cfg?.data_chg_alert_grid) && cfg.data_chg_alert_grid.length > 0) {
+        dcaGrid = cfg.data_chg_alert_grid;
+      }
+    }
+    if (sb && (keyInfoGrid.length === 0 || dcaGrid.length === 0)) {
+      const missingTabs = [
+        ...(keyInfoGrid.length === 0 ? ["KeyInfo"] : []),
+        ...(dcaGrid.length === 0 ? ["DataChgAlert"] : []),
+      ];
       const { data: gridRows } = await sb
         .from("master_sheet_grids")
         .select("tab_name, values_grid")
         .eq("client_name", supaCtx.clientName)
-        .in("tab_name", ["KeyInfo", "DataChgAlert"]);
+        .in("tab_name", missingTabs);
       for (const r of gridRows || []) {
-        if (r.tab_name === "KeyInfo") keyInfoGrid = r.values_grid || [];
-        else if (r.tab_name === "DataChgAlert") dcaGrid = r.values_grid || [];
+        if (r.tab_name === "KeyInfo" && keyInfoGrid.length === 0) keyInfoGrid = r.values_grid || [];
+        else if (r.tab_name === "DataChgAlert" && dcaGrid.length === 0) dcaGrid = r.values_grid || [];
       }
     }
 

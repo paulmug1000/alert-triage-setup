@@ -15,6 +15,7 @@ import {
   runAdjustAndNormalizeJobSlots_, mergeSlotBatchWrites_,
   applySlotNoteAndFormattingRelocations_, resolveFullJobRowGroup_,
   resolveMasterSheetIdForClient_,
+  fetchInvoiceDetailsForClient,
   isAutoInvoicePlaceholderRef_, isAutoExpensePlaceholderId_
 } from "./workspaces.js";
 import { provisionRetainerScheduleInBackground } from "./retainers.js";
@@ -974,10 +975,10 @@ export async function readAutoUpdatesClientRows_(sheets, automationCommanderShee
 
   if (supaControlPlane && sb) {
     try {
-      const [{ data: dbClients, error: cErr }, { data: schedRows }, { data: dcaRows }, { data: setupStateRows }] = await Promise.all([
+      const [{ data: dbClients, error: cErr }, { data: schedRows }, { data: dcaRows }, { data: nativeSyncCfgRows }, { data: setupStateRows }] = await Promise.all([
         sb
           .from("clients")
-          .select("client_name, normalized_key, status, metadata, client_mode, master_mode, client_sheet_id, master_sheet_id, client_sheet_url, master_sheet_url, web_app_url, master_deployment_url, client_script_id, auto_updates_row_index")
+          .select("client_name, normalized_key, status, metadata, client_mode, master_mode, master_compute_mode, client_sheet_id, master_sheet_id, client_sheet_url, master_sheet_url, web_app_url, master_deployment_url, client_script_id, auto_updates_row_index")
           .order("client_name", { ascending: true }),
         sb.from("sync_schedules").select("*"),
         sb
@@ -985,6 +986,7 @@ export async function readAutoUpdatesClientRows_(sheets, automationCommanderShee
           .select("client_name, values_grid")
           .eq("sheet_role", "master")
           .eq("tab_name", "DataChgAlert"),
+        sb.from("pulse_master_sync_configs").select("client_name, data_chg_alert_grid"),
         sb.from("client_setup_state").select("client_name, setup_status"),
       ]);
 
@@ -997,6 +999,12 @@ export async function readAutoUpdatesClientRows_(sheets, automationCommanderShee
         for (const d of (dcaRows || [])) {
           if (d.client_name && Array.isArray(d.values_grid)) {
             dcaByClient.set(String(d.client_name).trim().toLowerCase(), d.values_grid);
+          }
+        }
+        const nativeDcaByClient = new Map();
+        for (const n of (nativeSyncCfgRows || [])) {
+          if (n.client_name && Array.isArray(n.data_chg_alert_grid) && n.data_chg_alert_grid.length > 0) {
+            nativeDcaByClient.set(String(n.client_name).trim().toLowerCase(), n.data_chg_alert_grid);
           }
         }
         const setupByClient = new Map();
@@ -1030,7 +1038,10 @@ export async function readAutoUpdatesClientRows_(sheets, automationCommanderShee
 
           const cKey = clientName.toLowerCase();
           const sched = schedByClient.get(cKey) || {};
-          const dcaGrid = dcaByClient.get(cKey) || null;
+          const dcaGrid =
+            (c.master_compute_mode === "native" ? nativeDcaByClient.get(cKey) : null) ||
+            dcaByClient.get(cKey) ||
+            null;
 
           const invFreq = (dcaGrid ? String(dcaGrid[1]?.[24] ?? "").trim() : "") || String(sched.inv_freq || "").trim();
           const crmFreq = (dcaGrid ? String(dcaGrid[2]?.[24] ?? "").trim() : "") || String(sched.crm_freq || "").trim();
@@ -3314,13 +3325,31 @@ export async function handleRunFlagSweep(req, res, sheets) {
             const [{ data: sched }, { data: dcaRow }] = sb
               ? await Promise.all([
                 sb.from("sync_schedules").select("*").eq("client_name", supaCtx.clientName).maybeSingle(),
-                sb
-                  .from("master_sheet_grids")
-                  .select("values_grid")
-                  .eq("client_name", supaCtx.clientName)
-                  .eq("sheet_role", "master")
-                  .eq("tab_name", "DataChgAlert")
-                  .maybeSingle(),
+                supaCtx.masterComputeMode === "native"
+                  ? sb
+                      .from("pulse_master_sync_configs")
+                      .select("data_chg_alert_grid")
+                      .eq("client_id", supaCtx.clientId)
+                      .maybeSingle()
+                      .then(async (r) => {
+                        if (Array.isArray(r?.data?.data_chg_alert_grid) && r.data.data_chg_alert_grid.length > 0) {
+                          return { data: { values_grid: r.data.data_chg_alert_grid } };
+                        }
+                        return sb
+                          .from("master_sheet_grids")
+                          .select("values_grid")
+                          .eq("client_name", supaCtx.clientName)
+                          .eq("sheet_role", "master")
+                          .eq("tab_name", "DataChgAlert")
+                          .maybeSingle();
+                      })
+                  : sb
+                      .from("master_sheet_grids")
+                      .select("values_grid")
+                      .eq("client_name", supaCtx.clientName)
+                      .eq("sheet_role", "master")
+                      .eq("tab_name", "DataChgAlert")
+                      .maybeSingle(),
               ])
               : [{ data: null }, { data: null }];
 
@@ -5200,9 +5229,9 @@ export function scanLiveConfirmedMatchesForInvoice_(invConfirmedRows, invoiceNo,
   for (let ri = 1; ri < invConfirmedRows.length; ri++) {
     const r = invConfirmedRows[ri] || [];
     const slotDefs = [
-      { slotNum: 1, refIdx: 42, amtIdx: 41, sentIdx: 43, daysIdx: 44, stIdx: 45, colLetter: "AQ" },
-      { slotNum: 2, refIdx: 49, amtIdx: 48, sentIdx: 50, daysIdx: 51, stIdx: 52, colLetter: "AX" },
-      { slotNum: 3, refIdx: 56, amtIdx: 55, sentIdx: 57, daysIdx: 58, stIdx: 59, colLetter: "BE" },
+      { slotNum: 1, refIdx: 42, amtIdx: 41, sentIdx: 43, daysIdx: 44, stIdx: 45, rechIdx: 46, cmIdx: 47, colLetter: "AQ" },
+      { slotNum: 2, refIdx: 49, amtIdx: 48, sentIdx: 50, daysIdx: 51, stIdx: 52, rechIdx: 53, cmIdx: 54, colLetter: "AX" },
+      { slotNum: 3, refIdx: 56, amtIdx: 55, sentIdx: 57, daysIdx: 58, stIdx: 59, rechIdx: 60, cmIdx: 61, colLetter: "BE" },
     ];
     const rowNum = ri + 1;
 
@@ -5211,37 +5240,38 @@ export function scanLiveConfirmedMatchesForInvoice_(invConfirmedRows, invoiceNo,
       const normSlotRef = rawSlotRef.replace(/^#/, "").toLowerCase();
       if (!normSlotRef || normSlotRef !== normTarget) continue;
 
-      // Walk up to parent row for retainer / multi-row jobs
-      let parentRi = ri;
-      if (!String(r[32] || "").trim() && !String(r[0] || "").trim()) {
-        for (let pi = ri - 1; pi >= 1; pi--) {
-          const pr = invConfirmedRows[pi] || [];
-          if (String(pr[32] || "").trim() || String(pr[0] || "").trim()) {
-            parentRi = pi;
-            break;
-          }
-        }
-      }
+      // Walk up to parent row for retainer / multi-row jobs using canonical parent-row detection
+      const groupInfo = resolveInvoiceJobRowsForVat_(invConfirmedRows, rowNum);
+      const parentRi = groupInfo?.parentRowNum ? groupInfo.parentRowNum - 1 : ri;
 
       const parentRowArr = invConfirmedRows[parentRi] || r;
       const parentClientLower = String(parentRowArr[0] || "").trim().toLowerCase();
       const parentJobLower = String(parentRowArr[1] || "").trim().toLowerCase();
       let otherRealInvoicesCount = 0;
+      let otherSlotsRechargedNum = 0;
 
       for (let pi = parentRi; pi < invConfirmedRows.length; pi++) {
         const cr = invConfirmedRows[pi] || [];
         const crClient = String(cr[0] || "").trim().toLowerCase();
         const crJob = String(cr[1] || "").trim().toLowerCase();
         if (pi !== parentRi && (crClient || crJob) && (crClient !== parentClientLower || crJob !== parentJobLower)) break;
-        if (pi !== parentRi && String(cr[32] || "").trim()) break;
+        if (
+          pi !== parentRi &&
+          (hasNonZeroMoney_(cr[17]) || hasNonZeroMoney_(cr[32]) || hasNonZeroMoney_(cr[33]) || String(cr[37] || "").trim())
+        ) {
+          break;
+        }
 
         const crRefs = [
-          { ref: String(cr[42] || "").trim(), rNum: pi + 1, sNum: 1 },
-          { ref: String(cr[49] || "").trim(), rNum: pi + 1, sNum: 2 },
-          { ref: String(cr[56] || "").trim(), rNum: pi + 1, sNum: 3 },
+          { ref: String(cr[42] || "").trim(), rech: parseAmt(cr[46]), rNum: pi + 1, sNum: 1 },
+          { ref: String(cr[49] || "").trim(), rech: parseAmt(cr[53]), rNum: pi + 1, sNum: 2 },
+          { ref: String(cr[56] || "").trim(), rech: parseAmt(cr[60]), rNum: pi + 1, sNum: 3 },
         ];
         for (const item of crRefs) {
           if (item.rNum === rowNum && item.sNum === sd.slotNum) continue;
+          if (!isAutoInvoicePlaceholderRef_(item.ref) && item.rech > 0) {
+            otherSlotsRechargedNum = round2(otherSlotsRechargedNum + item.rech);
+          }
           if (isRealRef(item.ref) && item.ref.replace(/^#/, "").toLowerCase() !== normTarget) {
             otherRealInvoicesCount++;
           }
@@ -5258,6 +5288,10 @@ export function scanLiveConfirmedMatchesForInvoice_(invConfirmedRows, invoiceNo,
       );
       const jobVATYes = String(r[34] || parentRowArr[34] || "").trim().toLowerCase() === "yes";
       const slotAmtNum = round2(parseAmt(r[sd.amtIdx]));
+      const ofWhichRechgdNum = Math.max(0, round2(parseAmt(r[sd.rechIdx])));
+      const costMonth = String(r[sd.cmIdx] || "").trim();
+      const jobRechargedNum = Math.max(0, round2(parseAmt(parentRowArr[17])));
+      const jobRevenueNum = round2(parseAmt(parentRowArr[32]));
       const vatAmount = jobVATYes ? round2(slotAmtNum * vatRate) : 0;
       const grossAmount = round2(slotAmtNum + vatAmount);
       const sentDate = String(r[sd.sentIdx] || "").trim();
@@ -5276,6 +5310,7 @@ export function scanLiveConfirmedMatchesForInvoice_(invConfirmedRows, invoiceNo,
         isRetainer,
         jobVATYes,
         isOnlyInvoiceOnJob: otherRealInvoicesCount === 0,
+        otherSlotsRechargedNum,
         slotCols:
           sd.slotNum === 1
             ? { ref: `AQ${rowNum}`, amt: `AP${rowNum}`, sent: `AR${rowNum}`, days: `AS${rowNum}`, status: `AT${rowNum}`, rech: `AU${rowNum}`, cm: `AV${rowNum}` }
@@ -5284,6 +5319,10 @@ export function scanLiveConfirmedMatchesForInvoice_(invConfirmedRows, invoiceNo,
               : { ref: `BE${rowNum}`, amt: `BD${rowNum}`, sent: `BF${rowNum}`, days: `BG${rowNum}`, status: `BH${rowNum}`, rech: `BI${rowNum}`, cm: `BJ${rowNum}` },
         slotAmt: String(r[sd.amtIdx] || "0"),
         slotAmtNum,
+        ofWhichRechgdNum,
+        costMonth,
+        jobRechargedNum,
+        jobRevenueNum,
         vatAmount,
         grossAmount,
         sentDate,
@@ -5295,11 +5334,15 @@ export function scanLiveConfirmedMatchesForInvoice_(invConfirmedRows, invoiceNo,
   }
 
   const liveSpreadsheetItems = matchedJobs.map((m) => ({
+    job: m.jobName,
     jobName: m.jobName,
+    client: m.clientName,
     clientName: m.clientName,
     netAmount: m.slotAmtNum,
     vatAmount: m.vatAmount,
     grossAmount: m.grossAmount,
+    rechargedAmount: m.ofWhichRechgdNum,
+    feeAmount: round2(m.slotAmtNum - m.ofWhichRechgdNum),
     sentDate: m.sentDate,
     status: m.status,
     cellRef: m.cellRef,
@@ -5339,17 +5382,16 @@ export function buildDeleteExtraJobAndAdjustAmountOptions_({ matchedJobs, invoic
     if (!extraJob.isOnlyInvoiceOnJob) continue;
     if (extraJob.parentRowNum === keepJob.parentRowNum) continue;
     if (Math.abs((Number(keepJob.slotAmtNum) || 0) - correctAmount) < 0.01) continue;
+    // Only offer deleting the extra job when the kept job is a retainer or holds multiple invoices
+    if (!keepJob.isRetainer && keepJob.isOnlyInvoiceOnJob) continue;
     candidatePairs.push({ extraJob, keepJob });
   }
 
   if (candidatePairs.length === 0) return [];
 
-  // Prefer keeping the retainer or multi-invoice job when both entries are single-invoice jobs
-  const preferredPairs = candidatePairs.filter(({ keepJob }) => keepJob.isRetainer || !keepJob.isOnlyInvoiceOnJob);
-  const finalPairs = preferredPairs.length > 0 ? preferredPairs : candidatePairs;
   const roundedNewAmount = Math.round(correctAmount * 100) / 100;
 
-  return finalPairs.map(({ extraJob, keepJob }) => ({
+  return candidatePairs.map(({ extraJob, keepJob }) => ({
     title: `Delete extra job "${extraJob.jobName || 'Row ' + extraJob.parentRowNum}" and adjust invoice #${invoiceNo} on "${keepJob.jobName || 'Row ' + keepJob.rowNum}" to £${roundedNewAmount.toFixed(2)}`,
     actionButtonText: "Delete extra job and adjust invoice amount",
     matchType: "delete_and_update",
@@ -5376,6 +5418,362 @@ export function buildDeleteExtraJobAndAdjustAmountOptions_({ matchedJobs, invoic
       `write ${roundedNewAmount.toFixed(2)} to ${keepJob.slotCols.amt}`,
     ],
   }));
+}
+
+/**
+ * Deterministically detects when an invoice amount discrepancy (single-job or split across multiple jobs)
+ * is explained by differing recharged expenses while non-recharged fee revenue matches accounting.
+ * Returns { diagnosis, options } or null.
+ */
+export function analyzeRechargedExpenseDiscrepancy_({
+  matchedJobs,
+  invoiceNo,
+  correctAmount,
+  accountingRechargedAmount = 0,
+  lineItems = [],
+  extraWriteActions = [],
+  extraMismatchNames = [],
+  extraExplanationParts = [],
+}) {
+  if (!Array.isArray(matchedJobs) || matchedJobs.length === 0 || !(correctAmount > 0)) {
+    return null;
+  }
+
+  const round2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
+  const totalPulseNet = round2(matchedJobs.reduce((s, j) => s + (Number(j.slotAmtNum) || 0), 0));
+  const totalPulseRecharged = round2(matchedJobs.reduce((s, j) => s + (Number(j.ofWhichRechgdNum) || 0), 0));
+  const totalPulseFee = round2(totalPulseNet - totalPulseRecharged);
+
+  const acctRecharged = Math.max(0, round2(accountingRechargedAmount));
+  const acctFee = round2(correctAmount - acctRecharged);
+  const netDiff = round2(correctAmount - totalPulseNet);
+  const rechargedDiff = round2(acctRecharged - totalPulseRecharged);
+
+  if (Math.abs(netDiff) < 0.01) return null;
+  if (acctRecharged <= 0 && totalPulseRecharged <= 0) return null;
+  if (Math.abs(netDiff - rechargedDiff) > 0.05 || Math.abs(totalPulseFee - acctFee) > 0.05) {
+    return null;
+  }
+
+  let targetJobs = [];
+  let isAmbiguous = false;
+
+  if (matchedJobs.length === 1) {
+    if (round2((Number(matchedJobs[0].ofWhichRechgdNum) || 0) + rechargedDiff) < -0.005) {
+      return null;
+    }
+    targetJobs = [matchedJobs[0]];
+  } else {
+    const jobsWithSlotRech = matchedJobs.filter((j) => (Number(j.ofWhichRechgdNum) || 0) > 0.005);
+    const jobsWithJobRech = jobsWithSlotRech.length > 0
+      ? jobsWithSlotRech
+      : matchedJobs.filter((j) => (Number(j.jobRechargedNum) || 0) > 0.005);
+
+    if (
+      jobsWithJobRech.length === 1 &&
+      round2((Number(jobsWithJobRech[0].ofWhichRechgdNum) || 0) + rechargedDiff) >= -0.005
+    ) {
+      targetJobs = [jobsWithJobRech[0]];
+      isAmbiguous = false;
+    } else {
+      const eligible = matchedJobs.filter(
+        (j) => round2((Number(j.ofWhichRechgdNum) || 0) + rechargedDiff) >= -0.005
+      );
+      if (eligible.length === 0) return null;
+      targetJobs = eligible;
+      isAmbiguous = eligible.length > 1;
+    }
+  }
+
+  const rechargedLines = Array.isArray(lineItems)
+    ? lineItems
+        .filter((li) => Boolean(li?.isRecharged))
+        .map((li) => ({
+          description: String(li.description || "").trim(),
+          amountGbp: round2(Number(li.amountGbp ?? li.amount) || 0),
+          accountName: String(li.accountName || "").trim(),
+        }))
+    : [];
+
+  const signedDelta = `${rechargedDiff >= 0 ? "+" : "-"}£${Math.abs(rechargedDiff).toFixed(2)}`;
+  const leadJob = !isAmbiguous && targetJobs[0] ? targetJobs[0] : null;
+  const curTargetRech = leadJob ? Number(leadJob.ofWhichRechgdNum) || 0 : totalPulseRecharged;
+  const newTargetRech = Math.max(0, round2(curTargetRech + rechargedDiff));
+  const hasSplitCostMonth = Boolean(
+    leadJob && String(leadJob.costMonth || "").trim().toLowerCase().startsWith("[split]")
+  );
+
+  let summary = "";
+  if (matchedJobs.length > 1) {
+    if (leadJob) {
+      summary = `Non-recharged fee revenue across the ${matchedJobs.length} jobs matches accounting (£${acctFee.toFixed(2)}). The ${signedDelta} discrepancy comes from recharged expenses on "${leadJob.jobName || `Row ${leadJob.rowNum}`}" (£${curTargetRech.toFixed(2)} in Pulse vs £${newTargetRech.toFixed(2)} on the invoice).`;
+    } else {
+      summary = `Non-recharged fee revenue across the ${matchedJobs.length} jobs matches accounting (£${acctFee.toFixed(2)}), while accounting shows £${acctRecharged.toFixed(2)} in recharged expenses vs £${totalPulseRecharged.toFixed(2)} in Pulse (${signedDelta}). Select which job should carry the recharged expense update.`;
+    }
+  } else {
+    summary = `Non-recharged fee revenue on "${leadJob.jobName || `Row ${leadJob.rowNum}`}" matches accounting (£${acctFee.toFixed(2)}). The ${signedDelta} discrepancy comes from recharged expenses (£${curTargetRech.toFixed(2)} in Pulse vs £${acctRecharged.toFixed(2)} on the invoice).`;
+  }
+
+  const diagnosis = {
+    kind: "recharged_expenses_mismatch",
+    isSplitInvoice: matchedJobs.length > 1,
+    isAmbiguous,
+    invoiceNo,
+    netDiff,
+    rechargedDiff,
+    accountingNet: correctAmount,
+    accountingRecharged: acctRecharged,
+    accountingFee: acctFee,
+    pulseNet: totalPulseNet,
+    pulseRecharged: totalPulseRecharged,
+    pulseFee: totalPulseFee,
+    targetJobName: leadJob ? leadJob.jobName : "",
+    targetRowNum: leadJob ? leadJob.rowNum : null,
+    currentTargetRecharged: leadJob ? curTargetRech : null,
+    newTargetRecharged: leadJob ? newTargetRech : null,
+    hasSplitCostMonth,
+    rechargedLines,
+    summary,
+  };
+
+  const options = [];
+  const filteredExtraWrites = (extraWriteActions || []).filter((w) => {
+    const s = String(w || "").toLowerCase();
+    return !targetJobs.some((t) => s.endsWith(`to ${String(t.slotCols.amt || "").toLowerCase()}`));
+  });
+  const filteredExtraMismatchNames = (extraMismatchNames || []).filter((n) => n !== "amount");
+  const filteredExtraExplanation = (extraExplanationParts || []).filter(
+    (p) => !String(p || "").toLowerCase().startsWith("amount:")
+  );
+  const extraSuffixText =
+    filteredExtraExplanation.length > 0 ? ` Also updates: ${filteredExtraExplanation.join("; ")}.` : "";
+
+  for (const target of targetJobs) {
+    const curSlotAmt = Number(target.slotAmtNum) || 0;
+    const curSlotRech = Number(target.ofWhichRechgdNum) || 0;
+    const curJobRech = Number(target.jobRechargedNum) || 0;
+    const newSlotAmount = round2(curSlotAmt + rechargedDiff);
+    const newSlotRecharged = Math.max(0, round2(curSlotRech + rechargedDiff));
+    const newJobRecharged = Math.max(0, round2(curJobRech + rechargedDiff));
+    const expectedTotalJobRecharged = round2((Number(target.otherSlotsRechargedNum) || 0) + newSlotRecharged);
+    const jobRechargedAlreadyCovers = Math.abs(curJobRech - expectedTotalJobRecharged) <= 0.05;
+    const targetLabel = target.jobName || `Row ${target.rowNum}`;
+    const jobHasSplitCostMonth = String(target.costMonth || "").trim().toLowerCase().startsWith("[split]");
+    const splitCostNote = jobHasSplitCostMonth
+      ? " Note: this invoice uses split cost months — please review the monthly split after updating."
+      : "";
+
+    const baseMatchingDetails = {
+      unmatchedJobSummary: {
+        clientName: target.clientName,
+        jobName: target.jobName,
+        revenue: String(target.jobRevenueNum || ""),
+      },
+    };
+
+    const invoiceOnlyWrites = [
+      `write ${newSlotAmount.toFixed(2)} to ${target.slotCols.amt}`,
+      `write ${newSlotRecharged > 0 ? newSlotRecharged.toFixed(2) : '""'} to ${target.slotCols.rech}`,
+      ...filteredExtraWrites,
+    ];
+
+    if (!jobRechargedAlreadyCovers) {
+      const bothWrites = [
+        ...invoiceOnlyWrites,
+        `write ${newJobRecharged > 0 ? newJobRecharged.toFixed(2) : '""'} to R${target.parentRowNum}`,
+      ];
+      options.push({
+        title: `Update recharged expenses and invoice amount on "${targetLabel}" (Row ${target.rowNum})`,
+        actionButtonText: isAmbiguous
+          ? `Apply to "${targetLabel}"`
+          : "Update recharged expenses and invoice amount",
+        matchType: "existing_job",
+        rechargedFix: true,
+        jobRow: target.rowNum,
+        parentJobRow: target.parentRowNum,
+        jobName: target.jobName,
+        clientName: target.clientName,
+        matchingDetails: baseMatchingDetails,
+        matchAnalysis: {
+          matchConfidence: isAmbiguous ? "Medium" : "High",
+          reasonForChoice: `Recharged expenses discrepancy (${signedDelta}) with matching fee revenue (£${acctFee.toFixed(2)}).`,
+          discrepancies: ["Recharged expenses", ...filteredExtraMismatchNames].join(", "),
+        },
+        explanation: `Updates invoice #${invoiceNo} on "${targetLabel}" from £${curSlotAmt.toFixed(2)} to £${newSlotAmount.toFixed(2)} (excl. VAT), updates invoice "of which recharged" from £${curSlotRech.toFixed(2)} to £${newSlotRecharged.toFixed(2)}, and updates job recharged expenses from £${curJobRech.toFixed(2)} to £${newJobRecharged.toFixed(2)} (keeping fee revenue unchanged).${extraSuffixText}${splitCostNote}`,
+        recommendedActions: [
+          `Update recharged expenses (${signedDelta}) and invoice #${invoiceNo} amount on "${targetLabel}"`,
+          ...bothWrites,
+        ],
+      });
+
+      if (!isAmbiguous) {
+        options.push({
+          title: `Update invoice amount and "of which recharged" only on "${targetLabel}" (Row ${target.rowNum})`,
+          actionButtonText: "Update invoice only",
+          matchType: "existing_job",
+          rechargedFix: true,
+          jobRow: target.rowNum,
+          parentJobRow: target.parentRowNum,
+          jobName: target.jobName,
+          clientName: target.clientName,
+          matchingDetails: baseMatchingDetails,
+          explanation: `Updates invoice #${invoiceNo} from £${curSlotAmt.toFixed(2)} to £${newSlotAmount.toFixed(2)} (excl. VAT) and "of which recharged" from £${curSlotRech.toFixed(2)} to £${newSlotRecharged.toFixed(2)}, leaving job recharged expenses at £${curJobRech.toFixed(2)}.${extraSuffixText}${splitCostNote}`,
+          recommendedActions: [
+            `Update invoice #${invoiceNo} amount and recharged portion only on "${targetLabel}"`,
+            ...invoiceOnlyWrites,
+          ],
+        });
+      }
+    } else {
+      options.push({
+        title: `Update invoice #${invoiceNo} recharged amount and total on "${targetLabel}" (Row ${target.rowNum})`,
+        actionButtonText: isAmbiguous
+          ? `Apply to "${targetLabel}"`
+          : "Update invoice recharged amount",
+        matchType: "existing_job",
+        rechargedFix: true,
+        jobRow: target.rowNum,
+        parentJobRow: target.parentRowNum,
+        jobName: target.jobName,
+        clientName: target.clientName,
+        matchingDetails: baseMatchingDetails,
+        explanation: `Job recharged expenses (£${curJobRech.toFixed(2)}) already cover the updated total. Updates invoice #${invoiceNo} on "${targetLabel}" from £${curSlotAmt.toFixed(2)} to £${newSlotAmount.toFixed(2)} (excl. VAT) and "of which recharged" from £${curSlotRech.toFixed(2)} to £${newSlotRecharged.toFixed(2)}.${extraSuffixText}${splitCostNote}`,
+        recommendedActions: [
+          `Update invoice #${invoiceNo} recharged portion and amount on "${targetLabel}"`,
+          ...invoiceOnlyWrites,
+        ],
+      });
+    }
+  }
+
+  return { diagnosis, options };
+}
+
+/**
+ * Checks whether a spreadsheet formula includes the given A1 cell reference
+ * (e.g. "R144") strictly as a positive additive term (e.g. "=55000+R144",
+ * "=AG144+$R$144", "=SUM(AG144,R144)").
+ */
+export function formulaAddsCellRef_(formulaStr, targetCellA1) {
+  if (typeof formulaStr !== "string" || typeof targetCellA1 !== "string") return false;
+  const f = formulaStr.trim();
+  if (!f.startsWith("=")) return false;
+  const cellMatch = targetCellA1.trim().toUpperCase().match(/^([A-Z]{1,3})(\d+)$/);
+  if (!cellMatch) return false;
+  const [, col, row] = cellMatch;
+  const stripped = f.replace(/"(?:""|[^"])*"/g, "").replace(/\s+/g, "");
+  const refRe = new RegExp(`\\$?${col}\\$?${row}(?![0-9A-Za-z_:])`, "gi");
+  let match;
+  let foundAdditive = false;
+  while ((match = refRe.exec(stripped)) !== null) {
+    const idx = match.index;
+    const prevChar = idx > 0 ? stripped[idx - 1] : "";
+    const afterIdx = idx + match[0].length;
+    const nextChar = afterIdx < stripped.length ? stripped[afterIdx] : "";
+    if (!/[=+(,]/.test(prevChar)) return false;
+    if (/[*/^><=]/.test(nextChar)) return false;
+    foundAdditive = true;
+  }
+  return foundAdditive;
+}
+
+/**
+ * Transforms cell updates targeting Confirmed recharged/invoice money columns so
+ * existing user-entered arithmetic formulas (e.g. R144="=178.64+26.24+...") preserve
+ * their formula structure by appending +/-delta, while invoice amount formulas that
+ * directly add R<parentRow> (e.g. AP144="=55000+R144") are preserved untouched.
+ */
+export function applyFormulaPreservingUpdates_({ updates, liveFormulasByCell = {}, liveValuesByCell = {} }) {
+  const FORMULA_MONEY_COLS = new Set(["R", "AP", "AW", "BD", "AU", "BB", "BI"]);
+  const INVOICE_MONEY_COLS = new Set(["AP", "AW", "BD", "AU", "BB", "BI"]);
+  const round2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
+  const parseNum = (v) => {
+    const s = String(v ?? "").replace(/[£$€,\s]/g, "").trim();
+    if (!s) return NaN;
+    return parseFloat(s);
+  };
+  const formatDelta = (absVal) => absVal.toFixed(2).replace(/\.00$/, "");
+
+  let updatedRInfo = null;
+  for (const u of updates || []) {
+    const cellUpper = String(u?.cell || "").trim().toUpperCase();
+    const rMatch = cellUpper.match(/^R(\d+)$/);
+    if (!rMatch) continue;
+    const targetNum = parseNum(u.sanitisedValue ?? u.value);
+    const oldRVal = parseNum(liveValuesByCell[cellUpper]);
+    if (Number.isFinite(targetNum) && Number.isFinite(oldRVal)) {
+      updatedRInfo = {
+        rCell: cellUpper,
+        rRowNum: parseInt(rMatch[1], 10),
+        oldRVal,
+        newRVal: targetNum,
+        rDelta: round2(targetNum - oldRVal),
+      };
+      break;
+    }
+  }
+
+  return (updates || []).map((u) => {
+    const cellUpper = String(u?.cell || "").trim().toUpperCase();
+    const colMatch = cellUpper.match(/^([A-Z]{1,3})(\d+)$/);
+    const colLetters = colMatch ? colMatch[1] : "";
+    const fallbackVal = u.sanitisedValue ?? u.value;
+    const targetNum = parseNum(fallbackVal);
+    const numericValue = Number.isFinite(targetNum) ? targetNum : null;
+
+    if (!FORMULA_MONEY_COLS.has(colLetters)) {
+      return { ...u, writeValue: fallbackVal, numericValue, isFormulaWrite: false, skipWrite: false };
+    }
+
+    const existingFormula = String(liveFormulasByCell[cellUpper] ?? "").trim();
+    const existingVal = parseNum(liveValuesByCell[cellUpper]);
+    if (!existingFormula.startsWith("=") || !Number.isFinite(targetNum) || !Number.isFinite(existingVal)) {
+      return { ...u, writeValue: fallbackVal, numericValue, isFormulaWrite: false, skipWrite: false };
+    }
+
+    const delta = round2(targetNum - existingVal);
+    if (INVOICE_MONEY_COLS.has(colLetters) && updatedRInfo && formulaAddsCellRef_(existingFormula, updatedRInfo.rCell)) {
+      const residualDelta = round2(delta - updatedRInfo.rDelta);
+      if (Math.abs(residualDelta) < 0.005) {
+        return {
+          ...u,
+          writeValue: existingFormula,
+          numericValue: targetNum,
+          isFormulaWrite: false,
+          skipWrite: true,
+          preservedReason: "recalculates_via_R",
+        };
+      }
+      const sign = residualDelta >= 0 ? "+" : "-";
+      return {
+        ...u,
+        writeValue: `${existingFormula}${sign}${formatDelta(Math.abs(residualDelta))}`,
+        numericValue: targetNum,
+        isFormulaWrite: true,
+        skipWrite: false,
+      };
+    }
+
+    if (Math.abs(delta) < 0.005) {
+      return {
+        ...u,
+        writeValue: existingFormula,
+        numericValue: targetNum,
+        isFormulaWrite: false,
+        skipWrite: true,
+        preservedReason: "already_matches",
+      };
+    }
+
+    const sign = delta >= 0 ? "+" : "-";
+    return {
+      ...u,
+      writeValue: `${existingFormula}${sign}${formatDelta(Math.abs(delta))}`,
+      numericValue: targetNum,
+      isFormulaWrite: true,
+      skipWrite: false,
+    };
+  });
 }
 
 export async function handleAnalyzeAlert(req, res, sheets) {
@@ -5450,7 +5848,7 @@ export async function handleAnalyzeAlert(req, res, sheets) {
             (Array.isArray(o.recommendedActions) && o.recommendedActions.some(a => /\bwrite\s+(?:yes|no)\s+to\s+AI\d+\b/i.test(String(a))))
           );
           if (isCachedVatOption && !validCachedOptions.some(o => o.vatScopeChecked === true)) return true;
-          if (isDupInvoice && (!validCachedOptions.some(o => o.matchType === "delete" || o.matchType === "delete_and_update" || String(o.title || "").includes("Clear invoice")) || !validCachedOptions.some(o => o.matchType === "ignore"))) return true;
+          if (isDupInvoice && (!validCachedOptions.some(o => o.matchType === "delete" || o.matchType === "delete_and_update" || o.rechargedFix === true || String(o.title || "").includes("Clear invoice")) || !validCachedOptions.some(o => o.matchType === "ignore"))) return true;
           const isCrmAlert = alert.type === "crm" || alert.sheetName === "CRMComp" || Boolean(alert.alertType?.startsWith("crm")) || Boolean(alert.flagType?.startsWith("crm"));
           const isCrmMismatch = isCrmAlert && alert.subType === "field_mismatch";
           if (isCrmMismatch && (!opt.actionButtonText || validCachedOptions.length !== 2 || String(opt.actionButtonText).includes("Mark as reviewed") || opt.matchType === "info")) return true;
@@ -7676,12 +8074,52 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
         }
       }
 
+      let accountingRechargedAmount = Number(alert.summary?.rechargedAmount ?? alert.detectedRechargedAmount ?? 0) || 0;
+      let invoiceLineItems = Array.isArray(alert.summary?.lineItems)
+        ? alert.summary.lineItems
+        : (Array.isArray(alert.invoiceLineItems) ? alert.invoiceLineItems : []);
+
+      if (
+        liveMatchedJobs.length > 0 &&
+        (liveIsDuplicateInvoice || isInvAmtMismatch) &&
+        (invoiceLineItems.length === 0 || accountingRechargedAmount <= 0)
+      ) {
+        try {
+          const invDetailRes = await fetchInvoiceDetailsForClient({
+            sheets,
+            masterSheetId: alert.masterSheetId || alert.masterId || req.body?.masterSheetId || "",
+            clientSheetId: alert.clientId,
+            clientName: alert.clientName || "",
+            invoiceNo,
+          });
+          if (invDetailRes?.success && invDetailRes?.detail) {
+            if (accountingRechargedAmount <= 0 && (Number(invDetailRes.detail.rechargedAmountGbp) || 0) > 0) {
+              accountingRechargedAmount = Number(invDetailRes.detail.rechargedAmountGbp) || 0;
+            }
+            if (invoiceLineItems.length === 0 && Array.isArray(invDetailRes.detail.lineItems)) {
+              invoiceLineItems = invDetailRes.detail.lineItems;
+            }
+          }
+        } catch (invDetErr) {
+          console.warn(`  ⚠ Could not enrich invoice #${invoiceNo} recharged breakdown:`, invDetErr.message);
+        }
+      }
+
+      const rechargedAnalysis = analyzeRechargedExpenseDiscrepancy_({
+        matchedJobs: liveMatchedJobs,
+        invoiceNo,
+        correctAmount,
+        accountingRechargedAmount,
+        lineItems: invoiceLineItems,
+      });
+
       const updatedAlertPatch = invConfirmedRows.length > 1
         ? {
             isDuplicateInvoice: liveIsDuplicateInvoice,
             spreadsheetItems: liveSpreadsheetItems,
             pulseAmounts: livePulseAmounts,
             liveFlags,
+            rechargedDiagnosis: rechargedAnalysis?.diagnosis || null,
           }
         : null;
 
@@ -7695,70 +8133,79 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
         const dupOptions = [];
         let optId = 1;
 
-        // Check if Split Invoice: sum across spreadsheet jobs ≈ gross or net accounting amount
-        const totalSheetGross = matchedJobs.reduce((sum, j) => sum + (Number(j.grossAmount) || 0), 0);
-        const totalSheetNet = matchedJobs.reduce((sum, j) => sum + (Number(j.slotAmtNum) || 0), 0);
-        if (
-          matchedJobs.length > 1 &&
-          ((grossAmount > 0 && Math.abs(totalSheetGross - grossAmount) < 0.1) ||
-            (correctAmount > 0 && Math.abs(totalSheetNet - correctAmount) < 0.1))
-        ) {
-          dupOptions.push({
-            optionId: optId++,
-            title: `Accept as split invoice across ${matchedJobs.length} jobs (£${totalSheetGross.toFixed(2)} total)`,
-            matchType: "info",
-            explanation: `The sum of invoice #${invoiceNo} across all ${matchedJobs.length} spreadsheet jobs (£${totalSheetGross.toFixed(2)}) matches the accounting total (£${grossAmount.toFixed(2)}). Accepting this marks the split as valid and resolved.`,
-            actionButtonText: "Accept split invoice",
-          });
-        }
-
-        // Compound option: Delete extra standalone job + adjust kept (e.g. retainer) job invoice amount
-        const deleteAndAdjustOptions = buildDeleteExtraJobAndAdjustAmountOptions_({
-          matchedJobs,
-          invoiceNo,
-          correctAmount,
-          grossAmount,
-        });
-        for (const compoundOpt of deleteAndAdjustOptions) {
-          dupOptions.push({
-            optionId: optId++,
-            ...compoundOpt,
-          });
-        }
-
-        // Options for each matched job
-        for (const j of matchedJobs) {
-          dupOptions.push({
-            optionId: optId++,
-            title: `Clear invoice #${invoiceNo} from "${j.jobName || 'Row ' + j.rowNum}" (Row ${j.rowNum})`,
-            matchType: "existing_job",
-            jobRow: j.rowNum,
-            jobName: j.jobName,
-            explanation: `Removes invoice #${invoiceNo} and its amount from slot ${j.slotNum} on "${j.jobName}". Use this if this invoice was assigned to this job in error.`,
-            actionButtonText: `Clear invoice from "${j.jobName || 'Row ' + j.rowNum}"`,
-            recommendedActions: [
-              `write "" to ${j.slotCols.ref}`,
-              `write "" to ${j.slotCols.amt}`,
-              `write "" to ${j.slotCols.sent}`,
-              `write "" to ${j.slotCols.days}`,
-              `write "" to ${j.slotCols.status}`,
-              `write "" to ${j.slotCols.rech}`,
-              `write "" to ${j.slotCols.cm}`,
-            ],
-          });
-
-          if (j.isOnlyInvoiceOnJob) {
+        if (rechargedAnalysis && Array.isArray(rechargedAnalysis.options) && rechargedAnalysis.options.length > 0) {
+          for (const rOpt of rechargedAnalysis.options) {
             dupOptions.push({
               optionId: optId++,
-              title: `Delete entire job "${j.jobName || 'Row ' + j.parentRowNum}" (Row ${j.parentRowNum})`,
-              matchType: "delete",
-              jobRow: j.parentRowNum,
-              jobName: j.jobName,
-              clientName: j.clientName,
-              matchingDetails: { unmatchedJobSummary: { clientName: j.clientName, jobName: j.jobName } },
-              explanation: `Invoice #${invoiceNo} is the ONLY invoice attached to "${j.jobName}". If this entire job was created by mistake or as an accidental duplicate, deleting it will completely remove the job from the Confirmed tab.`,
-              actionButtonText: `Delete job "${j.jobName || 'Row ' + j.parentRowNum}"`,
+              ...rOpt,
             });
+          }
+        } else {
+          // Check if Split Invoice: sum across spreadsheet jobs ≈ gross or net accounting amount
+          const totalSheetGross = matchedJobs.reduce((sum, j) => sum + (Number(j.grossAmount) || 0), 0);
+          const totalSheetNet = matchedJobs.reduce((sum, j) => sum + (Number(j.slotAmtNum) || 0), 0);
+          if (
+            matchedJobs.length > 1 &&
+            ((grossAmount > 0 && Math.abs(totalSheetGross - grossAmount) < 0.1) ||
+              (correctAmount > 0 && Math.abs(totalSheetNet - correctAmount) < 0.1))
+          ) {
+            dupOptions.push({
+              optionId: optId++,
+              title: `Accept as split invoice across ${matchedJobs.length} jobs (£${totalSheetGross.toFixed(2)} total)`,
+              matchType: "info",
+              explanation: `The sum of invoice #${invoiceNo} across all ${matchedJobs.length} spreadsheet jobs (£${totalSheetGross.toFixed(2)}) matches the accounting total (£${grossAmount.toFixed(2)}). Accepting this marks the split as valid and resolved.`,
+              actionButtonText: "Accept split invoice",
+            });
+          }
+
+          // Compound option: Delete extra standalone job + adjust kept (e.g. retainer) job invoice amount
+          const deleteAndAdjustOptions = buildDeleteExtraJobAndAdjustAmountOptions_({
+            matchedJobs,
+            invoiceNo,
+            correctAmount,
+            grossAmount,
+          });
+          for (const compoundOpt of deleteAndAdjustOptions) {
+            dupOptions.push({
+              optionId: optId++,
+              ...compoundOpt,
+            });
+          }
+
+          // Options for each matched job
+          for (const j of matchedJobs) {
+            dupOptions.push({
+              optionId: optId++,
+              title: `Clear invoice #${invoiceNo} from "${j.jobName || 'Row ' + j.rowNum}" (Row ${j.rowNum})`,
+              matchType: "existing_job",
+              jobRow: j.rowNum,
+              jobName: j.jobName,
+              explanation: `Removes invoice #${invoiceNo} and its amount from slot ${j.slotNum} on "${j.jobName}". Use this if this invoice was assigned to this job in error.`,
+              actionButtonText: `Clear invoice from "${j.jobName || 'Row ' + j.rowNum}"`,
+              recommendedActions: [
+                `write "" to ${j.slotCols.ref}`,
+                `write "" to ${j.slotCols.amt}`,
+                `write "" to ${j.slotCols.sent}`,
+                `write "" to ${j.slotCols.days}`,
+                `write "" to ${j.slotCols.status}`,
+                `write "" to ${j.slotCols.rech}`,
+                `write "" to ${j.slotCols.cm}`,
+              ],
+            });
+
+            if (j.isOnlyInvoiceOnJob) {
+              dupOptions.push({
+                optionId: optId++,
+                title: `Delete entire job "${j.jobName || 'Row ' + j.parentRowNum}" (Row ${j.parentRowNum})`,
+                matchType: "delete",
+                jobRow: j.parentRowNum,
+                jobName: j.jobName,
+                clientName: j.clientName,
+                matchingDetails: { unmatchedJobSummary: { clientName: j.clientName, jobName: j.jobName } },
+                explanation: `Invoice #${invoiceNo} is the ONLY invoice attached to "${j.jobName}". If this entire job was created by mistake or as an accidental duplicate, deleting it will completely remove the job from the Confirmed tab.`,
+                actionButtonText: `Delete job "${j.jobName || 'Row ' + j.parentRowNum}"`,
+              });
+            }
           }
         }
 
@@ -8114,7 +8561,39 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
               "Mark this discrepancy as ignored - no changes will be made to either system",
             ],
           });
-        } else {
+        } else if (rechargedAnalysis && liveMatchedJobs.length === 1) {
+          const singleRechargedRes = analyzeRechargedExpenseDiscrepancy_({
+            matchedJobs: liveMatchedJobs,
+            invoiceNo,
+            correctAmount,
+            accountingRechargedAmount,
+            lineItems: invoiceLineItems,
+            extraWriteActions: nonVatWriteActions,
+            extraMismatchNames: nonVatMismatchNames,
+            extraExplanationParts: nonVatExplanationParts,
+          });
+          if (singleRechargedRes && Array.isArray(singleRechargedRes.options) && singleRechargedRes.options.length > 0) {
+            options = [
+              ...singleRechargedRes.options.map((rOpt, rIdx) => ({
+                optionId: rIdx + 1,
+                ...rOpt,
+              })),
+              {
+                optionId: singleRechargedRes.options.length + 1,
+                title: "Ignore discrepancy (keep Pulse value)",
+                actionButtonText: "Ignore discrepancy",
+                matchType: "ignore",
+                jobRow: matchedRowNum,
+                jobName,
+                explanation: "Mark this discrepancy as ignored. No changes will be made to either Pulse or the accounting system.",
+                recommendedActions: [
+                  "Mark this discrepancy as ignored - no changes will be made to either system",
+                ],
+              },
+            ];
+          }
+        }
+        if (!Array.isArray(options) || options.length === 0) {
           const writeActions = [...nonVatWriteActions];
           const mismatchNames = [...nonVatMismatchNames];
           const explanationParts = [...nonVatExplanationParts];
@@ -10654,27 +11133,53 @@ export async function handleAcceptOption(req, res, sheets, sessionUserArg = null
             // Expected revenue and start date from the option
             const expectedRevenue = String(option.matchingDetails?.unmatchedJobSummary?.revenue || "").trim();
             const expectedStart = String(option.matchingDetails?.unmatchedJobSummary?.startDate || "").trim();
+            const parseRevNum = (v) => {
+              const s = String(v ?? "").replace(/[£$€,\s]/g, "").trim();
+              if (!s) return null;
+              const n = parseFloat(s);
+              return Number.isFinite(n) ? n : null;
+            };
+            const expectedRevNum = parseRevNum(expectedRevenue);
 
-            const jobMatches = (r) => {
+            const jobMatches = (r, { requireParentFields = false } = {}) => {
               const rJob = String(r[1] || "").trim().toLowerCase();
               const rRevenue = String(r[32] || "").trim();
               const rStart = String(r[37] || "").trim();
               if (rJob !== expectedJobName) return false;
-              if (expectedRevenue && rRevenue && rRevenue !== expectedRevenue) return false;
+              if (expectedRevNum !== null && Math.abs(expectedRevNum) > 0.001) {
+                const rRevNum = parseRevNum(rRevenue);
+                if (rRevNum !== null) {
+                  if (Math.abs(rRevNum - expectedRevNum) > 0.01) return false;
+                } else if (requireParentFields) {
+                  return false;
+                }
+              } else if (expectedRevenue) {
+                if (rRevenue && rRevenue.toLowerCase() !== expectedRevenue.toLowerCase()) return false;
+                if (requireParentFields && !rRevenue) return false;
+              }
               if (expectedStart && rStart && rStart !== expectedStart) return false;
+              if (requireParentFields && expectedStart && !rStart) return false;
               return true;
             };
 
-            if (!jobMatches(currentRow)) {
-              // Row has shifted - find the job by name + revenue + start date
+            if (!jobMatches(currentRow, { requireParentFields: false })) {
+              // Row has shifted - find the job parent row first by name + revenue + start date
               console.log(`  ⚠️ Job not at expected row ${expectedRow}.`);
               console.log(`  Expected: job="${expectedJobName}" revenue="${expectedRevenue}" start="${expectedStart}"`);
               console.log(`  Found at row ${expectedRow}: job="${String(currentRow[1] || "").trim()}" revenue="${String(currentRow[32] || "").trim()}" start="${String(currentRow[37] || "").trim()}"`);
               let foundRow = -1;
               for (let i = 0; i < verifyRows.length; i++) {
-                if (jobMatches(verifyRows[i])) {
+                if (jobMatches(verifyRows[i], { requireParentFields: true })) {
                   foundRow = i + 1; // 1-indexed
                   break;
+                }
+              }
+              if (foundRow === -1) {
+                for (let i = 0; i < verifyRows.length; i++) {
+                  if (jobMatches(verifyRows[i], { requireParentFields: false })) {
+                    foundRow = i + 1; // 1-indexed
+                    break;
+                  }
                 }
               }
               if (foundRow === -1) {
@@ -10760,7 +11265,7 @@ export async function handleAcceptOption(req, res, sheets, sessionUserArg = null
         const m = String(firstInvWrite.cell).match(/^([A-Z]+)(\d+)$/);
         const origSlot = invColToSlot[m[1]].s;
         const origRow = parseInt(m[2], 10);
-        const seedRows = [option.jobRow, origRow].filter(Boolean);
+        const seedRows = [option.parentJobRow, option.jobRow, origRow].filter(Boolean);
         try {
           const resolved = await resolveLiveInvoiceSlot_(
             sheets,
@@ -10789,6 +11294,15 @@ export async function handleAcceptOption(req, res, sheets, sessionUserArg = null
                 if (um && parseInt(um[2], 10) === origRow && invColToSlot[um[1]]?.s === origSlot && String(u.value ?? "").trim() !== "") {
                   const fieldKey = invColToSlot[um[1]].f;
                   u.cell = `${invSlotToCol[resolved.slotNum][fieldKey]}${resolved.rowNum}`;
+                }
+              }
+            }
+            if (writeTab === "Confirmed" && resolved.parentRowNum) {
+              for (const u of cellUpdates) {
+                const rm = String(u.cell || "").match(/^R(\d+)$/i);
+                if (rm && parseInt(rm[1], 10) !== resolved.parentRowNum) {
+                  console.log(`  🔄 Anchored job recharged cell ${u.cell} -> R${resolved.parentRowNum}`);
+                  u.cell = `R${resolved.parentRowNum}`;
                 }
               }
             }
@@ -11000,14 +11514,66 @@ export async function handleAcceptOption(req, res, sheets, sessionUserArg = null
                   return true;
                 });
 
-                const sanitisedMap = new Map();
-                for (const u of safeCellUpdates) {
-                  sanitisedMap.set(String(u.cell || "").toUpperCase(), sanitiseValue(u.value));
+                const baseUpdates = safeCellUpdates.map((u) => ({
+                  ...u,
+                  sanitisedValue: sanitiseValue(u.value),
+                }));
+
+                let liveFormulasByCell = {};
+                let liveValuesByCell = {};
+                const formulaInspectCells = [
+                  ...new Set(
+                    baseUpdates
+                      .map((u) => String(u.cell || "").trim().toUpperCase())
+                      .filter((c) => /^(?:R|AP|AW|BD|AU|BB|BI)\d+$/.test(c))
+                  ),
+                ];
+
+                if (writeTab === "Confirmed" && formulaInspectCells.length > 0) {
+                  try {
+                    const inspectRanges = formulaInspectCells.map((c) => `${writeTab}!${c}`);
+                    const [fBatchResp, uBatchResp] = await Promise.all([
+                      sheets.spreadsheets.values.batchGet({
+                        spreadsheetId: alert.clientId,
+                        ranges: inspectRanges,
+                        valueRenderOption: "FORMULA",
+                      }),
+                      sheets.spreadsheets.values.batchGet({
+                        spreadsheetId: alert.clientId,
+                        ranges: inspectRanges,
+                        valueRenderOption: "UNFORMATTED_VALUE",
+                      }),
+                    ]);
+                    const fRanges = fBatchResp?.data?.valueRanges || [];
+                    const uRanges = uBatchResp?.data?.valueRanges || [];
+                    formulaInspectCells.forEach((cellKey, idx) => {
+                      liveFormulasByCell[cellKey] = fRanges[idx]?.values?.[0]?.[0] ?? "";
+                      liveValuesByCell[cellKey] = uRanges[idx]?.values?.[0]?.[0] ?? "";
+                    });
+                  } catch (formulaReadErr) {
+                    console.warn("handleAcceptOption live formula lookup skipped:", formulaReadErr.message);
+                  }
                 }
 
-                let finalBatchData = safeCellUpdates.map(({ cell, value }) => ({
-                  range: `${writeTab}!${cell}`,
-                  values: [[forceText(cell, sanitiseValue(value))]],
+                const preparedUpdates = applyFormulaPreservingUpdates_({
+                  updates: baseUpdates,
+                  liveFormulasByCell,
+                  liveValuesByCell,
+                });
+
+                const sanitisedMap = new Map();
+                for (const u of preparedUpdates) {
+                  const cellKey = String(u.cell || "").toUpperCase();
+                  sanitisedMap.set(
+                    cellKey,
+                    u.numericValue !== null && u.numericValue !== undefined ? String(u.numericValue) : u.writeValue
+                  );
+                }
+
+                const writtenCellUpdates = preparedUpdates.filter((u) => !u.skipWrite);
+                let finalBatchData = writtenCellUpdates.map((u) => ({
+                  range: `${writeTab}!${u.cell}`,
+                  values: [[u.isFormulaWrite ? u.writeValue : forceText(u.cell, u.writeValue)]],
                 }));
                 let acceptNormGroup = null;
                 let acceptRelocations = [];
@@ -11139,7 +11705,7 @@ export async function handleAcceptOption(req, res, sheets, sessionUserArg = null
                     const writeTabSheetId = await getSheetId(sheets, alert.clientId, writeTab);
                     const slotBases = liveResolvedSlotInfo?.type === "invoice" ? [41, 48, 55] : [75, 82, 89];
                     const slotWidth = liveResolvedSlotInfo?.type === "invoice" ? (writeTab === "Confirmed" ? 7 : 5) : 7;
-                    const formatReqs = safeCellUpdates.map(({ cell }) => {
+                    const formatReqs = writtenCellUpdates.map(({ cell }) => {
                       // Parse cell reference e.g. "B23" → row 22, col 1 (0-indexed)
                       const colMatch = cell.match(/^([A-Z]+)(\d+)$/);
                       if (!colMatch) return null;

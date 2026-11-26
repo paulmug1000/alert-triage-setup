@@ -837,13 +837,15 @@ export async function verifyNativeSyncStateParity({
           gridMap.set(r.tab_name, compactGrid2D(r.values_grid || []));
         }
 
+        const hasLogContent = (r) =>
+          Array.isArray(r) && r.some((cell) => cell !== "" && cell !== null && cell !== undefined);
+
         if (gridMap.has("AutoLog")) {
           const alDbGrid = await loadClientAutomationLogGrid(ctx, { limit: 2500 });
           const alSheet = compactGrid2D(gridMap.get("AutoLog"));
           const hasHeader = Array.isArray(alSheet[0]) && String(alSheet[0][0] || "").trim().toLowerCase() === "timestamp";
-          const alExpected = hasHeader
-            ? [AUTOLOG_HEADERS, ...alSheet.slice(1, 2501)]
-            : [AUTOLOG_HEADERS, ...alSheet.slice(0, 2500)];
+          const alDataRows = (hasHeader ? alSheet.slice(1) : alSheet).filter(hasLogContent).slice(0, 2500);
+          const alExpected = [AUTOLOG_HEADERS, ...alDataRows];
           const normalizedExpected = alExpected.map((r) => [r[0] ?? "", r[1] ?? "", r[2] ?? "", r[3] ?? ""]);
           const normalizedActual = alDbGrid.map((r) => [r[0] ?? "", r[1] ?? "", r[2] ?? "", r[3] ?? ""]);
           mismatches.push(...compareGridsSampled_("AutoLog", normalizedExpected, normalizedActual, 4));
@@ -853,7 +855,8 @@ export async function verifyNativeSyncStateParity({
           const exDbGrid = await loadClientExecutionLogGrid(ctx, { limit: 50 });
           const exSheet = compactGrid2D(gridMap.get("GasExecLogs"));
           const hasHeader = Array.isArray(exSheet[0]) && String(exSheet[0][0] || "").trim().toLowerCase() === "timestamp";
-          const exExpected = hasHeader ? [GASEXECLOGS_HEADERS, ...exSheet.slice(1, 51)] : [GASEXECLOGS_HEADERS, ...exSheet.slice(0, 50)];
+          const exDataRows = (hasHeader ? exSheet.slice(1) : exSheet).filter(hasLogContent).slice(0, 50);
+          const exExpected = [GASEXECLOGS_HEADERS, ...exDataRows];
           const normExp = exExpected.map((r) => [r[0] ?? "", r[1] ?? "", r[2] ?? "", r[3] ?? "", r[4] ?? "", r[5] ?? "", r[6] ?? ""]);
           const normAct = exDbGrid.map((r) => [r[0] ?? "", r[1] ?? "", r[2] ?? "", r[3] ?? "", r[4] ?? "", r[5] ?? "", r[6] ?? ""]);
           mismatches.push(...compareGridsSampled_("GasExecLogs", normExp, normAct, 4));

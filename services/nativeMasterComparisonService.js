@@ -720,11 +720,20 @@ export async function setClientMasterComputeMode(clientName, mode) {
     );
   }
 
+  let baseMeta = cl.metadata || {};
   if (cleanMode === "shadow" || cleanMode === "native") {
     await backfillClientNativeMasterComparisons(clientName);
+    const { data: freshCl } = await supabase
+      .from("clients")
+      .select("metadata")
+      .eq("id", cl.id)
+      .maybeSingle();
+    if (freshCl?.metadata && typeof freshCl.metadata === "object") {
+      baseMeta = freshCl.metadata;
+    }
   }
 
-  const nextMeta = { ...(cl.metadata || {}), master_compute_mode: cleanMode };
+  const nextMeta = { ...baseMeta, master_compute_mode: cleanMode };
   const { data: upd, error: uErr } = await supabase
     .from("clients")
     .update({ master_compute_mode: cleanMode, metadata: nextMeta })

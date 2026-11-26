@@ -1302,11 +1302,20 @@ export async function setClientComputeMode(clientName, mode) {
     }
   }
 
+  let baseMeta = cl.metadata || {};
   if (cleanMode === "shadow" || cleanMode === "native") {
     await backfillClientNativeCalc(clientName);
+    const { data: freshCl } = await supabase
+      .from("clients")
+      .select("metadata")
+      .eq("id", cl.id)
+      .maybeSingle();
+    if (freshCl?.metadata && typeof freshCl.metadata === "object") {
+      baseMeta = freshCl.metadata;
+    }
   }
 
-  const nextMeta = { ...(cl.metadata || {}), client_compute_mode: cleanMode };
+  const nextMeta = { ...baseMeta, client_compute_mode: cleanMode };
   const { data: upd, error: uErr } = await supabase
     .from("clients")
     .update({ client_compute_mode: cleanMode, metadata: nextMeta })

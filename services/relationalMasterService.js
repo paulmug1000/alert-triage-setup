@@ -2086,11 +2086,19 @@ export async function verifyRelationalMasterParity({
 
   const schema = await checkPhase4MasterSchemaStatus();
   const cols = schema.schemaReady
-    ? "id, client_name, master_ingestion_mode, metadata"
+    ? "id, client_name, master_ingestion_mode, connector_pull_mode, metadata"
     : "id, client_name, metadata";
   let query = supabase.from("clients").select(cols).order("client_name");
   if (clientName) query = query.eq("client_name", clientName);
-  const { data: clients, error } = await query;
+  let { data: clients, error } = await query;
+  if (error && /connector_pull_mode|42703/i.test(String(error.message || ""))) {
+    let fb = supabase
+      .from("clients")
+      .select(schema.schemaReady ? "id, client_name, master_ingestion_mode, metadata" : "id, client_name, metadata")
+      .order("client_name");
+    if (clientName) fb = fb.eq("client_name", clientName);
+    ({ data: clients, error } = await fb);
+  }
   if (error) throw new Error(`Failed loading clients: ${error.message}`);
 
   const results = [];
@@ -2098,6 +2106,7 @@ export async function verifyRelationalMasterParity({
     if (onlyIngestionEnabled && cl.master_ingestion_mode !== "relational") continue;
     try {
       const ctx = { clientId: cl.id, clientName: cl.client_name };
+      const connMode = String(cl.connector_pull_mode || cl.metadata?.connector_pull_mode || "grid_gas").toLowerCase();
       const canUseDb =
         schema.schemaReady &&
         (source === "db" ||
@@ -2106,19 +2115,29 @@ export async function verifyRelationalMasterParity({
       const bundle = await preloadClientRelationalMasterBundle(ctx, {
         source: canUseDb ? "db" : "in_memory",
       });
-      const virtualGrids = {};
-      await Promise.all(
-        PHASE4_RAW_INGESTION_TABS.map(async (t) => {
-          const rec = await getOrLoadVirtualTabGrid_(ctx, "master", t, null).catch(() => null);
-          virtualGrids[t] = rec?.values_grid || [];
-        })
-      );
       const relRawTabs = buildBaseRawMasterTabsFromBundle(bundle);
+      let referenceTabs = null;
+      if (connMode === "native") {
+        // Phase 6E zero-grid: round-trip SQL bundle -> raw tabs -> in-memory model -> raw tabs (zero master_sheet_grids reads)
+        const roundTripBundle = await preloadClientRelationalMasterBundle(
+          { ...ctx, connectorPullMode: "native" },
+          { source: "in_memory", gridsOverride: relRawTabs }
+        ).catch(() => null);
+        referenceTabs = roundTripBundle ? buildBaseRawMasterTabsFromBundle(roundTripBundle) : relRawTabs;
+      } else {
+        referenceTabs = {};
+        await Promise.all(
+          PHASE4_RAW_INGESTION_TABS.map(async (t) => {
+            const rec = await getOrLoadVirtualTabGrid_(ctx, "master", t, null).catch(() => null);
+            referenceTabs[t] = rec?.values_grid || [];
+          })
+        );
+      }
 
       let totalMismatchCount = 0;
       const sampleMismatches = [];
       for (const t of PHASE4_RAW_INGESTION_TABS) {
-        const { mismatchCount, diffs } = diff2DGrids_(t, virtualGrids[t], relRawTabs[t], 4);
+        const { mismatchCount, diffs } = diff2DGrids_(t, referenceTabs[t], relRawTabs[t], 4);
         totalMismatchCount += mismatchCount;
         if (sampleMismatches.length < 10) sampleMismatches.push(...diffs);
       }

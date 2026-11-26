@@ -569,28 +569,31 @@ export async function checkAndNotifyTabErrors({ sheets: providedSheets, automati
   const supaClientNames = clientList.filter((c) => c.clientMode === "supabase").map((c) => c.clientName);
   if (sb && supaClientNames.length > 0) {
     try {
-      const [{ data: finCfgRows }, { data: ecRows }] = await Promise.all([
-        sb
-          .from("pulse_financial_configs")
-          .select("client_name, error_check_grid")
-          .in("client_name", supaClientNames)
-          .then((r) => r)
-          .catch(() => ({ data: [] })),
-        sb
+      const { data: finCfgRows } = await sb
+        .from("pulse_financial_configs")
+        .select("client_name, error_check_grid")
+        .in("client_name", supaClientNames)
+        .then((r) => r)
+        .catch(() => ({ data: [] }));
+      for (const cfg of finCfgRows || []) {
+        if (cfg.client_name && Array.isArray(cfg.error_check_grid) && cfg.error_check_grid.length > 0) {
+          supabaseErrorGrids.set(String(cfg.client_name).trim().toLowerCase(), cfg.error_check_grid);
+        }
+      }
+      const missingEcClients = supaClientNames.filter(
+        (n) => !supabaseErrorGrids.has(String(n || "").trim().toLowerCase())
+      );
+      if (missingEcClients.length > 0) {
+        const { data: ecRows } = await sb
           .from("master_sheet_grids")
           .select("client_name, values_grid")
           .eq("tab_name", "ErrorCheck")
           .eq("sheet_role", "client")
-          .in("client_name", supaClientNames),
-      ]);
-      for (const row of ecRows || []) {
-        if (row.client_name && Array.isArray(row.values_grid)) {
-          supabaseErrorGrids.set(String(row.client_name).trim().toLowerCase(), row.values_grid);
-        }
-      }
-      for (const cfg of finCfgRows || []) {
-        if (cfg.client_name && Array.isArray(cfg.error_check_grid) && cfg.error_check_grid.length > 0) {
-          supabaseErrorGrids.set(String(cfg.client_name).trim().toLowerCase(), cfg.error_check_grid);
+          .in("client_name", missingEcClients);
+        for (const row of ecRows || []) {
+          if (row.client_name && Array.isArray(row.values_grid)) {
+            supabaseErrorGrids.set(String(row.client_name).trim().toLowerCase(), row.values_grid);
+          }
         }
       }
     } catch (err) {

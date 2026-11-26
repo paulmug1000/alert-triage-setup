@@ -167,18 +167,11 @@ export async function getAllClients(sheets, sessionUser = { isAdmin: true }, byp
     if (await isSupabaseControlPlaneActive()) {
       try {
         const sb = getSupabaseAdmin();
-        const [{ data: sbClients, error: sbErr }, { data: kiRows }, { data: kiGridRows }, { data: finCfgRows }, cmMap] = await Promise.all([
+        const [{ data: sbClients, error: sbErr }, { data: kiRows }, { data: finCfgRows }, cmMap] = await Promise.all([
           sb.from("clients").select("*").order("client_name", { ascending: true }),
           sb
             .from("tenant_key_info")
             .select("client_name, normalized_key, revenue_or_income_mode, direct_costs_mode, accounting_tool, crm_tool, crm_drives, invoice_method")
-            .then((r) => r)
-            .catch(() => ({ data: [] })),
-          sb
-            .from("master_sheet_grids")
-            .select("client_name, values_grid")
-            .eq("tab_name", "KeyInfo")
-            .eq("sheet_role", "client")
             .then((r) => r)
             .catch(() => ({ data: [] })),
           sb
@@ -188,6 +181,13 @@ export async function getAllClients(sheets, sessionUser = { isAdmin: true }, byp
             .catch(() => ({ data: [] })),
           getClientManagerClientMap(sheets, acId),
         ]);
+        const finCfgSet = new Set((finCfgRows || []).map((r) => String(r.client_name || "").trim().toLowerCase()).filter(Boolean));
+        const missingKiClients = (sbClients || [])
+          .filter((c) => c.client_mode === "supabase" && !finCfgSet.has(String(c.client_name || "").trim().toLowerCase()))
+          .map((c) => c.client_name);
+        const kiGridRows = missingKiClients.length > 0
+          ? (await sb.from("master_sheet_grids").select("client_name, values_grid").eq("tab_name", "KeyInfo").eq("sheet_role", "client").in("client_name", missingKiClients).then((r) => r).catch(() => ({ data: [] })))?.data || []
+          : [];
         if (!sbErr && Array.isArray(sbClients) && sbClients.length > 0) {
           const kiByNorm = new Map();
           const kiByName = new Map();

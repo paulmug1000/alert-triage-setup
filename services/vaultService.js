@@ -382,15 +382,27 @@ async function resolveExplicitSharedXeroTenant_({ record, clientKey, masterSheet
           targetName = cRow?.client_name || "";
         }
         if (targetName) {
-          const { data: kiRow } = await sb
-            .from("master_sheet_grids")
-            .select("values_grid")
+          let x2Val = "";
+          const { data: cfgRow } = await sb
+            .from("pulse_master_sync_configs")
+            .select("master_key_info_grid")
             .eq("client_name", targetName)
-            .eq("sheet_role", "master")
-            .eq("tab_name", "KeyInfo")
             .limit(1)
             .maybeSingle();
-          const x2Val = String(kiRow?.values_grid?.[1]?.[23] || "").trim();
+          if (Array.isArray(cfgRow?.master_key_info_grid)) {
+            x2Val = String(cfgRow.master_key_info_grid?.[1]?.[23] || "").trim();
+          }
+          if (!x2Val) {
+            const { data: kiRow } = await sb
+              .from("master_sheet_grids")
+              .select("values_grid")
+              .eq("client_name", targetName)
+              .eq("sheet_role", "master")
+              .eq("tab_name", "KeyInfo")
+              .limit(1)
+              .maybeSingle();
+            x2Val = String(kiRow?.values_grid?.[1]?.[23] || "").trim();
+          }
           if (UUID_REGEX.test(x2Val)) {
             const matched = availableTenants.find((t) => String(t.tenantId || "").trim().toLowerCase() === x2Val.toLowerCase());
             if (matched) return matched;

@@ -18,6 +18,7 @@ import { invalidateMasterEngineCache } from "./masterEngineService.js";
 import { invalidatePmaClientCache } from "./cacheService.js";
 import { flushAllAlertMemoryCaches } from "./alertMemory.js";
 import { invalidatePrecomputedMemoryCache } from "./triageEngine.js";
+import { RELATIONAL_BACKUP_TABLES } from "./supabaseBackupService.js";
 
 const CLIENT_NAME_ONLY_TABLES = [
   "activity_logs",
@@ -421,6 +422,26 @@ async function renameKeyedTenantTables_({
       summary.tablesUpdated.push(table);
     }
   }
+
+  // Phase 2-6D relational tables keyed by client_id / client_name
+  const seenRelTables = new Set(CLIENT_NAME_ONLY_TABLES);
+  for (const { table } of RELATIONAL_BACKUP_TABLES) {
+    if (seenRelTables.has(table)) continue;
+    seenRelTables.add(table);
+    try {
+      const { error: relErr } = await sb
+        .from(table)
+        .update({ client_name: newClientName })
+        .eq("client_id", clientRow.id);
+      if (relErr && !/42703|does not exist|schema cache/i.test(String(relErr.message || ""))) {
+        summary.warnings.push(`Relational table ${table} update warning: ${relErr.message}`);
+      } else if (!relErr) {
+        summary.tablesUpdated.push(table);
+      }
+    } catch (rErr) {
+      summary.warnings.push(`Relational table ${table} update warning: ${rErr.message}`);
+    }
+  }
 }
 
 async function renameUserAssignments_({ sb, oldClientName, newClientName, summary }) {
@@ -549,6 +570,44 @@ async function updateKeyInfoGridsAndSheets_({
         summary.keyInfoTabsUpdated.push(row.sheet_role);
       }
     }
+  }
+
+  // Also update embedded KeyInfo grids inside native Phase 5/6 relational configs
+  try {
+    const [{ data: masterSyncCfg }, { data: finCfg }] = await Promise.all([
+      sb
+        .from("pulse_master_sync_configs")
+        .select("client_id, master_key_info_grid")
+        .eq("client_id", clientRow.id)
+        .maybeSingle(),
+      sb
+        .from("pulse_financial_configs")
+        .select("client_id, client_key_info_grid")
+        .eq("client_id", clientRow.id)
+        .maybeSingle(),
+    ]);
+    if (Array.isArray(masterSyncCfg?.master_key_info_grid) && masterSyncCfg.master_key_info_grid.length > 0) {
+      const res = patchGridB1Cell_(masterSyncCfg.master_key_info_grid, newClientName);
+      if (res.changed) {
+        await sb
+          .from("pulse_master_sync_configs")
+          .update({ master_key_info_grid: res.grid })
+          .eq("client_id", clientRow.id);
+        summary.keyInfoTabsUpdated.push("pulse_master_sync_configs");
+      }
+    }
+    if (Array.isArray(finCfg?.client_key_info_grid) && finCfg.client_key_info_grid.length > 0) {
+      const res = patchGridB1Cell_(finCfg.client_key_info_grid, newClientName);
+      if (res.changed) {
+        await sb
+          .from("pulse_financial_configs")
+          .update({ client_key_info_grid: res.grid })
+          .eq("client_id", clientRow.id);
+        summary.keyInfoTabsUpdated.push("pulse_financial_configs");
+      }
+    }
+  } catch (cfgErr) {
+    summary.warnings.push(`Native config KeyInfo update warning: ${cfgErr.message}`);
   }
 
   if (!sheets?.spreadsheets?.values?.update) return;

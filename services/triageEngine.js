@@ -975,20 +975,26 @@ export async function readAutoUpdatesClientRows_(sheets, automationCommanderShee
 
   if (supaControlPlane && sb) {
     try {
-      const [{ data: dbClients, error: cErr }, { data: schedRows }, { data: dcaRows }, { data: nativeSyncCfgRows }, { data: setupStateRows }] = await Promise.all([
+      const [{ data: dbClients, error: cErr }, { data: schedRows }, { data: nativeSyncCfgRows }, { data: setupStateRows }] = await Promise.all([
         sb
           .from("clients")
           .select("client_name, normalized_key, status, metadata, client_mode, master_mode, master_compute_mode, client_sheet_id, master_sheet_id, client_sheet_url, master_sheet_url, web_app_url, master_deployment_url, client_script_id, auto_updates_row_index")
           .order("client_name", { ascending: true }),
         sb.from("sync_schedules").select("*"),
-        sb
-          .from("master_sheet_grids")
-          .select("client_name, values_grid")
-          .eq("sheet_role", "master")
-          .eq("tab_name", "DataChgAlert"),
         sb.from("pulse_master_sync_configs").select("client_name, data_chg_alert_grid"),
         sb.from("client_setup_state").select("client_name, setup_status"),
       ]);
+      const nativeDcaClients = new Set(
+        (nativeSyncCfgRows || [])
+          .filter((n) => n.client_name && Array.isArray(n.data_chg_alert_grid) && n.data_chg_alert_grid.length > 0)
+          .map((n) => String(n.client_name).trim().toLowerCase())
+      );
+      const nonNativeDcaClients = (dbClients || [])
+        .filter((c) => c.master_mode === "supabase" && !nativeDcaClients.has(String(c.client_name || "").trim().toLowerCase()))
+        .map((c) => c.client_name);
+      const dcaRows = nonNativeDcaClients.length > 0
+        ? (await sb.from("master_sheet_grids").select("client_name, values_grid").eq("sheet_role", "master").eq("tab_name", "DataChgAlert").in("client_name", nonNativeDcaClients))?.data || []
+        : [];
 
       if (!cErr && Array.isArray(dbClients) && dbClients.length > 0) {
         const schedByClient = new Map();

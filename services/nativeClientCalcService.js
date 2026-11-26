@@ -1549,19 +1549,8 @@ export async function verifyNativeClientCalcParity({
       const effectiveSource = canUseDb ? "db" : "in_memory";
       let usePersistedNativeRef = false;
       if (mode === "native" && effectiveSource === "db" && !compareFrozenGrids) {
-        const backfillMs = cl.metadata?.native_client_calc_state?.lastBackfilledAt
-          ? Date.parse(cl.metadata.native_client_calc_state.lastBackfilledAt)
-          : 0;
-        const { data: latestBp } = await supabase
-          .from("pulse_client_tab_blueprints")
-          .select("updated_at")
-          .eq("client_id", ctx.clientId)
-          .order("updated_at", { ascending: false })
-          .limit(1);
-        const maxBpMs = latestBp?.[0]?.updated_at ? Date.parse(latestBp[0].updated_at) : 0;
-        if (backfillMs > 0 && maxBpMs > backfillMs + 5000) {
-          usePersistedNativeRef = true;
-        }
+        // Zero-grid Phase 6E: always validate live persisted blueprints rather than legacy master_sheet_grids
+        usePersistedNativeRef = true;
       }
       const reconSource = cl.recon_read_mode === "relational" ? "db" : "in_memory";
       const tabsToCompare = usePersistedNativeRef

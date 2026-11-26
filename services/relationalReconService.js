@@ -1471,11 +1471,19 @@ export async function verifyRelationalReconParity({
 
   const schema = await checkPhase4ReconSchemaStatus();
   const cols = schema.schemaReady
-    ? "id, client_name, recon_mode, metadata"
+    ? "id, client_name, recon_mode, sync_orchestrator_mode, metadata"
     : "id, client_name, metadata";
   let query = supabase.from("clients").select(cols).order("client_name");
   if (clientName) query = query.eq("client_name", clientName);
-  const { data: clients, error } = await query;
+  let { data: clients, error } = await query;
+  if (error && /sync_orchestrator_mode|42703/i.test(String(error.message || ""))) {
+    let fb = supabase
+      .from("clients")
+      .select(schema.schemaReady ? "id, client_name, recon_mode, metadata" : "id, client_name, metadata")
+      .order("client_name");
+    if (clientName) fb = fb.eq("client_name", clientName);
+    ({ data: clients, error } = await fb);
+  }
   if (error) throw new Error(`Failed loading clients: ${error.message}`);
 
   const results = [];
@@ -1483,6 +1491,7 @@ export async function verifyRelationalReconParity({
     if (onlyReconEnabled && cl.recon_mode !== "relational") continue;
     try {
       const ctx = { clientId: cl.id, clientName: cl.client_name };
+      const syncMode = String(cl.sync_orchestrator_mode || cl.metadata?.sync_orchestrator_mode || "grid_gas").toLowerCase();
       const canUseDb =
         schema.schemaReady &&
         (source === "db" ||
@@ -1490,86 +1499,123 @@ export async function verifyRelationalReconParity({
 
       const [bundle, gridRows] = await Promise.all([
         preloadClientRelationalReconBundle(ctx, { source: canUseDb ? "db" : "in_memory" }),
-        (async () => {
-          const all = [];
-          for (let from = 0; ; from += 500) {
-            const { data, error: gErr } = await supabase
-              .from("master_sheet_grids")
-              .select("tab_name, values_grid, notes_grid")
-              .eq("client_name", cl.client_name)
-              .eq("sheet_role", "recon")
-              .order("tab_name", { ascending: true })
-              .range(from, from + 499);
-            if (gErr) throw new Error(`Recon grids load error: ${gErr.message}`);
-            if (!Array.isArray(data) || data.length === 0) break;
-            all.push(...data);
-            if (data.length < 500) break;
-          }
-          return all;
-        })(),
+        syncMode === "native"
+          ? Promise.resolve([])
+          : (async () => {
+              const all = [];
+              for (let from = 0; ; from += 500) {
+                const { data, error: gErr } = await supabase
+                  .from("master_sheet_grids")
+                  .select("tab_name, values_grid, notes_grid")
+                  .eq("client_name", cl.client_name)
+                  .eq("sheet_role", "recon")
+                  .order("tab_name", { ascending: true })
+                  .range(from, from + 499);
+                if (gErr) throw new Error(`Recon grids load error: ${gErr.message}`);
+                if (!Array.isArray(data) || data.length === 0) break;
+                all.push(...data);
+                if (data.length < 500) break;
+              }
+              return all;
+            })(),
       ]);
 
       const managedGridRows = gridRows.filter((g) => isManagedReconTab(g.tab_name));
       let totalMismatchCount = 0;
       const sampleMismatches = [];
 
-      for (const row of managedGridRows) {
-        const reconRec = reconstructRelationalReconTabFromBundle(bundle, row.tab_name);
-        const expectedVals = compactGrid2D(row.values_grid || []);
-        const actualVals = reconRec?.values_grid || [];
-        const { mismatchCount, diffs } = diff2DGrids_(row.tab_name, expectedVals, actualVals, 4);
-        totalMismatchCount += mismatchCount;
-        if (sampleMismatches.length < 10) sampleMismatches.push(...diffs);
+      if (managedGridRows.length > 0) {
+        for (const row of managedGridRows) {
+          const reconRec = reconstructRelationalReconTabFromBundle(bundle, row.tab_name);
+          const expectedVals = compactGrid2D(row.values_grid || []);
+          const actualVals = reconRec?.values_grid || [];
+          const { mismatchCount, diffs } = diff2DGrids_(row.tab_name, expectedVals, actualVals, 4);
+          totalMismatchCount += mismatchCount;
+          if (sampleMismatches.length < 10) sampleMismatches.push(...diffs);
 
-        if (isReconMonthTab(row.tab_name)) {
-          const expBg = Object.keys(row.notes_grid?.__bg_colors || {}).length;
-          const actBg = Object.keys(reconRec?.notes_grid?.__bg_colors || {}).length;
-          if (expBg !== actBg) {
-            totalMismatchCount++;
-            if (sampleMismatches.length < 10) {
-              sampleMismatches.push({
-                tab: row.tab_name,
-                tabName: row.tab_name,
-                cellKey: "notes_grid.__bg_colors",
-                grid: expBg,
-                relational: actBg,
-                expected: expBg,
-                actual: actBg,
-              });
+          if (isReconMonthTab(row.tab_name)) {
+            const expBg = Object.keys(row.notes_grid?.__bg_colors || {}).length;
+            const actBg = Object.keys(reconRec?.notes_grid?.__bg_colors || {}).length;
+            if (expBg !== actBg) {
+              totalMismatchCount++;
+              if (sampleMismatches.length < 10) {
+                sampleMismatches.push({
+                  tab: row.tab_name,
+                  tabName: row.tab_name,
+                  cellKey: "notes_grid.__bg_colors",
+                  grid: expBg,
+                  relational: actBg,
+                  expected: expBg,
+                  actual: actBg,
+                });
+              }
             }
           }
         }
-      }
 
-      // Verify Learning Map parity
-      const expectedLearningRows = computeReconLearningMapFromItems({
-        clientId: cl.id,
-        clientName: cl.client_name,
-        periodMonthKeys: managedGridRows.map((g) => g.tab_name).filter((t) => isReconMonthTab(t)),
-        reconciledItems: managedGridRows
-          .filter((g) => isReconMonthTab(g.tab_name))
-          .flatMap((g) =>
-            parseReconPeriodTab({
-              clientId: cl.id,
-              clientName: cl.client_name,
-              monthKey: g.tab_name,
-              grid: compactGrid2D(g.values_grid || []),
-              notesGrid: g.notes_grid || {},
-            }).items.filter((i) => i.item_type === "reconciled")
-          ),
-      });
-      const expectedMap = new Map(
-        expectedLearningRows.map((r) => [r.match_pattern, { category: r.category, probability: r.probability }])
-      );
-      const actualMap = new Map(
-        (bundle?.learningRows || []).map((r) => [
-          r.match_pattern,
-          { category: r.category, probability: Number(r.probability) || 1 },
-        ])
-      );
-      const learnCmp = compareLearningMaps_(expectedMap, actualMap, 4);
-      totalMismatchCount += learnCmp.mismatchCount;
-      if (sampleMismatches.length < 10) sampleMismatches.push(...learnCmp.diffs);
+        // Verify Learning Map parity against grids
+        const expectedLearningRows = computeReconLearningMapFromItems({
+          clientId: cl.id,
+          clientName: cl.client_name,
+          periodMonthKeys: managedGridRows.map((g) => g.tab_name).filter((t) => isReconMonthTab(t)),
+          reconciledItems: managedGridRows
+            .filter((g) => isReconMonthTab(g.tab_name))
+            .flatMap((g) =>
+              parseReconPeriodTab({
+                clientId: cl.id,
+                clientName: cl.client_name,
+                monthKey: g.tab_name,
+                grid: compactGrid2D(g.values_grid || []),
+                notesGrid: g.notes_grid || {},
+              }).items.filter((i) => i.item_type === "reconciled")
+            ),
+        });
+        const expectedMap = new Map(
+          expectedLearningRows.map((r) => [r.match_pattern, { category: r.category, probability: r.probability }])
+        );
+        const actualMap = new Map(
+          (bundle?.learningRows || []).map((r) => [
+            r.match_pattern,
+            { category: r.category, probability: Number(r.probability) || 1 },
+          ])
+        );
+        const learnCmp = compareLearningMaps_(expectedMap, actualMap, 4);
+        totalMismatchCount += learnCmp.mismatchCount;
+        if (sampleMismatches.length < 10) sampleMismatches.push(...learnCmp.diffs);
+      } else {
+        // Zero-grid Phase 6E: self-consistency check across relational recon periods + learning map
+        const periodKeys = (bundle?.periods || []).map((p) => p.month_key).filter(Boolean);
+        for (const mKey of periodKeys) {
+          const reconRec = reconstructRelationalReconTabFromBundle(bundle, mKey);
+          if (!reconRec || !Array.isArray(reconRec.values_grid)) {
+            totalMismatchCount++;
+            if (sampleMismatches.length < 10) {
+              sampleMismatches.push({ tab: mKey, tabName: mKey, cellKey: "grid", expected: "Array", actual: "null" });
+            }
+          }
+        }
+        const reconciledFromBundle = [...(bundle?.itemsByMonth?.values() || [])]
+          .flat()
+          .filter((i) => i.item_type === "reconciled");
+        const expectedLearningRows = computeReconLearningMapFromItems({
+          clientId: cl.id,
+          clientName: cl.client_name,
+          periodMonthKeys: periodKeys,
+          reconciledItems: reconciledFromBundle,
+        });
+        const expectedMap = new Map(
+          expectedLearningRows.map((r) => [r.match_pattern, { category: r.category, probability: r.probability }])
+        );
+        const actualMap = new Map(
+          (bundle?.learningRows || []).map((r) => [
+            r.match_pattern,
+            { category: r.category, probability: Number(r.probability) || 1 },
+          ])
+        );
+        const learnCmp = compareLearningMaps_(expectedMap, actualMap, 4);
+        totalMismatchCount += learnCmp.mismatchCount;
+        if (sampleMismatches.length < 10) sampleMismatches.push(...learnCmp.diffs);
+      }
 
       const allItems = [...(bundle?.itemsByMonth?.values() || [])].flat();
       results.push({
@@ -1579,7 +1625,7 @@ export async function verifyRelationalReconParity({
         periodsCount: bundle?.periods?.length || 0,
         reconciledItemsCount: allItems.filter((i) => i.item_type === "reconciled").length,
         unreconciledItemsCount: allItems.filter((i) => i.item_type === "unreconciled").length,
-        learningRulesCount: actualMap.size,
+        learningRulesCount: (bundle?.learningRows || []).length,
         totalMismatchCount,
         matched: totalMismatchCount === 0,
         sampleMismatches: sampleMismatches.slice(0, 10),
@@ -1619,11 +1665,19 @@ export async function verifyRelationalReconReadParity({
 
   const schema = await checkPhase4ReconSchemaStatus();
   const cols = schema.schemaReady
-    ? "id, client_name, recon_mode, recon_read_mode, metadata"
+    ? "id, client_name, recon_mode, recon_read_mode, sync_orchestrator_mode, metadata"
     : "id, client_name, metadata";
   let query = supabase.from("clients").select(cols).order("client_name");
   if (clientName) query = query.eq("client_name", clientName);
-  const { data: clients, error } = await query;
+  let { data: clients, error } = await query;
+  if (error && /sync_orchestrator_mode|42703/i.test(String(error.message || ""))) {
+    let fb = supabase
+      .from("clients")
+      .select(schema.schemaReady ? "id, client_name, recon_mode, recon_read_mode, metadata" : "id, client_name, metadata")
+      .order("client_name");
+    if (clientName) fb = fb.eq("client_name", clientName);
+    ({ data: clients, error } = await fb);
+  }
   if (error) throw new Error(`Failed loading clients: ${error.message}`);
 
   const results = [];
@@ -1631,6 +1685,7 @@ export async function verifyRelationalReconReadParity({
     if (onlyReadEnabled && cl.recon_read_mode !== "relational") continue;
     try {
       const ctx = { clientId: cl.id, clientName: cl.client_name };
+      const syncMode = String(cl.sync_orchestrator_mode || cl.metadata?.sync_orchestrator_mode || "grid_gas").toLowerCase();
       const canUseDb =
         schema.schemaReady &&
         (source === "db" ||
@@ -1638,99 +1693,130 @@ export async function verifyRelationalReconReadParity({
 
       const [relBundle, rawRows] = await Promise.all([
         preloadClientRelationalReconBundle(ctx, { source: canUseDb ? "db" : "in_memory" }),
-        (async () => {
-          const all = [];
-          for (let from = 0; ; from += 500) {
-            const { data, error: gErr } = await supabase
-              .from("master_sheet_grids")
-              .select("tab_name, values_grid, notes_grid")
-              .eq("client_name", cl.client_name)
-              .eq("sheet_role", "recon")
-              .order("tab_name", { ascending: true })
-              .range(from, from + 499);
-            if (gErr) throw new Error(`Recon grids load error: ${gErr.message}`);
-            if (!Array.isArray(data) || data.length === 0) break;
-            all.push(...data);
-            if (data.length < 500) break;
-          }
-          return all;
-        })(),
+        syncMode === "native"
+          ? Promise.resolve([])
+          : (async () => {
+              const all = [];
+              for (let from = 0; ; from += 500) {
+                const { data, error: gErr } = await supabase
+                  .from("master_sheet_grids")
+                  .select("tab_name, values_grid, notes_grid")
+                  .eq("client_name", cl.client_name)
+                  .eq("sheet_role", "recon")
+                  .order("tab_name", { ascending: true })
+                  .range(from, from + 499);
+                if (gErr) throw new Error(`Recon grids load error: ${gErr.message}`);
+                if (!Array.isArray(data) || data.length === 0) break;
+                all.push(...data);
+                if (data.length < 500) break;
+              }
+              return all;
+            })(),
       ]);
 
       const managedTabs = rawRows.filter((r) => isManagedReconTab(r.tab_name));
       let mismatchCount = 0;
       const sampleMismatches = [];
 
-      for (const row of managedTabs) {
-        const expectedVals = compactGrid2D(row.values_grid || []);
-        const reconRec = reconstructRelationalReconTabFromBundle(relBundle, row.tab_name);
-        if (!reconRec) {
-          mismatchCount++;
-          if (sampleMismatches.length < 10) {
-            sampleMismatches.push({
-              tab: row.tab_name,
-              tabName: row.tab_name,
-              cellKey: "tab_missing",
-              grid: `${expectedVals.length} rows`,
-              relational: "missing",
-              expected: `${expectedVals.length} rows`,
-              actual: "missing",
-            });
-          }
-          continue;
-        }
-        const { mismatchCount: mCnt, diffs } = diff2DGrids_(row.tab_name, expectedVals, reconRec.values_grid, 4);
-        mismatchCount += mCnt;
-        if (sampleMismatches.length < 10) sampleMismatches.push(...diffs);
-      }
-
-      // Check tab_list coverage for YYMM tabs + config tabs
-      const expectedMonthTabs = managedTabs
-        .map((r) => r.tab_name)
-        .filter((t) => isReconMonthTab(t))
-        .sort();
       const relMonthTabs = (relBundle?.periods || []).map((p) => p.month_key).sort();
-      if (JSON.stringify(expectedMonthTabs) !== JSON.stringify(relMonthTabs)) {
-        mismatchCount++;
-        if (sampleMismatches.length < 10) {
-          sampleMismatches.push({
-            tab: "YYMM_LIST",
-            tabName: "YYMM_LIST",
-            cellKey: "tab_list",
-            grid: expectedMonthTabs.join(","),
-            relational: relMonthTabs.join(","),
-            expected: expectedMonthTabs.join(","),
-            actual: relMonthTabs.join(","),
-          });
-        }
-      }
-
-      // Check learning map read payload when YYMM tabs exist
+      let expectedMonthTabs = relMonthTabs;
       const actualLearning = await loadRelationalLearningMap(ctx, {
         source: canUseDb ? "db" : "in_memory",
       });
-      const expectedLearningRows = computeReconLearningMapFromItems({
-        clientId: cl.id,
-        clientName: cl.client_name,
-        periodMonthKeys: expectedMonthTabs,
-        reconciledItems: managedTabs
-          .filter((g) => isReconMonthTab(g.tab_name))
-          .flatMap((g) =>
-            parseReconPeriodTab({
-              clientId: cl.id,
-              clientName: cl.client_name,
-              monthKey: g.tab_name,
-              grid: compactGrid2D(g.values_grid || []),
-              notesGrid: g.notes_grid || {},
-            }).items.filter((i) => i.item_type === "reconciled")
-          ),
-      });
-      const expectedMap = new Map(
-        expectedLearningRows.map((r) => [r.match_pattern, { category: r.category, probability: r.probability }])
-      );
-      const learnCmp = compareLearningMaps_(expectedMap, actualLearning, 4);
-      mismatchCount += learnCmp.mismatchCount;
-      if (sampleMismatches.length < 10) sampleMismatches.push(...learnCmp.diffs);
+
+      if (managedTabs.length > 0) {
+        for (const row of managedTabs) {
+          const expectedVals = compactGrid2D(row.values_grid || []);
+          const reconRec = reconstructRelationalReconTabFromBundle(relBundle, row.tab_name);
+          if (!reconRec) {
+            mismatchCount++;
+            if (sampleMismatches.length < 10) {
+              sampleMismatches.push({
+                tab: row.tab_name,
+                tabName: row.tab_name,
+                cellKey: "tab_missing",
+                grid: `${expectedVals.length} rows`,
+                relational: "missing",
+                expected: `${expectedVals.length} rows`,
+                actual: "missing",
+              });
+            }
+            continue;
+          }
+          const { mismatchCount: mCnt, diffs } = diff2DGrids_(row.tab_name, expectedVals, reconRec.values_grid, 4);
+          mismatchCount += mCnt;
+          if (sampleMismatches.length < 10) sampleMismatches.push(...diffs);
+        }
+
+        // Check tab_list coverage for YYMM tabs + config tabs
+        expectedMonthTabs = managedTabs
+          .map((r) => r.tab_name)
+          .filter((t) => isReconMonthTab(t))
+          .sort();
+        if (JSON.stringify(expectedMonthTabs) !== JSON.stringify(relMonthTabs)) {
+          mismatchCount++;
+          if (sampleMismatches.length < 10) {
+            sampleMismatches.push({
+              tab: "YYMM_LIST",
+              tabName: "YYMM_LIST",
+              cellKey: "tab_list",
+              grid: expectedMonthTabs.join(","),
+              relational: relMonthTabs.join(","),
+              expected: expectedMonthTabs.join(","),
+              actual: relMonthTabs.join(","),
+            });
+          }
+        }
+
+        // Check learning map read payload when YYMM tabs exist
+        const expectedLearningRows = computeReconLearningMapFromItems({
+          clientId: cl.id,
+          clientName: cl.client_name,
+          periodMonthKeys: expectedMonthTabs,
+          reconciledItems: managedTabs
+            .filter((g) => isReconMonthTab(g.tab_name))
+            .flatMap((g) =>
+              parseReconPeriodTab({
+                clientId: cl.id,
+                clientName: cl.client_name,
+                monthKey: g.tab_name,
+                grid: compactGrid2D(g.values_grid || []),
+                notesGrid: g.notes_grid || {},
+              }).items.filter((i) => i.item_type === "reconciled")
+            ),
+        });
+        const expectedMap = new Map(
+          expectedLearningRows.map((r) => [r.match_pattern, { category: r.category, probability: r.probability }])
+        );
+        const learnCmp = compareLearningMaps_(expectedMap, actualLearning, 4);
+        mismatchCount += learnCmp.mismatchCount;
+        if (sampleMismatches.length < 10) sampleMismatches.push(...learnCmp.diffs);
+      } else {
+        for (const mKey of relMonthTabs) {
+          const reconRec = reconstructRelationalReconTabFromBundle(relBundle, mKey);
+          if (!reconRec || !Array.isArray(reconRec.values_grid)) {
+            mismatchCount++;
+            if (sampleMismatches.length < 10) {
+              sampleMismatches.push({ tab: mKey, tabName: mKey, cellKey: "grid", expected: "Array", actual: "null" });
+            }
+          }
+        }
+        const reconciledFromBundle = [...(relBundle?.itemsByMonth?.values() || [])]
+          .flat()
+          .filter((i) => i.item_type === "reconciled");
+        const expectedLearningRows = computeReconLearningMapFromItems({
+          clientId: cl.id,
+          clientName: cl.client_name,
+          periodMonthKeys: relMonthTabs,
+          reconciledItems: reconciledFromBundle,
+        });
+        const expectedMap = new Map(
+          expectedLearningRows.map((r) => [r.match_pattern, { category: r.category, probability: r.probability }])
+        );
+        const learnCmp = compareLearningMaps_(expectedMap, actualLearning, 4);
+        mismatchCount += learnCmp.mismatchCount;
+        if (sampleMismatches.length < 10) sampleMismatches.push(...learnCmp.diffs);
+      }
 
       results.push({
         clientName: cl.client_name,

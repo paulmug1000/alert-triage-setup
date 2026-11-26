@@ -53,6 +53,87 @@ const ALLOWED_TENANT_KEY_INFO_FIELDS = [
   "client_materialized_at",
 ];
 
+// Strict parent-before-child topological order so FK constraints always succeed
+// on forward insert and reverse delete during Format v2 snapshot restore.
+export const RELATIONAL_BACKUP_TABLES = Object.freeze([
+  // Master domain
+  { table: "accounting_invoices", domain: "master" },
+  { table: "accounting_direct_costs", domain: "master" },
+  { table: "accounting_pl_lines", domain: "master" },
+  { table: "crm_deals_raw", domain: "master" },
+  { table: "time_entries_raw", domain: "master" },
+  { table: "pulse_master_sync_configs", domain: "master" },
+  { table: "pulse_master_comparisons", domain: "master" },
+  { table: "pulse_automation_logs", domain: "master" },
+  { table: "pulse_execution_logs", domain: "master" },
+  // Recon domain
+  { table: "bank_recon_periods", domain: "recon" },
+  { table: "bank_recon_items", domain: "recon" },
+  { table: "bank_recon_learning_map", domain: "recon" },
+  { table: "pulse_recon_configs", domain: "recon" },
+  // Client domain
+  { table: "pulse_retainer_series", domain: "client" },
+  { table: "pulse_jobs", domain: "client" },
+  { table: "pulse_job_invoices", domain: "client" },
+  { table: "pulse_job_expenses", domain: "client" },
+  { table: "pulse_employees", domain: "client" },
+  { table: "pulse_outgoing_items", domain: "client" },
+  { table: "pulse_contractor_entries", domain: "client" },
+  { table: "pulse_nb_to_find", domain: "client" },
+  { table: "pulse_budget_items", domain: "client" },
+  { table: "pulse_cash_adjustments", domain: "client" },
+  { table: "pulse_cash_bank_balances", domain: "client" },
+  { table: "pulse_job_monthly_rollups", domain: "client" },
+  { table: "pulse_year0_lines", domain: "client" },
+  { table: "pulse_financial_statements", domain: "client" },
+  { table: "pulse_vat_schedules", domain: "client" },
+  { table: "pulse_cashflow_lines", domain: "client" },
+  { table: "pulse_financial_configs", domain: "client" },
+  { table: "pulse_client_tab_blueprints", domain: "client" },
+]);
+
+export async function collectClientRelationalSnapshotData(sb, clientRow) {
+  const clientId = clientRow?.id;
+  if (!sb || !clientId) {
+    throw new Error("Client ID is required to collect relational snapshot data.");
+  }
+
+  const tables = Object.create(null);
+  const tableCounts = Object.create(null);
+  let totalRelationalRows = 0;
+
+  // Fetch 5 tables at a time with pagination (handles >1000 rows cleanly without timeouts)
+  for (let i = 0; i < RELATIONAL_BACKUP_TABLES.length; i += 5) {
+    const batch = RELATIONAL_BACKUP_TABLES.slice(i, i + 5);
+    const results = await Promise.all(
+      batch.map(async ({ table }) => {
+        const rows = [];
+        for (let from = 0; ; from += 1000) {
+          const { data, error } = await sb
+            .from(table)
+            .select("*")
+            .eq("client_id", clientId)
+            .range(from, from + 999);
+          if (error) {
+            throw new Error(`Snapshot read failed on ${table}: ${error.message}`);
+          }
+          if (!Array.isArray(data) || data.length === 0) break;
+          rows.push(...data);
+          if (data.length < 1000) break;
+        }
+        return { table, rows };
+      })
+    );
+    for (const { table, rows } of results) {
+      tables[table] = rows;
+      tableCounts[table] = rows.length;
+      totalRelationalRows += rows.length;
+    }
+  }
+
+  return { tables, tableCounts, totalRelationalRows };
+}
+
 function normalizeClientKey_(name) {
   return String(name || "")
     .trim()
@@ -261,65 +342,34 @@ export async function createClientSnapshot({
 
   await ensureBackupBucket_(sb);
 
-  const [{ data: clientRow }, { data: keyInfoRow }] = await Promise.all([
-    sb
+  let clientResp = await sb
+    .from("clients")
+    .select("id, client_name, normalized_key, status, master_mode, client_mode, client_compute_mode, master_compute_mode, connector_pull_mode, sync_orchestrator_mode, grid_storage_retired, metadata")
+    .ilike("client_name", escapeIlikeExact(cleanClient))
+    .maybeSingle();
+  if (clientResp.error && /grid_storage_retired|sync_orchestrator_mode|42703/i.test(String(clientResp.error.message || ""))) {
+    clientResp = await sb
       .from("clients")
-      .select("id, client_name, normalized_key, status, master_mode, client_mode, metadata")
+      .select("id, client_name, normalized_key, status, master_mode, client_mode, client_compute_mode, master_compute_mode, connector_pull_mode, metadata")
       .ilike("client_name", escapeIlikeExact(cleanClient))
-      .maybeSingle(),
-    sb
+      .maybeSingle();
+  }
+  const [{ data: clientRow }, { data: keyInfoRow }] = [
+    clientResp,
+    await sb
       .from("tenant_key_info")
       .select("*")
       .ilike("client_name", escapeIlikeExact(cleanClient))
       .maybeSingle(),
-  ]);
+  ];
 
   const canonicalName = clientRow?.client_name || keyInfoRow?.client_name || cleanClient;
-
-  // Fetch tab metadata first so we can load grids without hitting a statement timeout
-  const { data: tabMetaRows, error: metaErr } = await sb
-    .from("master_sheet_grids")
-    .select("sheet_role, tab_name, row_count, col_count, updated_at")
-    .eq("client_name", canonicalName)
-    .order("sheet_role", { ascending: true })
-    .order("tab_name", { ascending: true });
-
-  if (metaErr) {
-    throw new Error(`Could not list tabs for ${canonicalName}: ${metaErr.message}`);
-  }
-  if (!tabMetaRows || tabMetaRows.length === 0) {
-    throw new Error(`No Supabase workbook tabs found for ${canonicalName}. Sync or seed the client first.`);
-  }
-
-  const tabs = [];
-  const tabsByRole = { master: [], recon: [], client: [] };
-
-  // Fetch tabs in parallel batches of 6 to stay fast while avoiding huge single-query payloads
-  for (let i = 0; i < tabMetaRows.length; i += 6) {
-    const batch = tabMetaRows.slice(i, i + 6);
-    const loadedBatch = await Promise.all(
-      batch.map(async (meta) => {
-        const { data: row, error: rErr } = await sb
-          .from("master_sheet_grids")
-          .select("sheet_role, tab_name, values_grid, formulas_grid, notes_grid, row_count, col_count, updated_at")
-          .eq("client_name", canonicalName)
-          .eq("sheet_role", meta.sheet_role)
-          .eq("tab_name", meta.tab_name)
-          .maybeSingle();
-        if (rErr) {
-          throw new Error(`Error reading ${meta.sheet_role}:${meta.tab_name}: ${rErr.message}`);
-        }
-        return row;
-      })
-    );
-    for (const row of loadedBatch) {
-      if (!row) continue;
-      tabs.push(row);
-      if (tabsByRole[row.sheet_role]) {
-        tabsByRole[row.sheet_role].push(row.tab_name);
-      }
-    }
-  }
+  const isNativeClient =
+    Boolean(clientRow?.id) &&
+    (Boolean(clientRow?.grid_storage_retired) ||
+      (String(clientRow?.client_compute_mode || clientRow?.metadata?.client_compute_mode || "").toLowerCase() === "native" &&
+        String(clientRow?.master_compute_mode || clientRow?.metadata?.master_compute_mode || "").toLowerCase() === "native" &&
+        String(clientRow?.sync_orchestrator_mode || clientRow?.metadata?.sync_orchestrator_mode || "").toLowerCase() === "native"));
 
   const nowIso = new Date().toISOString();
   const snapshotId = `snap_${Date.now()}_${randomUUID().slice(0, 8)}`;
@@ -327,18 +377,100 @@ export async function createClientSnapshot({
   const safeTs = nowIso.replace(/[:.]/g, "-");
   const storagePath = `snapshots/${slug}/${safeTs}_${snapshotId}.json.gz`;
 
-  const snapshotPayload = {
-    formatVersion: 1,
-    snapshotId,
-    clientName: canonicalName,
-    clientId: clientRow?.id || null,
-    createdAt: nowIso,
-    createdBy,
-    triggerType,
-    label: String(label || "").trim(),
-    config: keyInfoRow || null,
-    tabs,
-  };
+  let snapshotPayload = null;
+  let metaExtras = {};
+
+  if (isNativeClient) {
+    const relData = await collectClientRelationalSnapshotData(sb, clientRow);
+    snapshotPayload = {
+      formatVersion: 2,
+      snapshotId,
+      clientName: canonicalName,
+      clientId: clientRow.id,
+      createdAt: nowIso,
+      createdBy,
+      triggerType,
+      label: String(label || "").trim(),
+      config: keyInfoRow || null,
+      tables: relData.tables,
+      tableCounts: relData.tableCounts,
+      totalRelationalRows: relData.totalRelationalRows,
+      tabs: [],
+    };
+    metaExtras = {
+      formatVersion: 2,
+      totalRelationalRows: relData.totalRelationalRows,
+      tableCounts: relData.tableCounts,
+      masterTabCount: 0,
+      reconTabCount: relData.tableCounts.bank_recon_periods || 0,
+      clientTabCount: relData.tableCounts.pulse_client_tab_blueprints || 0,
+      tabsByRole: { master: [], recon: [], client: [] },
+    };
+  } else {
+    // Legacy Format v1: Fetch tab metadata from master_sheet_grids in parallel batches of 6
+    const { data: tabMetaRows, error: metaErr } = await sb
+      .from("master_sheet_grids")
+      .select("sheet_role, tab_name, row_count, col_count, updated_at")
+      .eq("client_name", canonicalName)
+      .order("sheet_role", { ascending: true })
+      .order("tab_name", { ascending: true });
+
+    if (metaErr) {
+      throw new Error(`Could not list tabs for ${canonicalName}: ${metaErr.message}`);
+    }
+    if (!tabMetaRows || tabMetaRows.length === 0) {
+      throw new Error(`No Supabase workbook tabs found for ${canonicalName}. Sync or seed the client first.`);
+    }
+
+    const tabs = [];
+    const tabsByRole = { master: [], recon: [], client: [] };
+
+    for (let i = 0; i < tabMetaRows.length; i += 6) {
+      const batch = tabMetaRows.slice(i, i + 6);
+      const loadedBatch = await Promise.all(
+        batch.map(async (meta) => {
+          const { data: row, error: rErr } = await sb
+            .from("master_sheet_grids")
+            .select("sheet_role, tab_name, values_grid, formulas_grid, notes_grid, row_count, col_count, updated_at")
+            .eq("client_name", canonicalName)
+            .eq("sheet_role", meta.sheet_role)
+            .eq("tab_name", meta.tab_name)
+            .maybeSingle();
+          if (rErr) {
+            throw new Error(`Error reading ${meta.sheet_role}:${meta.tab_name}: ${rErr.message}`);
+          }
+          return row;
+        })
+      );
+      for (const row of loadedBatch) {
+        if (!row) continue;
+        tabs.push(row);
+        if (tabsByRole[row.sheet_role]) {
+          tabsByRole[row.sheet_role].push(row.tab_name);
+        }
+      }
+    }
+
+    snapshotPayload = {
+      formatVersion: 1,
+      snapshotId,
+      clientName: canonicalName,
+      clientId: clientRow?.id || null,
+      createdAt: nowIso,
+      createdBy,
+      triggerType,
+      label: String(label || "").trim(),
+      config: keyInfoRow || null,
+      tabs,
+    };
+    metaExtras = {
+      formatVersion: 1,
+      masterTabCount: tabsByRole.master.length,
+      reconTabCount: tabsByRole.recon.length,
+      clientTabCount: tabsByRole.client.length,
+      tabsByRole,
+    };
+  }
 
   const rawBuffer = Buffer.from(JSON.stringify(snapshotPayload), "utf8");
   const compressedBuffer = zlib.gzipSync(rawBuffer, { level: zlib.constants.Z_BEST_SPEED });
@@ -362,10 +494,7 @@ export async function createClientSnapshot({
     createdBy,
     triggerType,
     label: String(label || "").trim(),
-    masterTabCount: tabsByRole.master.length,
-    reconTabCount: tabsByRole.recon.length,
-    clientTabCount: tabsByRole.client.length,
-    tabsByRole,
+    ...metaExtras,
     rawBytes: rawBuffer.length,
     compressedBytes: compressedBuffer.length,
   };
@@ -439,8 +568,8 @@ export async function importLocalSnapshotToCloud({
     payload = JSON.parse(rawStr);
   }
 
-  if (!payload || !Array.isArray(payload.tabs)) {
-    throw new Error("Invalid snapshot file: missing tabs array.");
+  if (!payload || (payload.formatVersion !== 2 && !Array.isArray(payload.tabs))) {
+    throw new Error("Invalid snapshot file: missing tabs array or formatVersion 2 tables.");
   }
 
   const canonicalName = String(clientNameOverride || payload.clientName || "").trim();
@@ -454,46 +583,88 @@ export async function importLocalSnapshotToCloud({
   const safeTs = nowIso.replace(/[:.]/g, "-");
   const storagePath = `snapshots/${slug}/${safeTs}_${snapshotId}.json.gz`;
 
-  const MAX_SNAPSHOT_ROWS = 50000;
-  const MAX_SNAPSHOT_COLS = 600;
   const DISALLOWED_TAB_KEYS = new Set(["__proto__", "constructor", "prototype"]);
   const tabsByRole = { master: [], recon: [], client: [] };
-  for (const t of payload.tabs) {
-    if (!t || typeof t !== "object") {
-      throw new Error("Invalid snapshot file: each tab entry must be an object.");
+  let normalizedPayload = null;
+  let extraMeta = {};
+
+  if (payload.formatVersion === 2 && payload.tables && typeof payload.tables === "object") {
+    const safeTables = Object.create(null);
+    const safeCounts = Object.create(null);
+    let totalRows = 0;
+    for (const { table } of RELATIONAL_BACKUP_TABLES) {
+      if (DISALLOWED_TAB_KEYS.has(table)) continue;
+      const arr = Array.isArray(payload.tables[table]) ? payload.tables[table] : [];
+      safeTables[table] = arr;
+      safeCounts[table] = arr.length;
+      totalRows += arr.length;
     }
-    const tabName = t.tab_name;
-    if (
-      typeof tabName !== "string" ||
-      tabName.length < 1 ||
-      tabName.length > 100 ||
-      DISALLOWED_TAB_KEYS.has(tabName) ||
-      /[\x00-\x1f\x7f]/.test(tabName)
-    ) {
-      throw new Error("Invalid snapshot file: invalid tab_name.");
-    }
-    const valuesGrid = Array.isArray(t.values_grid) ? t.values_grid : [];
-    if (valuesGrid.length > MAX_SNAPSHOT_ROWS) {
-      throw new Error(`Invalid snapshot file: tab "${tabName}" exceeds ${MAX_SNAPSHOT_ROWS} rows.`);
-    }
-    for (const row of valuesGrid) {
-      if (Array.isArray(row) && row.length > MAX_SNAPSHOT_COLS) {
-        throw new Error(`Invalid snapshot file: tab "${tabName}" exceeds ${MAX_SNAPSHOT_COLS} columns.`);
+    normalizedPayload = {
+      ...payload,
+      formatVersion: 2,
+      snapshotId,
+      clientName: canonicalName,
+      tables: safeTables,
+      tableCounts: safeCounts,
+      totalRelationalRows: totalRows,
+      tabs: [],
+      importedAt: nowIso,
+      importedBy,
+    };
+    extraMeta = {
+      formatVersion: 2,
+      totalRelationalRows: totalRows,
+      tableCounts: safeCounts,
+      masterTabCount: 0,
+      reconTabCount: safeCounts.bank_recon_periods || 0,
+      clientTabCount: safeCounts.pulse_client_tab_blueprints || 0,
+    };
+  } else {
+    const MAX_SNAPSHOT_ROWS = 50000;
+    const MAX_SNAPSHOT_COLS = 600;
+    for (const t of payload.tabs) {
+      if (!t || typeof t !== "object") {
+        throw new Error("Invalid snapshot file: each tab entry must be an object.");
+      }
+      const tabName = t.tab_name;
+      if (
+        typeof tabName !== "string" ||
+        tabName.length < 1 ||
+        tabName.length > 100 ||
+        DISALLOWED_TAB_KEYS.has(tabName) ||
+        /[\x00-\x1f\x7f]/.test(tabName)
+      ) {
+        throw new Error("Invalid snapshot file: invalid tab_name.");
+      }
+      const valuesGrid = Array.isArray(t.values_grid) ? t.values_grid : [];
+      if (valuesGrid.length > MAX_SNAPSHOT_ROWS) {
+        throw new Error(`Invalid snapshot file: tab "${tabName}" exceeds ${MAX_SNAPSHOT_ROWS} rows.`);
+      }
+      for (const row of valuesGrid) {
+        if (Array.isArray(row) && row.length > MAX_SNAPSHOT_COLS) {
+          throw new Error(`Invalid snapshot file: tab "${tabName}" exceeds ${MAX_SNAPSHOT_COLS} columns.`);
+        }
+      }
+      if (tabsByRole[t.sheet_role]) {
+        tabsByRole[t.sheet_role].push(tabName);
       }
     }
-    if (tabsByRole[t.sheet_role]) {
-      tabsByRole[t.sheet_role].push(tabName);
-    }
-  }
 
-  const normalizedPayload = {
-    ...payload,
-    formatVersion: 1,
-    snapshotId,
-    clientName: canonicalName,
-    importedAt: nowIso,
-    importedBy,
-  };
+    normalizedPayload = {
+      ...payload,
+      formatVersion: 1,
+      snapshotId,
+      clientName: canonicalName,
+      importedAt: nowIso,
+      importedBy,
+    };
+    extraMeta = {
+      formatVersion: 1,
+      masterTabCount: tabsByRole.master.length,
+      reconTabCount: tabsByRole.recon.length,
+      clientTabCount: tabsByRole.client.length,
+    };
+  }
 
   const rawBuffer = Buffer.from(JSON.stringify(normalizedPayload), "utf8");
   const compressedBuffer = zlib.gzipSync(rawBuffer, { level: zlib.constants.Z_BEST_SPEED });
@@ -518,9 +689,7 @@ export async function importLocalSnapshotToCloud({
     createdBy: importedBy,
     triggerType: "uploaded",
     label: String(labelOverride || payload.label || `Imported from ${origDate}`).trim(),
-    masterTabCount: tabsByRole.master.length,
-    reconTabCount: tabsByRole.recon.length,
-    clientTabCount: tabsByRole.client.length,
+    ...extraMeta,
     tabsByRole,
     rawBytes: rawBuffer.length,
     compressedBytes: compressedBuffer.length,
@@ -568,8 +737,8 @@ export async function restoreClientSnapshot({
     payload = loaded.payload;
   }
 
-  if (!payload || !Array.isArray(payload.tabs)) {
-    throw new Error("Invalid snapshot format: missing tabs array.");
+  if (!payload || (payload.formatVersion !== 2 && !Array.isArray(payload.tabs))) {
+    throw new Error("Invalid snapshot format: missing tabs array or formatVersion 2 tables.");
   }
 
   const targetClientName = String(clientNameOverride || payload.clientName || "").trim();
@@ -585,6 +754,110 @@ export async function restoreClientSnapshot({
 
   const canonicalClient = cfgRow?.client_name || targetClientName;
   const clientId = cfgRow?.id || payload.clientId || null;
+
+  if (payload.formatVersion === 2 && payload.tables && typeof payload.tables === "object") {
+    if (!clientId) {
+      throw new Error(`Cannot restore Format v2 snapshot for "${canonicalClient}" without a valid client_id.`);
+    }
+    if (scope === "single_tab") {
+      throw new Error("Single-tab restore is only supported for legacy grid snapshots; use 'all', 'client', or 'master_recon' for Format v2 relational snapshots.");
+    }
+
+    const allowedDomains =
+      scope === "client"
+        ? new Set(["client"])
+        : scope === "master_recon"
+          ? new Set(["master", "recon"])
+          : new Set(["master", "recon", "client"]);
+
+    const targetTables = RELATIONAL_BACKUP_TABLES.filter((t) => allowedDomains.has(t.domain));
+
+    let preRestoreSnapshot = null;
+    if (createPreRestoreBackup) {
+      try {
+        preRestoreSnapshot = await createClientSnapshot({
+          clientName: canonicalClient,
+          triggerType: "pre_restore",
+          label: `Auto-saved before restoring ${scope} (v2) from ${(payload.createdAt || "").slice(0, 16).replace("T", " ")}`,
+          createdBy: restoredBy,
+        });
+      } catch (preErr) {
+        console.warn("[supabaseBackupService] Could not create pre-restore safety snapshot:", preErr.message);
+      }
+    }
+
+    // 1. Delete existing rows in reverse topological order (child tables before parents)
+    for (const { table } of [...targetTables].reverse()) {
+      const { error: delErr } = await sb.from(table).delete().eq("client_id", clientId);
+      if (delErr) {
+        throw new Error(`Format v2 restore delete failed on ${table}: ${delErr.message}`);
+      }
+    }
+
+    // 2. Insert restored rows in forward topological order (parents before children)
+    const nowIsoV2 = new Date().toISOString();
+    let restoredRowsCount = 0;
+    for (const { table } of targetTables) {
+      const srcRows = Array.isArray(payload.tables[table]) ? payload.tables[table] : [];
+      if (srcRows.length === 0) continue;
+      const stamped = srcRows.map((row) => {
+        const clean = Object.create(null);
+        for (const [k, v] of Object.entries(row || {})) {
+          if (k === "__proto__" || k === "constructor" || k === "prototype") continue;
+          clean[k] = v;
+        }
+        clean.client_id = clientId;
+        if ("client_name" in clean) clean.client_name = canonicalClient;
+        return clean;
+      });
+      for (let i = 0; i < stamped.length; i += 200) {
+        const chunk = stamped.slice(i, i + 200);
+        const { error: insErr } = await sb.from(table).insert(chunk);
+        if (insErr) {
+          throw new Error(`Format v2 restore insert failed on ${table}: ${insErr.message}`);
+        }
+      }
+      restoredRowsCount += stamped.length;
+    }
+
+    const keyInfoPayloadV2 = payload.config?.keyInfo || (payload.config && !payload.config.master_mode ? payload.config : null);
+    if (keyInfoPayloadV2 && typeof keyInfoPayloadV2 === "object" && (scope === "all" || scope === "master_recon")) {
+      const cleanKi = {
+        client_id: clientId,
+        client_name: canonicalClient,
+        normalized_key: normalizeClientKey_(canonicalClient),
+        updated_at: nowIsoV2,
+      };
+      for (const field of ALLOWED_TENANT_KEY_INFO_FIELDS) {
+        if (keyInfoPayloadV2[field] !== undefined) {
+          cleanKi[field] = keyInfoPayloadV2[field];
+        }
+      }
+      await sb.from("tenant_key_info").upsert([cleanKi], { onConflict: "client_id" }).catch(() => { });
+    }
+
+    invalidateMasterEngineCache(canonicalClient);
+    await import("./relationalMasterService.js")
+      .then(({ invalidateClientRelationalMasterCache }) => invalidateClientRelationalMasterCache(canonicalClient))
+      .catch(() => { });
+    await import("./relationalReconService.js")
+      .then(({ invalidateClientRelationalReconCache }) => invalidateClientRelationalReconCache(canonicalClient))
+      .catch(() => { });
+
+    return {
+      formatVersion: 2,
+      clientName: canonicalClient,
+      sourceSnapshotId: sourceEntry?.id || payload.snapshotId || "uploaded",
+      sourceCreatedAt: payload.createdAt || null,
+      scope,
+      restoredTablesCount: targetTables.length,
+      restoredRowsCount,
+      restoredMasterCount: 0,
+      restoredReconCount: Array.isArray(payload.tables.bank_recon_periods) ? payload.tables.bank_recon_periods.length : 0,
+      restoredClientCount: Array.isArray(payload.tables.pulse_client_tab_blueprints) ? payload.tables.pulse_client_tab_blueprints.length : 0,
+      preRestoreSnapshotId: preRestoreSnapshot?.id || null,
+    };
+  }
 
   // Filter tabs according to requested restore scope
   const tabsToRestore = payload.tabs.filter((t) => {
@@ -803,46 +1076,26 @@ export async function runDailyAutoBackupSweep({
 
     await ensureBackupBucket_(sb);
 
-    // Discover all clients that currently have tabs in master_sheet_grids (paginated past PostgREST 1,000-row cap)
-    const gridClients = [];
-    for (let from = 0; ; from += 1000) {
-      const { data: page, error: pErr } = await sb
-        .from("master_sheet_grids")
-        .select("client_name")
-        .order("client_name", { ascending: true })
-        .order("sheet_role", { ascending: true })
-        .order("tab_name", { ascending: true })
-        .range(from, from + 999);
-      if (pErr || !Array.isArray(page) || page.length === 0) break;
-      gridClients.push(...page);
-      if (page.length < 1000) break;
-    }
-
-    // Fetch clients registry (paginated) to exclude archived tenants
-    const archivedClients = new Set();
+    // Discover active Supabase-mode clients directly from `clients` (no master_sheet_grids scan)
+    const activeSupaNames = [];
     for (let from = 0; ; from += 1000) {
       const { data: cPage, error: cErr } = await sb
         .from("clients")
-        .select("id, client_name, status, metadata")
+        .select("id, client_name, status, client_mode, master_mode, metadata")
         .order("id", { ascending: true })
         .range(from, from + 999);
       if (cErr || !Array.isArray(cPage) || cPage.length === 0) break;
       for (const c of cPage) {
         const st = String(c?.metadata?.statusOverride || c?.status || "live").trim().toLowerCase();
-        if (st === "archived" && c.client_name) {
-          archivedClients.add(String(c.client_name).trim().toLowerCase());
+        if (st === "archived" || !c.client_name) continue;
+        if (c.client_mode === "supabase" || c.master_mode === "supabase") {
+          activeSupaNames.push(String(c.client_name).trim());
         }
       }
       if (cPage.length < 1000) break;
     }
 
-    const uniqueClients = Array.from(
-      new Set(
-        gridClients
-          .map((r) => String(r.client_name || "").trim())
-          .filter((name) => name && !archivedClients.has(name.toLowerCase()))
-      )
-    ).sort((a, b) => a.localeCompare(b));
+    const uniqueClients = Array.from(new Set(activeSupaNames.filter(Boolean))).sort((a, b) => a.localeCompare(b));
 
     const currentIndex = await readBackupIndex_(sb);
     const createdSnapshots = [];

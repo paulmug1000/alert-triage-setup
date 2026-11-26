@@ -154,6 +154,8 @@ export default function DbView({
   const [nativeConnectorsMockReport, setNativeConnectorsMockReport] = useState(null);
   const [nativeSyncParityReport, setNativeSyncParityReport] = useState(null);
   const [nativeSyncReplayReport, setNativeSyncReplayReport] = useState(null);
+  const [gridReadinessReport, setGridReadinessReport] = useState(null);
+  const [gridRetirementResult, setGridRetirementResult] = useState(null);
   const [accountingInvariantsReport, setAccountingInvariantsReport] = useState(null);
   const [copied0012Sql, setCopied0012Sql] = useState(false);
   const [copied0013Sql, setCopied0013Sql] = useState(false);
@@ -163,6 +165,7 @@ export default function DbView({
   const [copied0017Sql, setCopied0017Sql] = useState(false);
   const [copied0018Sql, setCopied0018Sql] = useState(false);
   const [copied0019Sql, setCopied0019Sql] = useState(false);
+  const [copied0020Sql, setCopied0020Sql] = useState(false);
 
   // Live operation progress & feedback state
   const [activeOp, setActiveOp] = useState(null); // { key, label, startedAt }
@@ -1659,6 +1662,115 @@ export default function DbView({
         return {
           type: "success",
           text: `Switched ${targetClient} sync orchestrator mode to ${nextMode}.`,
+        };
+      }
+    );
+  };
+
+  const handleMigrateBridgeBaselines = (dryRun = false) => {
+    runTrackedOperation(
+      "migrate_bridge_baselines",
+      dryRun
+        ? "Previewing Google Sheet bridge baseline migration..."
+        : "Migrating Google Sheet bridge baselines into pulse_master_sync_configs...",
+      async () => {
+        const res = await fetch("/api/pma/master-engine", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            action: "migrate_bridge_baselines",
+            allClients: true,
+            dryRun,
+            clientName: activeClientName,
+            automationCommanderSheetId,
+          }),
+        });
+        const data = await res.json();
+        if (!data.success) throw new Error(data.error || "Bridge baseline migration failed.");
+        if (data.status) setStage2Data(data.status);
+        const r = data.result || {};
+        return {
+          type: "success",
+          text: dryRun
+            ? `Found ${r.baselinesFound || 0} bridge baseline(s) eligible for migration.`
+            : `Migrated ${r.migratedCount || 0} of ${r.baselinesFound || 0} bridge baseline(s) to relational config storage.`,
+        };
+      }
+    );
+  };
+
+  const handleVerifyGridReadiness = () => {
+    runTrackedOperation(
+      "verify_grid_readiness",
+      "Auditing Phase 6E zero-grid readiness across all clients...",
+      async () => {
+        const res = await fetch("/api/pma/master-engine", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            action: "verify_grid_retirement_readiness",
+            allClients: true,
+            clientName: activeClientName,
+            automationCommanderSheetId,
+          }),
+        });
+        const data = await res.json();
+        if (!data.success) throw new Error(data.error || "Zero-grid readiness check failed.");
+        const rr = data.readinessReport || {};
+        setGridReadinessReport(rr);
+        return {
+          type: (rr.notReadyClientsCount || 0) > 0 ? "info" : "success",
+          text: `Zero-grid readiness: ${rr.readyClientsCount || 0} of ${rr.clientsChecked || 0} client(s) ready (${rr.totalRemainingGridRows || 0} legacy grid row(s) remaining).`,
+        };
+      }
+    );
+  };
+
+  const handleRetireGridStorage = ({ dryRun = true, allClients = false, clientOverride = null } = {}) => {
+    const targetClient = typeof clientOverride === "string" && clientOverride ? clientOverride : activeClientName;
+    if (!dryRun) {
+      const msg = allClients
+        ? "Create Format v2 safety snapshots and purge obsolete legacy grid rows across all ready clients?"
+        : `Create a Format v2 safety snapshot and purge obsolete legacy grid rows for ${targetClient}?`;
+      if (typeof window !== "undefined" && !window.confirm(msg)) return;
+    }
+    runTrackedOperation(
+      dryRun ? "retire_grid_dry_run" : `retire_grid_${allClients ? "all" : targetClient}`,
+      dryRun
+        ? "Previewing Phase 6E legacy grid retirement..."
+        : allClients
+          ? "Retiring legacy grid storage across all ready clients..."
+          : `Retiring legacy grid storage for ${targetClient}...`,
+      async () => {
+        const res = await fetch("/api/pma/master-engine", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            action: "retire_client_grid_storage",
+            clientName: targetClient,
+            allClients,
+            dryRun,
+            createSafetyBackup: true,
+            automationCommanderSheetId,
+          }),
+        });
+        const data = await res.json();
+        if (!data.success) throw new Error(data.error || "Grid retirement operation failed.");
+        if (data.status) setStage2Data(data.status);
+        const r = data.result || {};
+        setGridRetirementResult(r);
+        if (dryRun) {
+          const rows = allClients ? r.totalPurgedOrEligibleRows || 0 : r.wouldPurgeGridRows || 0;
+          return {
+            type: "success",
+            text: `Dry run complete: ${rows} legacy grid row(s) eligible for retirement.`,
+          };
+        }
+        return {
+          type: "success",
+          text: allClients
+            ? `Retired legacy grid storage across ${r.retiredCount || 0} client(s) (${r.totalPurgedOrEligibleRows || 0} rows purged).`
+            : `Retired legacy grid storage for ${targetClient} (${r.purgedGridRows || 0} rows purged).`,
         };
       }
     );
@@ -6153,10 +6265,10 @@ export default function DbView({
             >
               <div>
                 <h2 style={{ margin: 0, fontSize: "15px", fontWeight: 700, color: "#0f172a" }}>
-                  Native calculation, comparison, connector, and sync engine (Phase 6A–6D)
+                  Native calculation, comparison, connector, sync, and grid retirement engine (Phase 6A–6E)
                 </h2>
                 <p style={{ margin: "2px 0 0", fontSize: "12px", color: "#64748b" }}>
-                  Decouples client recalculation, master comparisons, connector pulls, and automation sync logs from legacy grid blobs.
+                  Decouples client recalculation, master comparisons, connector pulls, and automation sync logs from legacy grid blobs and manages grid storage retirement.
                 </p>
               </div>
               <div style={{ display: "flex", alignItems: "center", gap: "6px", flexWrap: "wrap" }}>
@@ -6196,6 +6308,18 @@ export default function DbView({
                 >
                   {stage2Data?.phase6NativeSync?.schemaReady ? "Schema ready (0019)" : "Migration 0019 required"}
                 </span>
+                <span
+                  style={{
+                    padding: "3px 9px",
+                    borderRadius: "999px",
+                    fontSize: "11px",
+                    fontWeight: 600,
+                    background: stage2Data?.phase6GridRetirement?.schemaReady ? "#dcfce7" : "#fef3c7",
+                    color: stage2Data?.phase6GridRetirement?.schemaReady ? "#166534" : "#92400e",
+                  }}
+                >
+                  {stage2Data?.phase6GridRetirement?.schemaReady ? "Schema ready (0020)" : "Migration 0020 required"}
+                </span>
                 {stage2Data?.phase6NativeCompute?.schemaReady && (
                   <span
                     style={{
@@ -6207,7 +6331,7 @@ export default function DbView({
                       color: "#1e40af",
                     }}
                   >
-                    {`${stage2Data.phase6NativeCompute.clientComputeNativeCount || 0} native calc · ${stage2Data.phase6NativeCompute.masterComputeNativeCount || 0} native master · ${stage2Data?.phase6NativeConnectors?.connectorNativeCount || 0} native pulls · ${stage2Data?.phase6NativeSync?.syncNativeCount || 0} native sync`}
+                    {`${stage2Data.phase6NativeCompute.clientComputeNativeCount || 0} native calc · ${stage2Data.phase6NativeCompute.masterComputeNativeCount || 0} native master · ${stage2Data?.phase6NativeConnectors?.connectorNativeCount || 0} native pulls · ${stage2Data?.phase6NativeSync?.syncOrchestratorNativeCount || 0} native sync · ${stage2Data?.phase6GridRetirement?.retiredClientsCount || 0} grid retired`}
                   </span>
                 )}
               </div>
@@ -6348,6 +6472,51 @@ export default function DbView({
               </div>
             )}
 
+            {!stage2Data?.phase6GridRetirement?.schemaReady && stage2Data?.phase6GridRetirement?.migrationSql && (
+              <div
+                style={{
+                  marginBottom: "12px",
+                  padding: "10px 12px",
+                  borderRadius: "7px",
+                  background: "#fffbeb",
+                  border: "1px solid #fde68a",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                  gap: "10px",
+                  flexWrap: "wrap",
+                  fontSize: "12px",
+                  color: "#92400e",
+                }}
+              >
+                <span>
+                  Run migration 0020 in the Supabase SQL editor to add sheet_bridge_baseline and grid storage retirement tracking for phase 6E.
+                </span>
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (typeof navigator !== "undefined" && navigator.clipboard) {
+                      navigator.clipboard.writeText(stage2Data.phase6GridRetirement.migrationSql);
+                      setCopied0020Sql(true);
+                      setTimeout(() => setCopied0020Sql(false), 2500);
+                    }
+                  }}
+                  style={{
+                    padding: "5px 10px",
+                    fontSize: "11.5px",
+                    fontWeight: 600,
+                    borderRadius: "6px",
+                    border: "1px solid #f59e0b",
+                    background: "#ffffff",
+                    color: "#92400e",
+                    cursor: "pointer",
+                  }}
+                >
+                  {copied0020Sql ? "Copied migration 0020 SQL" : "Copy migration 0020 SQL"}
+                </button>
+              </div>
+            )}
+
             {stage2Data?.phase6NativeCompute?.schemaReady && (
               <div
                 style={{
@@ -6368,10 +6537,17 @@ export default function DbView({
                   { label: "6C backfilled clients", value: stage2Data?.phase6NativeConnectors?.backfilledCount || 0 },
                   ...(stage2Data?.phase6NativeSync?.schemaReady
                     ? [
-                        { label: "Native sync (6D)", value: stage2Data?.phase6NativeSync?.syncNativeCount || 0 },
+                        { label: "Native sync (6D)", value: stage2Data?.phase6NativeSync?.syncOrchestratorNativeCount || 0 },
                         { label: "6D backfilled clients", value: stage2Data?.phase6NativeSync?.totalBackfilledConfigs || 0 },
                         { label: "Automation log rows", value: stage2Data?.phase6NativeSync?.totalAutoLogs || 0 },
                         { label: "Execution log rows", value: stage2Data?.phase6NativeSync?.totalExecLogs || 0 },
+                      ]
+                    : []),
+                  ...(stage2Data?.phase6GridRetirement?.schemaReady
+                    ? [
+                        { label: "Grid retired (6E)", value: stage2Data?.phase6GridRetirement?.retiredClientsCount || 0 },
+                        { label: "Remaining grid rows", value: stage2Data?.phase6GridRetirement?.remainingGridRows || 0 },
+                        { label: "Migrated baselines", value: stage2Data?.phase6GridRetirement?.migratedBaselinesCount || 0 },
                       ]
                     : []),
                 ].map((stat) => (
@@ -6703,6 +6879,93 @@ export default function DbView({
                       : `Switch ${activeClientName} 6D to shadow`}
                 </span>
               </button>
+
+              <button
+                type="button"
+                disabled={!s2Ready || isBusy}
+                onClick={handleVerifyGridReadiness}
+                style={{
+                  ...actionBtnBase,
+                  background: "#ffffff",
+                  borderColor: "#cbd5e1",
+                  color: "#1e293b",
+                  cursor: !s2Ready ? "not-allowed" : isBusy ? "wait" : "pointer",
+                }}
+              >
+                {activeOp?.key === "verify_grid_readiness" && (
+                  <Spinner size={11} color="#1e293b" style={{ marginRight: 0 }} />
+                )}
+                <span>Verify 6E zero-grid readiness</span>
+              </button>
+
+              <button
+                type="button"
+                disabled={!stage2Data?.phase6GridRetirement?.schemaReady || isBusy}
+                onClick={() => handleMigrateBridgeBaselines(false)}
+                style={{
+                  ...actionBtnBase,
+                  background: !stage2Data?.phase6GridRetirement?.schemaReady ? "#f3f4f6" : "#eff6ff",
+                  borderColor: !stage2Data?.phase6GridRetirement?.schemaReady ? "#cbd5e1" : "#93c5fd",
+                  color: !stage2Data?.phase6GridRetirement?.schemaReady ? "#9ca3af" : "#1e40af",
+                  cursor: !stage2Data?.phase6GridRetirement?.schemaReady ? "not-allowed" : isBusy ? "wait" : "pointer",
+                }}
+              >
+                {activeOp?.key === "migrate_bridge_baselines" && (
+                  <Spinner size={11} color="#1e40af" style={{ marginRight: 0 }} />
+                )}
+                <span>Migrate bridge baselines</span>
+              </button>
+
+              <button
+                type="button"
+                disabled={!s2Ready || isBusy}
+                onClick={() => handleRetireGridStorage({ dryRun: true, allClients: true })}
+                style={{
+                  ...actionBtnBase,
+                  background: "#ffffff",
+                  borderColor: "#cbd5e1",
+                  color: "#1e293b",
+                  cursor: !s2Ready ? "not-allowed" : isBusy ? "wait" : "pointer",
+                }}
+              >
+                {activeOp?.key === "retire_grid_dry_run" && (
+                  <Spinner size={11} color="#1e293b" style={{ marginRight: 0 }} />
+                )}
+                <span>Preview 6E retirement (dry run)</span>
+              </button>
+
+              <button
+                type="button"
+                disabled={!stage2Data?.phase6GridRetirement?.schemaReady || isBusy || activeClientObj?.gridStorageRetired}
+                onClick={() => handleRetireGridStorage({ dryRun: false, allClients: false, clientOverride: activeClientName })}
+                style={{
+                  ...actionBtnBase,
+                  background:
+                    !stage2Data?.phase6GridRetirement?.schemaReady || activeClientObj?.gridStorageRetired
+                      ? "#f3f4f6"
+                      : "#fef2f2",
+                  borderColor:
+                    !stage2Data?.phase6GridRetirement?.schemaReady || activeClientObj?.gridStorageRetired
+                      ? "#cbd5e1"
+                      : "#fecaca",
+                  color:
+                    !stage2Data?.phase6GridRetirement?.schemaReady || activeClientObj?.gridStorageRetired
+                      ? "#9ca3af"
+                      : "#b91c1c",
+                  cursor:
+                    !stage2Data?.phase6GridRetirement?.schemaReady || activeClientObj?.gridStorageRetired
+                      ? "not-allowed"
+                      : isBusy
+                        ? "wait"
+                        : "pointer",
+                }}
+              >
+                <span>
+                  {activeClientObj?.gridStorageRetired
+                    ? `${activeClientName} grid retired`
+                    : `Retire ${activeClientName} grid storage`}
+                </span>
+              </button>
             </div>
 
             {nativeClientCalcParityReport && (
@@ -6960,6 +7223,57 @@ export default function DbView({
                     </span>
                   ))}
                 </div>
+              </div>
+            )}
+
+            {(gridReadinessReport || gridRetirementResult) && (
+              <div
+                style={{
+                  marginTop: "10px",
+                  padding: "10px 12px",
+                  borderRadius: "7px",
+                  background: "#f8fafc",
+                  border: `1px solid ${(gridReadinessReport?.notReadyClientsCount || 0) > 0 ? "#fde68a" : "#bbf7d0"}`,
+                  fontSize: "11.5px",
+                }}
+              >
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "6px" }}>
+                  <strong style={{ color: "#0f172a" }}>
+                    {gridReadinessReport
+                      ? `Phase 6E zero-grid readiness — ${gridReadinessReport.readyClientsCount || 0} of ${gridReadinessReport.clientsChecked || 0} ready · ${gridReadinessReport.totalRemainingGridRows || 0} legacy grid row(s) remaining`
+                      : `Phase 6E retirement ${gridRetirementResult?.dryRun ? "preview" : "complete"}`}
+                  </strong>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setGridReadinessReport(null);
+                      setGridRetirementResult(null);
+                    }}
+                    style={{ padding: "2px 7px", fontSize: "11px", borderRadius: "4px", border: "1px solid #cbd5e1", background: "#ffffff", cursor: "pointer" }}
+                  >
+                    Hide
+                  </button>
+                </div>
+                {Array.isArray(gridReadinessReport?.results) && (
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: "6px" }}>
+                    {gridReadinessReport.results.map((r) => (
+                      <span
+                        key={r.clientName}
+                        title={r.blockers?.length ? r.blockers.join("; ") : `${r.blueprintTabsCount} blueprints, ${r.remainingGridRows} grid rows`}
+                        style={{
+                          padding: "2px 8px",
+                          borderRadius: "999px",
+                          fontSize: "10.5px",
+                          fontWeight: 600,
+                          background: r.gridStorageRetired ? "#dbeafe" : r.ready ? "#dcfce7" : "#fee2e2",
+                          color: r.gridStorageRetired ? "#1e40af" : r.ready ? "#166534" : "#991b1b",
+                        }}
+                      >
+                        {`${r.clientName}: ${r.gridStorageRetired ? "Retired" : r.ready ? `Ready (${r.remainingGridRows} grid rows)` : `${r.blockers?.length || 1} blocker(s)`}`}
+                      </span>
+                    ))}
+                  </div>
+                )}
               </div>
             )}
           </div>

@@ -114,6 +114,12 @@ import {
   verifyNativeSyncReplayParity,
   setClientSyncOrchestratorMode,
 } from "../../../services/nativeSyncOrchestratorService.js";
+import {
+  migrateSheetBridgeBaselinesToRelational,
+  verifyZeroGridReadiness,
+  retireClientGridStorage,
+  retireAllClientsGridStorage,
+} from "../../../services/gridRetirementService.js";
 
 async function refreshPrecomputedAlerts_(sheets, acId) {
   invalidatePrecomputedMemoryCache();
@@ -928,6 +934,60 @@ export default async function handler(req, res) {
       }).catch(() => { });
       const status = await getStage2Status(cleanClient);
       return res.status(200).json({ success: true, updated, status });
+    }
+
+    if (action === "migrate_bridge_baselines") {
+      const dryRun = req.body?.dryRun !== false;
+      const result = await migrateSheetBridgeBaselinesToRelational({
+        clientName: req.body?.allClients ? null : cleanClient,
+        dryRun,
+      });
+      if (!dryRun) {
+        const sheets = await getSheetsClient();
+        await logPmaActivity(sheets, {
+          automationCommanderSheetId: acId,
+          clientName: req.body?.allClients ? "ALL CLIENTS" : cleanClient,
+          category: "SYSTEM",
+          action: "BRIDGE_BASELINES_MIGRATED",
+          summary: `Migrated ${result.migratedCount || 0} Google Sheet bridge baseline(s) to pulse_master_sync_configs`,
+          details: result,
+          userEmail: sessionUser?.email || (isCronAuth ? "System (Scheduled Sync)" : "Admin"),
+        }).catch(() => { });
+      }
+      const status = await getStage2Status(cleanClient);
+      return res.status(200).json({ success: true, result, status });
+    }
+
+    if (action === "verify_grid_retirement_readiness") {
+      const readinessReport = await verifyZeroGridReadiness({
+        clientName: req.body?.allClients === false ? cleanClient : null,
+      });
+      return res.status(200).json({ success: true, readinessReport });
+    }
+
+    if (action === "retire_client_grid_storage") {
+      const dryRun = req.body?.dryRun !== false;
+      const createSafetyBackup = req.body?.createSafetyBackup !== false;
+      const triggeredBy = sessionUser?.email || (isCronAuth ? "System (Scheduled Sync)" : "Admin");
+      const result = req.body?.allClients
+        ? await retireAllClientsGridStorage({ dryRun, createSafetyBackup, triggeredBy })
+        : await retireClientGridStorage(cleanClient, { dryRun, createSafetyBackup, triggeredBy });
+      if (!dryRun) {
+        const sheets = await getSheetsClient();
+        await logPmaActivity(sheets, {
+          automationCommanderSheetId: acId,
+          clientName: req.body?.allClients ? "ALL CLIENTS" : cleanClient,
+          category: "SYSTEM",
+          action: "GRID_STORAGE_RETIRED",
+          summary: req.body?.allClients
+            ? `Retired legacy grid storage across ${result.retiredCount || 0} client(s) (${result.totalPurgedOrEligibleRows || 0} rows purged)`
+            : `Retired legacy grid storage for ${cleanClient} (${result.purgedGridRows || 0} rows purged)`,
+          details: result,
+          userEmail: triggeredBy,
+        }).catch(() => { });
+      }
+      const status = await getStage2Status(cleanClient);
+      return res.status(200).json({ success: true, result, status });
     }
 
     if (action === "sync_sheet_bridge_outbound") {

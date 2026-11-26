@@ -380,13 +380,19 @@ async function loadClientsArrayFromSupabaseFallback_() {
     if (!(await isSupabaseControlPlaneActive())) return null;
     const sb = getSupabaseAdmin();
     if (!sb) return null;
-    const [{ data: sbClients }, { data: kiRows }, { data: kiGridRows }, { data: finCfgRows }] = await Promise.all([
+    const [{ data: sbClients }, { data: kiRows }, { data: finCfgRows }] = await Promise.all([
       sb.from("clients").select("*").order("client_name", { ascending: true }),
       sb.from("tenant_key_info").select("client_name, normalized_key, revenue_or_income_mode, direct_costs_mode, accounting_tool, crm_tool, crm_drives, invoice_method"),
-      sb.from("master_sheet_grids").select("client_name, values_grid").eq("tab_name", "KeyInfo").eq("sheet_role", "client"),
       sb.from("pulse_financial_configs").select("client_name, client_key_info_grid"),
     ]);
     if (!Array.isArray(sbClients) || sbClients.length === 0) return null;
+    const finCfgSet = new Set((finCfgRows || []).map((r) => String(r.client_name || "").trim().toLowerCase()).filter(Boolean));
+    const missingKiClients = sbClients
+      .filter((c) => c.client_mode === "supabase" && !finCfgSet.has(String(c.client_name || "").trim().toLowerCase()))
+      .map((c) => c.client_name);
+    const kiGridRows = missingKiClients.length > 0
+      ? (await sb.from("master_sheet_grids").select("client_name, values_grid").eq("tab_name", "KeyInfo").eq("sheet_role", "client").in("client_name", missingKiClients))?.data || []
+      : [];
     const kiByNorm = new Map();
     const kiByName = new Map();
     for (const k of kiRows || []) {

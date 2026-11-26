@@ -1809,15 +1809,27 @@ export async function handleEomLoadBankAccounts(req, res, sheets) {
     const supaNames = clients.filter((c) => c.clientMode === "supabase").map((c) => c.clientName);
     if (supaNames.length > 0 && sb) {
       try {
-        const { data: kiGrids } = await sb
-          .from("master_sheet_grids")
-          .select("client_name, values_grid")
-          .eq("sheet_role", "client")
-          .eq("tab_name", "KeyInfo")
+        const { data: finCfgRows } = await sb
+          .from("pulse_financial_configs")
+          .select("client_name, client_key_info_grid")
           .in("client_name", supaNames);
-        for (const row of (kiGrids || [])) {
-          if (row.client_name && Array.isArray(row.values_grid)) {
-            supaKiByClient.set(row.client_name, row.values_grid);
+        for (const cfg of finCfgRows || []) {
+          if (cfg.client_name && Array.isArray(cfg.client_key_info_grid) && cfg.client_key_info_grid.length > 0) {
+            supaKiByClient.set(cfg.client_name, cfg.client_key_info_grid);
+          }
+        }
+        const missingSupaNames = supaNames.filter((n) => !supaKiByClient.has(n));
+        if (missingSupaNames.length > 0) {
+          const { data: kiGrids } = await sb
+            .from("master_sheet_grids")
+            .select("client_name, values_grid")
+            .eq("sheet_role", "client")
+            .eq("tab_name", "KeyInfo")
+            .in("client_name", missingSupaNames);
+          for (const row of (kiGrids || [])) {
+            if (row.client_name && Array.isArray(row.values_grid)) {
+              supaKiByClient.set(row.client_name, row.values_grid);
+            }
           }
         }
       } catch (kiErr) {
@@ -5427,18 +5439,27 @@ export async function handleEomRunReportingAction(req, res, sheets) {
         const folderUrl = c.folderUrl || clientConf.folderUrl || "";
         const reconSheetId = c.reconSheetId || clientConf.reconSheetId || "";
 
-        // 1. Load or compute MgmtRep grid
+        // 1. Load or compute MgmtRep grid (prefer relational pulse_master_sync_configs, fallback master_sheet_grids)
         let mgmtGrid = null;
         if (!isFirstBatch && sb) {
-          const { data: gridRow } = await sb
-            .from("master_sheet_grids")
-            .select("values_grid")
+          const { data: cfgRow } = await sb
+            .from("pulse_master_sync_configs")
+            .select("master_mgmt_rep_grid")
             .eq("client_name", cName)
-            .eq("sheet_role", "master")
-            .eq("tab_name", "MgmtRep")
             .maybeSingle();
-          if (Array.isArray(gridRow?.values_grid) && gridRow.values_grid.length > 500) {
-            mgmtGrid = gridRow.values_grid;
+          if (Array.isArray(cfgRow?.master_mgmt_rep_grid) && cfgRow.master_mgmt_rep_grid.length > 500) {
+            mgmtGrid = cfgRow.master_mgmt_rep_grid;
+          } else {
+            const { data: gridRow } = await sb
+              .from("master_sheet_grids")
+              .select("values_grid")
+              .eq("client_name", cName)
+              .eq("sheet_role", "master")
+              .eq("tab_name", "MgmtRep")
+              .maybeSingle();
+            if (Array.isArray(gridRow?.values_grid) && gridRow.values_grid.length > 500) {
+              mgmtGrid = gridRow.values_grid;
+            }
           }
         }
         if (!mgmtGrid) {

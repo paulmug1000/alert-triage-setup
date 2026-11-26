@@ -1027,15 +1027,39 @@ async function fetchDriveVersionMeta_(rawDrive, spreadsheetId) {
 
 async function loadBaselineRecord_(supabase, ctx) {
   if (!supabase || !ctx?.clientName) return { driveVersion: "", updatedAt: null, tabs: createSafeMap_() };
-  const { data } = await supabase
-    .from("master_sheet_grids")
-    .select("notes_grid, updated_at")
-    .eq("client_name", ctx.clientName)
-    .eq("sheet_role", "master")
-    .eq("tab_name", BASELINE_TAB_NAME)
-    .maybeSingle();
 
-  const ng = data?.notes_grid && typeof data.notes_grid === "object" ? data.notes_grid : {};
+  let baselinePayload = null;
+  let updatedAt = null;
+
+  if (ctx.clientId) {
+    try {
+      const { data: cfgData, error: cfgErr } = await supabase
+        .from("pulse_master_sync_configs")
+        .select("sheet_bridge_baseline, updated_at")
+        .eq("client_id", ctx.clientId)
+        .maybeSingle();
+      if (!cfgErr && cfgData?.sheet_bridge_baseline && typeof cfgData.sheet_bridge_baseline === "object") {
+        baselinePayload = cfgData.sheet_bridge_baseline;
+        updatedAt = cfgData.updated_at || null;
+      }
+    } catch (_) { }
+  }
+
+  if (!baselinePayload) {
+    const { data } = await supabase
+      .from("master_sheet_grids")
+      .select("notes_grid, updated_at")
+      .eq("client_name", ctx.clientName)
+      .eq("sheet_role", "master")
+      .eq("tab_name", BASELINE_TAB_NAME)
+      .maybeSingle();
+    if (data?.notes_grid && typeof data.notes_grid === "object") {
+      baselinePayload = data.notes_grid;
+      updatedAt = data.updated_at || null;
+    }
+  }
+
+  const ng = baselinePayload && typeof baselinePayload === "object" ? baselinePayload : {};
   const tabsOut = createSafeMap_();
   if (ng.tabs && typeof ng.tabs === "object") {
     for (const [k, v] of Object.entries(ng.tabs)) {
@@ -1048,7 +1072,7 @@ async function loadBaselineRecord_(supabase, ctx) {
   }
   return {
     driveVersion: String(ng.driveVersion || ""),
-    updatedAt: ng.updatedAt || data?.updated_at || null,
+    updatedAt: ng.updatedAt || updatedAt || null,
     tabs: tabsOut,
   };
 }
@@ -1065,6 +1089,22 @@ async function saveBaselineRecord_(supabase, ctx, { driveVersion = "", tabs = {}
     updatedAt: new Date().toISOString(),
     tabs: compactedTabs,
   };
+
+  if (ctx.clientId) {
+    const { error: cfgErr } = await supabase
+      .from("pulse_master_sync_configs")
+      .upsert(
+        {
+          client_id: ctx.clientId,
+          client_name: ctx.clientName,
+          sheet_bridge_baseline: payload,
+          updated_at: payload.updatedAt,
+        },
+        { onConflict: "client_id" }
+      );
+    if (!cfgErr) return;
+  }
+
   await supabase.from("master_sheet_grids").upsert(
     {
       client_id: ctx.clientId,
@@ -2115,20 +2155,20 @@ export async function setClientSheetBridgeMode(sheets, clientName, targetMode) {
     if (!clientRow.client_sheet_id || isVirtualSupabaseSheetId(clientRow.client_sheet_id)) {
       throw new Error(`"${clientName}" has no Google Client Sheet linked for bidirectional syncing.`);
     }
-    const { count: clientTabCount } = await supabase
-      .from("master_sheet_grids")
+    const { count: blueprintTabCount } = await supabase
+      .from("pulse_client_tab_blueprints")
       .select("id", { count: "exact", head: true })
-      .eq("client_name", clientRow.client_name)
-      .or("sheet_role.eq.client,and(sheet_role.eq.master,tab_name.like.Client::%)");
-    let effectiveClientTabCount = clientTabCount || 0;
+      .eq("client_id", clientRow.id)
+      .then((r) => r)
+      .catch(() => ({ count: 0 }));
+    let effectiveClientTabCount = blueprintTabCount || 0;
     if (!effectiveClientTabCount) {
-      const { count: blueprintTabCount } = await supabase
-        .from("pulse_client_tab_blueprints")
+      const { count: clientTabCount } = await supabase
+        .from("master_sheet_grids")
         .select("id", { count: "exact", head: true })
-        .eq("client_id", clientRow.id)
-        .then((r) => r)
-        .catch(() => ({ count: 0 }));
-      effectiveClientTabCount = blueprintTabCount || 0;
+        .eq("client_name", clientRow.client_name)
+        .or("sheet_role.eq.client,and(sheet_role.eq.master,tab_name.like.Client::%)");
+      effectiveClientTabCount = clientTabCount || 0;
     }
     if (!effectiveClientTabCount) {
       throw new Error(`Run "Push sheet data to Supabase" (Step 4) for "${clientName}" before enabling the Google Sheet bridge.`);

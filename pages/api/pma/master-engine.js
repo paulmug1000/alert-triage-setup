@@ -100,6 +100,13 @@ import {
   verifyNativeMasterComparisonParity,
   setClientMasterComputeMode,
 } from "../../../services/nativeMasterComparisonService.js";
+import {
+  backfillClientNativeConnectors,
+  backfillAllClientsNativeConnectors,
+  verifyNativeConnectorsStateParity,
+  verifyNativeConnectorsMockReplayParity,
+  setClientConnectorPullMode,
+} from "../../../services/nativeConnectorsParityService.js";
 
 async function refreshPrecomputedAlerts_(sheets, acId) {
   invalidatePrecomputedMemoryCache();
@@ -813,6 +820,55 @@ export default async function handler(req, res) {
         clientName: targetClientFilter,
       });
       return res.status(200).json({ success: true, parityReport });
+    }
+
+    if (action === "backfill_native_connectors") {
+      const result = req.body?.allClients
+        ? await backfillAllClientsNativeConnectors()
+        : await backfillClientNativeConnectors(cleanClient);
+      const sheets = await getSheetsClient();
+      await logPmaActivity(sheets, {
+        automationCommanderSheetId: acId,
+        clientName: req.body?.allClients ? "ALL CLIENTS" : cleanClient,
+        category: "SYSTEM",
+        action: "NATIVE_CONNECTORS_BACKFILLED",
+        summary: req.body?.allClients
+          ? `Backfilled Phase 6C connector state across ${result.clientsProcessed || 0} client(s)`
+          : `Backfilled Phase 6C connector state for ${cleanClient}`,
+        details: result,
+        userEmail: sessionUser?.email || (isCronAuth ? "System (Scheduled Sync)" : "Admin"),
+      }).catch(() => { });
+      const status = await getStage2Status(cleanClient);
+      return res.status(200).json({ success: true, result, status });
+    }
+
+    if (action === "verify_native_connectors_parity") {
+      const targetClientFilter = req.body?.allClients ? null : cleanClient;
+      const stateReport = await verifyNativeConnectorsStateParity({ clientName: targetClientFilter });
+      const mockReplayReport = req.body?.includeMockReplay !== false
+        ? await verifyNativeConnectorsMockReplayParity()
+        : null;
+      return res.status(200).json({ success: true, parityReport: stateReport, mockReplayReport });
+    }
+
+    if (action === "set_client_connector_pull_mode") {
+      const connectorPullMode = String(req.body?.connectorPullMode || "").trim().toLowerCase();
+      if (connectorPullMode !== "grid_gas" && connectorPullMode !== "shadow" && connectorPullMode !== "native") {
+        return res.status(400).json({ success: false, error: "Invalid connectorPullMode. Expected 'grid_gas', 'shadow', or 'native'." });
+      }
+      const updated = await setClientConnectorPullMode(cleanClient, connectorPullMode);
+      const sheets = await getSheetsClient();
+      await logPmaActivity(sheets, {
+        automationCommanderSheetId: acId,
+        clientName: cleanClient,
+        category: "SYSTEM",
+        action: "CLIENT_CONNECTOR_PULL_MODE_CHANGED",
+        summary: `Switched ${cleanClient} native connector pull mode to "${connectorPullMode}"`,
+        details: updated,
+        userEmail: sessionUser?.email || (isCronAuth ? "System (Scheduled Sync)" : "Admin"),
+      }).catch(() => { });
+      const status = await getStage2Status(cleanClient);
+      return res.status(200).json({ success: true, updated, status });
     }
 
     if (action === "sync_sheet_bridge_outbound") {

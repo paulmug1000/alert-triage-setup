@@ -35,6 +35,194 @@ import {
   evaluateScheduledAccountingPreflight,
   captureAccountingPreflightBaseline,
 } from "./accountingPreflightService.js";
+import {
+  pullNativeAccountingInvoices,
+  pullNativeAccountingDirectCosts,
+  pullNativeProfitAndLoss,
+  pullNativeYear0ProfitAndLoss,
+  fetchNativeSingleMonthPLReport,
+  updateNativeSingleMonthPL,
+  refreshNativeChartOfAccountsDirect,
+} from "./nativeAccountingPullService.js";
+import { pullNativeCrmDeals } from "./nativeCrmPullService.js";
+import { dateToSerial } from "./gasRuntime/sheetValueUtils.js";
+
+function syncNativePullGridToVirtualSheet_(env, tabName, nextGrid, markDirty = false) {
+  if (!env?.masterSS || !tabName || !Array.isArray(nextGrid)) return;
+  let sheetObj = env.masterSS.getSheetByName(tabName);
+  if (!sheetObj) sheetObj = env.masterSS.insertSheet(tabName);
+  sheetObj.valuesGrid = nextGrid.map((r) => (Array.isArray(r) ? [...r] : []));
+  sheetObj.formulasGrid = nextGrid.map((r) => (Array.isArray(r) ? [...r] : []));
+  if (markDirty) {
+    sheetObj.dirty = true;
+  } else {
+    sheetObj._loadedValuesJson = JSON.stringify(sheetObj.valuesGrid);
+    sheetObj.dirty = false;
+  }
+}
+
+function attachNativeConnectorHooksToEnv_(env, ctx, dryRun = false) {
+  if (!env || !ctx || ctx.connectorPullMode !== "native") return;
+  const persistToDb = !dryRun;
+  const getKiOverride = () => env.masterSS?.getSheetByName("KeyInfo")?.valuesGrid || null;
+  const getPropsObj = () => Object.fromEntries((env.scriptProperties || new Map()).entries());
+
+  env.nativeConnectorHooks = {
+    PullInvoicesBasedOn: async (_args, rt) => {
+      try {
+        const res = await pullNativeAccountingInvoices(ctx, {
+          persistToDb,
+          keyInfoOverride: getKiOverride(),
+          existingGridOverride: env.masterSS?.getSheetByName("InvFromApp")?.valuesGrid || null,
+          scriptPropsOverride: getPropsObj(),
+        });
+        if (!res.success) {
+          rt?.setLastConnectorError?.(res.lastError || "Native invoice pull failed");
+          return { newInvoices: [], updatedInvoices: [] };
+        }
+        if (res.nextGrid) syncNativePullGridToVirtualSheet_(env, "InvFromApp", res.nextGrid, dryRun);
+        if (res.importMode) {
+          env.scriptProperties?.set("INV_LAST_IMPORT_MODE", res.importMode);
+        }
+        if (res.dataChanged) {
+          const dca = env.masterSS?.getSheetByName("DataChgAlert");
+          if (dca) {
+            while (dca.valuesGrid.length < 2) dca.valuesGrid.push([]);
+            while (dca.valuesGrid[1].length < 3) dca.valuesGrid[1].push("");
+            dca.valuesGrid[1][1] = "Yes";
+            dca.valuesGrid[1][2] = dateToSerial(new Date());
+          }
+        }
+        env.recomputeMasterFormulasSync?.();
+        return { newInvoices: res.newInvoices || [], updatedInvoices: res.updatedInvoices || [] };
+      } catch (err) {
+        rt?.setLastConnectorError?.(err.message);
+        return { newInvoices: [], updatedInvoices: [] };
+      }
+    },
+
+    PullCRMBasedOn: async (_args, rt) => {
+      try {
+        const res = await pullNativeCrmDeals(ctx, {
+          persistToDb,
+          keyInfoOverride: getKiOverride(),
+          existingGridOverride: env.masterSS?.getSheetByName("DataFromCRM")?.valuesGrid || null,
+          scriptPropsOverride: getPropsObj(),
+        });
+        if (res.overrideInfo) {
+          rt?.setLastCrmSyncOverrideUsed?.(res.overrideInfo);
+          env.scriptProperties?.delete("CRM_SYNC_SWING_OVERRIDE_ONCE");
+          env.scriptProperties?.delete("CRM_SYNC_SWING_BLOCK_JSON");
+        }
+        if (res.blocked && res.blockInfo) {
+          rt?.setLastCrmSyncBlocked_?.(res.blockInfo);
+          env.scriptProperties?.set("CRM_SYNC_SWING_BLOCK_JSON", JSON.stringify(res.blockInfo));
+          return res;
+        }
+        if (!res.success) {
+          rt?.setLastConnectorError?.(res.lastError || "Native CRM pull failed");
+          return res;
+        }
+        if (res.nextGrid) syncNativePullGridToVirtualSheet_(env, "DataFromCRM", res.nextGrid, dryRun);
+        if (res.nextBridgeGrid && res.tool === "googlesheet") {
+          syncNativePullGridToVirtualSheet_(env, "CRMGoogleBridge", res.nextBridgeGrid, dryRun);
+        }
+        if (res.nextBridgeGrid && res.tool === "excel") {
+          syncNativePullGridToVirtualSheet_(env, "CRMExcelBridge", res.nextBridgeGrid, dryRun);
+        }
+        if (res.nextExcelCopyGrid && res.tool === "excel") {
+          syncNativePullGridToVirtualSheet_(env, "CRMExcelCopy", res.nextExcelCopyGrid, dryRun);
+        }
+        if (res.tool !== "close" && res.tool !== "googlesheet" && res.tool !== "excel" && res.dataChanged) {
+          const dca = env.masterSS?.getSheetByName("DataChgAlert");
+          if (dca) {
+            while (dca.valuesGrid.length < 2) dca.valuesGrid.push([]);
+            while (dca.valuesGrid[1].length < 9) dca.valuesGrid[1].push("");
+            dca.valuesGrid[1][7] = "Yes";
+            dca.valuesGrid[1][8] = dateToSerial(new Date());
+          }
+        }
+        env.recomputeMasterFormulasSync?.();
+        return res;
+      } catch (err) {
+        rt?.setLastConnectorError?.(err.message);
+        return null;
+      }
+    },
+
+    syncAccountingDataToSheet: async (args, rt) => {
+      const isHeadless = Boolean(args?.[0]);
+      try {
+        const res = await pullNativeAccountingDirectCosts(ctx, {
+          persistToDb,
+          keyInfoOverride: getKiOverride(),
+          existingGridOverride: env.masterSS?.getSheetByName("JnlsFromApp")?.valuesGrid || null,
+        });
+        if (!res.success) {
+          rt?.setLastConnectorError?.(res.lastError || "Native direct cost pull failed");
+          return { newExpenses: [], updatedExpenses: [] };
+        }
+        if (res.nextGrid) syncNativePullGridToVirtualSheet_(env, "JnlsFromApp", res.nextGrid, dryRun);
+        env.recomputeMasterFormulasSync?.();
+        if (typeof rt?.syncExpenseTransactionBreakdownToClientSheet_ === "function" && Array.isArray(res.allExpenseData)) {
+          try {
+            await rt.syncExpenseTransactionBreakdownToClientSheet_(isHeadless, res.allExpenseData);
+          } catch (_) { }
+        }
+        return { newExpenses: res.newExpenses || [], updatedExpenses: res.updatedExpenses || [] };
+      } catch (err) {
+        rt?.setLastConnectorError?.(err.message);
+        return { newExpenses: [], updatedExpenses: [] };
+      }
+    },
+
+    PullPLBasedOn: async (_args, rt) => {
+      try {
+        const res = await pullNativeProfitAndLoss(ctx, { persistToDb, keyInfoOverride: getKiOverride() });
+        if (res.nextGrid) syncNativePullGridToVirtualSheet_(env, "PLFromApp", res.nextGrid, dryRun);
+        env.recomputeMasterFormulasSync?.();
+        return res;
+      } catch (err) {
+        rt?.setLastConnectorError?.(err.message);
+        throw err;
+      }
+    },
+
+    PullYear0PLBasedOn: async (_args, rt) => {
+      try {
+        const res = await pullNativeYear0ProfitAndLoss(ctx, { persistToDb, keyInfoOverride: getKiOverride() });
+        if (res.nextGrid) syncNativePullGridToVirtualSheet_(env, "Year0PLFromApp", res.nextGrid, dryRun);
+        env.recomputeMasterFormulasSync?.();
+        return res;
+      } catch (err) {
+        rt?.setLastConnectorError?.(err.message);
+        throw err;
+      }
+    },
+
+    refreshAccountingToolChartOfAccounts: async (_args, rt) => {
+      try {
+        const res = await refreshNativeChartOfAccountsDirect(ctx, { persistToDb, keyInfoOverride: getKiOverride() });
+        if (res.keyInfoGrid) syncNativePullGridToVirtualSheet_(env, "KeyInfo", res.keyInfoGrid, dryRun);
+        return res;
+      } catch (err) {
+        rt?.setLastConnectorError?.(err.message);
+        throw err;
+      }
+    },
+
+    fetchSingleMonthPLReport_: async (args) => {
+      return await fetchNativeSingleMonthPLReport(ctx, args?.[0], args?.[1], { keyInfoOverride: getKiOverride() });
+    },
+
+    updateSingleMonthPLInSheet_: async (args) => {
+      const res = await updateNativeSingleMonthPL(ctx, args?.[2], args?.[3], args?.[4], { persistToDb });
+      if (res?.nextGrid) syncNativePullGridToVirtualSheet_(env, "PLFromApp", res.nextGrid, dryRun);
+      env.recomputeMasterFormulasSync?.();
+      return res;
+    },
+  };
+}
 
 /**
  * Returns true if a client is currently in setup/onboarding mode and NOT yet marked live for Pulse/automations.
@@ -328,6 +516,7 @@ export async function processPartPaidInvoicesNative(sheets, ctxOrName) {
     includeReconMonthly: false,
     executionMeta: { functionName: "processPartPaidInvoices", triggerSource: "Manual (PMA)" },
   });
+  attachNativeConnectorHooksToEnv_(env, ctx, false);
   const gas = createMasterGasInstance(env);
   const res = await gas.processPartPaidInvoices(env.masterSS, env.masterSS.getSheetByName("DataChgAlert"));
   await env.finalizeExecution({ summary: `Part-paid invoices: ${res?.count || 0} update(s)` });
@@ -351,6 +540,7 @@ export async function pushMatchedInvoicesToConfirmedNative(sheets, ctxOrName) {
     includeReconMonthly: false,
     executionMeta: { functionName: "PushInvDetailsToConfirmed", triggerSource: "Manual (PMA)" },
   });
+  attachNativeConnectorHooksToEnv_(env, ctx, false);
   const gas = createMasterGasInstance(env);
   const res = await gas.PushInvDetailsToConfirmed(true);
   await env.finalizeExecution({ summary: `Pushed ${res?.count || res?.updatedCount || 0} invoice(s)` });
@@ -374,6 +564,7 @@ export async function updateStaleUnsentInvoicesNative(sheets, ctxOrName) {
     includeReconMonthly: false,
     executionMeta: { functionName: "updateStaleUnsentInvoices", triggerSource: "Manual (PMA)" },
   });
+  attachNativeConnectorHooksToEnv_(env, ctx, false);
   const gas = createMasterGasInstance(env);
   const res = await gas.updateStaleUnsentInvoices(env.masterSS);
   await env.finalizeExecution({ summary: `Updated ${res?.count || 0} stale invoice(s)` });
@@ -397,6 +588,7 @@ export async function updateOverdueInvoicesInConfirmedNative(sheets, ctxOrName) 
     includeReconMonthly: false,
     executionMeta: { functionName: "updateOverdueInvoicesInConfirmed", triggerSource: "Manual (PMA)" },
   });
+  attachNativeConnectorHooksToEnv_(env, ctx, false);
   const gas = createMasterGasInstance(env);
   const res = await gas.updateOverdueInvoicesInConfirmed(env.masterSS, env.masterSS.getSheetByName("DataChgAlert"));
   await env.finalizeExecution({ summary: `Updated ${res?.count || 0} overdue invoice(s)` });
@@ -420,6 +612,7 @@ export async function pushMatchedDirectCostsNative(sheets, ctxOrName) {
     includeReconMonthly: false,
     executionMeta: { functionName: "PushExpDetails", triggerSource: "Manual (PMA)" },
   });
+  attachNativeConnectorHooksToEnv_(env, ctx, false);
   const gas = createMasterGasInstance(env);
   const res = await gas.PushExpDetails(true);
   await env.finalizeExecution({ summary: `Pushed ${res?.count || res?.updatedCount || 0} direct cost(s)` });
@@ -433,23 +626,30 @@ export async function refreshNativeChartOfAccounts(sheets, clientName) {
   const ctx = await resolveSupabaseSheetContext({ clientName });
   if (!ctx) throw new Error(`Client "${clientName}" not found.`);
 
-  const env = await createGasEnvironment({
-    ctx,
-    sheets,
-    autoReconcileFn: autoReconcileClientBankTransactions,
-    includeReconMonthly: false,
-    executionMeta: { functionName: "refreshAccountingToolChartOfAccounts", triggerSource: "Manual (PMA)" },
-  });
+  let categories = [];
+  let res = null;
+  if (ctx.connectorPullMode === "native") {
+    res = await refreshNativeChartOfAccountsDirect(ctx, { persistToDb: true });
+    categories = res?.categories || [];
+  } else {
+    const env = await createGasEnvironment({
+      ctx,
+      sheets,
+      autoReconcileFn: autoReconcileClientBankTransactions,
+      includeReconMonthly: false,
+      executionMeta: { functionName: "refreshAccountingToolChartOfAccounts", triggerSource: "Manual (PMA)" },
+    });
+    attachNativeConnectorHooksToEnv_(env, ctx, false);
   const gas = createMasterGasInstance(env);
-  const res = await gas.refreshAccountingToolChartOfAccounts(true);
-  await env.finalizeExecution({ summary: "Refreshed Chart of Accounts" });
+    res = await gas.refreshAccountingToolChartOfAccounts(true);
+    await env.finalizeExecution({ summary: "Refreshed Chart of Accounts" });
 
-  // Mirror KeyInfo!AW2:AW500 to Client Sheet if sheets is available
-  const kiGrid = env.masterSS.getSheetByName("KeyInfo")?.valuesGrid || [];
-  const categories = [];
-  for (let r = 1; r < kiGrid.length; r++) {
-    const cName = String(kiGrid[r]?.[48] || "").trim();
-    if (cName) categories.push(cName);
+    // Mirror KeyInfo!AW2:AW500 to Client Sheet if sheets is available
+    const kiGrid = env.masterSS.getSheetByName("KeyInfo")?.valuesGrid || [];
+    for (let r = 1; r < kiGrid.length; r++) {
+      const cName = String(kiGrid[r]?.[48] || "").trim();
+      if (cName) categories.push(cName);
+    }
   }
 
   if (sheets && ctx.clientSheetId && categories.length > 0) {
@@ -477,18 +677,25 @@ export async function pullLivePLToSupabaseNative(sheets, clientName) {
   const ctx = await resolveSupabaseSheetContext({ clientName });
   if (!ctx) throw new Error(`Client "${clientName}" not found.`);
 
-  const env = await createGasEnvironment({
-    ctx,
-    sheets,
-    autoReconcileFn: autoReconcileClientBankTransactions,
-    includeReconMonthly: false,
-    executionMeta: { functionName: "PullPLBasedOn", triggerSource: "Manual (PMA)" },
-  });
+  let plGrid = [];
+  if (ctx.connectorPullMode === "native") {
+    const res = await pullNativeProfitAndLoss(ctx, { persistToDb: true });
+    plGrid = res?.nextGrid || [];
+  } else {
+    const env = await createGasEnvironment({
+      ctx,
+      sheets,
+      autoReconcileFn: autoReconcileClientBankTransactions,
+      includeReconMonthly: false,
+      executionMeta: { functionName: "PullPLBasedOn", triggerSource: "Manual (PMA)" },
+    });
+    attachNativeConnectorHooksToEnv_(env, ctx, false);
   const gas = createMasterGasInstance(env);
-  await gas.PullPLBasedOn(true);
-  await env.finalizeExecution({ summary: "Pulled Profit & Loss report" });
+    await gas.PullPLBasedOn(true);
+    await env.finalizeExecution({ summary: "Pulled Profit & Loss report" });
+    plGrid = env.masterSS.getSheetByName("PLFromApp")?.valuesGrid || [];
+  }
 
-  const plGrid = env.masterSS.getSheetByName("PLFromApp")?.valuesGrid || [];
   const categories = plGrid
     .slice(1)
     .map((r) => String(r?.[0] || "").trim())
@@ -523,6 +730,7 @@ export async function pushOutgoingsToClientSheetNative(
     autoReconcileFn: autoReconcileClientBankTransactions,
     executionMeta: { functionName: fnName, triggerSource: "Manual (PMA)" },
   });
+  attachNativeConnectorHooksToEnv_(env, ctx, false);
   const gas = createMasterGasInstance(env);
 
   const res = includeUnreconciled
@@ -547,6 +755,7 @@ export async function syncExpenseBreakdownToClientSheetNative(sheets, clientName
     autoReconcileFn: autoReconcileClientBankTransactions,
     executionMeta: { functionName: "syncExpenseTransactionBreakdownToClientSheet_", triggerSource: "Manual (PMA)" },
   });
+  attachNativeConnectorHooksToEnv_(env, ctx, false);
   const gas = createMasterGasInstance(env);
   const res = await gas.syncExpenseTransactionBreakdownToClientSheet_(true);
   await env.finalizeExecution({ summary: "Synced expense breakdown to Client Sheet" });
@@ -573,6 +782,7 @@ export async function pushOutgoingsAndExpenseBreakdownNative(
     autoReconcileFn: autoReconcileClientBankTransactions,
     executionMeta: { functionName: `${fnName} + syncExpenseBreakdown`, triggerSource: "Manual (PMA)" },
   });
+  attachNativeConnectorHooksToEnv_(env, ctx, false);
   const gas = createMasterGasInstance(env);
 
   let pushRes = null;
@@ -620,7 +830,17 @@ export async function syncBeyondTheBlueprintConversations_({ masterSS = null, ct
     const supabase = getSupabaseAdmin();
 
     if (!Array.isArray(grid) || grid.length === 0) {
-      if (supabase) {
+      if (supabase && ctx?.connectorPullMode === "native") {
+        const { data: cfg } = await supabase
+          .from("pulse_master_sync_configs")
+          .select("crm_excel_copy_grid")
+          .eq("client_name", targetClient)
+          .maybeSingle();
+        if (Array.isArray(cfg?.crm_excel_copy_grid) && cfg.crm_excel_copy_grid.length > 0) {
+          grid = cfg.crm_excel_copy_grid;
+        }
+      }
+      if ((!Array.isArray(grid) || grid.length === 0) && supabase) {
         const { data: tab } = await supabase
           .from("master_sheet_grids")
           .select("values_grid")
@@ -729,6 +949,17 @@ export async function pullLiveCrmDealsToSupabaseNative(sheets, ctxOrName) {
       : ctxOrName;
   if (!ctx) throw new Error("Client context not found.");
 
+  if (ctx.connectorPullMode === "native") {
+    const res = await pullNativeCrmDeals(ctx, { persistToDb: true });
+    if (ctx.clientName === "Beyond the Blueprint") {
+      await syncBeyondTheBlueprintConversations_({ ctx, sheets });
+    }
+    return {
+      dealsPulled: res?.rowsCount ?? 0,
+      crmTool: res?.toolLabel || res?.tool || "",
+    };
+  }
+
   const env = await createGasEnvironment({
     ctx,
     sheets,
@@ -736,6 +967,7 @@ export async function pullLiveCrmDealsToSupabaseNative(sheets, ctxOrName) {
     includeReconMonthly: false,
     executionMeta: { functionName: "PullCRMBasedOn", triggerSource: "Manual (PMA)" },
   });
+  attachNativeConnectorHooksToEnv_(env, ctx, false);
   const gas = createMasterGasInstance(env);
   await gas.PullCRMBasedOn(true);
   await env.finalizeExecution({ summary: "Pulled CRM deals" });
@@ -767,6 +999,7 @@ export async function runNativeRevenueComparison(sheets, clientName, customTarge
     autoReconcileFn: autoReconcileClientBankTransactions,
     executionMeta: { functionName: "runRevenueComparison", triggerSource: "Manual (PMA)" },
   });
+  attachNativeConnectorHooksToEnv_(env, ctx, false);
   const gas = createMasterGasInstance(env);
   const res = await gas.runRevenueComparison(true, customTargetMonth);
   await env.finalizeExecution({ summary: `Revenue comparison (${res?.targetMonthLabel || customTargetMonth || "latest"})` });
@@ -940,6 +1173,7 @@ export async function runNativeMasterSync({
     );
   }
 
+  attachNativeConnectorHooksToEnv_(env, ctx, false);
   const gas = createMasterGasInstance(env);
 
   const { data: curSched } = await supabase
@@ -1843,6 +2077,8 @@ export async function runNativeMasterAmdAction({
     },
     dryRun,
   });
+  attachNativeConnectorHooksToEnv_(env, ctx, false);
+  attachNativeConnectorHooksToEnv_(env, ctx, dryRun);
   const gas = createMasterGasInstance(env);
 
   let rawResult = null;
@@ -1851,27 +2087,47 @@ export async function runNativeMasterAmdAction({
   try {
     switch (amdAction) {
       case "pull_invoices": {
-        rawResult = await gas.PullInvoicesBasedOn(true);
-        const rows = env.masterSS.getSheetByName("InvFromApp")?.valuesGrid || [];
-        metrics.rowsCount = Math.max(0, rows.length - 1);
+        if (ctx.connectorPullMode === "native" && !dryRun) {
+          rawResult = await pullNativeAccountingInvoices(ctx, { persistToDb: true });
+          metrics.rowsCount = rawResult?.rowsCount ?? 0;
+        } else {
+          rawResult = await gas.PullInvoicesBasedOn(true);
+          const rows = env.masterSS.getSheetByName("InvFromApp")?.valuesGrid || [];
+          metrics.rowsCount = Math.max(0, rows.length - 1);
+        }
         break;
       }
       case "pull_expenses": {
-        rawResult = await gas.syncAccountingDataToSheet(true);
-        const rows = env.masterSS.getSheetByName("JnlsFromApp")?.valuesGrid || [];
-        metrics.rowsCount = Math.max(0, rows.length - 1);
+        if (ctx.connectorPullMode === "native" && !dryRun) {
+          rawResult = await pullNativeAccountingDirectCosts(ctx, { persistToDb: true });
+          metrics.rowsCount = rawResult?.rowsCount ?? 0;
+        } else {
+          rawResult = await gas.syncAccountingDataToSheet(true);
+          const rows = env.masterSS.getSheetByName("JnlsFromApp")?.valuesGrid || [];
+          metrics.rowsCount = Math.max(0, rows.length - 1);
+        }
         break;
       }
       case "pull_crm": {
-        rawResult = await gas.PullCRMBasedOn(true);
-        const rows = env.masterSS.getSheetByName("DataFromCRM")?.valuesGrid || [];
-        metrics.rowsCount = Math.max(0, rows.length - 1);
+        if (ctx.connectorPullMode === "native" && !dryRun) {
+          rawResult = await pullNativeCrmDeals(ctx, { persistToDb: true });
+          metrics.rowsCount = rawResult?.rowsCount ?? 0;
+        } else {
+          rawResult = await gas.PullCRMBasedOn(true);
+          const rows = env.masterSS.getSheetByName("DataFromCRM")?.valuesGrid || [];
+          metrics.rowsCount = Math.max(0, rows.length - 1);
+        }
         break;
       }
       case "pull_pl": {
-        rawResult = await gas.PullPLBasedOn(true);
-        const rows = env.masterSS.getSheetByName("PLFromApp")?.valuesGrid || [];
-        metrics.categoriesCount = Math.max(0, rows.length - 1);
+        if (ctx.connectorPullMode === "native" && !dryRun) {
+          rawResult = await pullNativeProfitAndLoss(ctx, { persistToDb: true });
+          metrics.categoriesCount = rawResult?.rowsCount ?? 0;
+        } else {
+          rawResult = await gas.PullPLBasedOn(true);
+          const rows = env.masterSS.getSheetByName("PLFromApp")?.valuesGrid || [];
+          metrics.categoriesCount = Math.max(0, rows.length - 1);
+        }
         break;
       }
       case "expenses_gap_check": {

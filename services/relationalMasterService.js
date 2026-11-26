@@ -1250,7 +1250,9 @@ async function runSingleMasterReconcilePass_(ctx, tabNames = ALL_PHASE4_MASTER_T
     tabsSet.has("ProjectsFromTime") ||
     tabsSet.has("TimeComp") ||
     Boolean(options.forceFullUpsert);
-  const needsConfig = Boolean(options.forceFullUpsert) || [...tabsSet].some((t) => ALL_PHASE4_MASTER_TABS.includes(t));
+  const needsConfig =
+    !options?.skipConfigUpsert &&
+    (Boolean(options.forceFullUpsert) || [...tabsSet].some((t) => ALL_PHASE4_MASTER_TABS.includes(t)));
 
   const tabsToLoad = new Set(needsConfig ? [...ALL_PHASE4_MASTER_TABS, "KeyInfo"] : []);
   if (needsInv) tabsToLoad.add("InvFromApp");
@@ -1274,8 +1276,13 @@ async function runSingleMasterReconcilePass_(ctx, tabNames = ALL_PHASE4_MASTER_T
   }
 
   const gridsMap = {};
+  const gridsOverride = options?.gridsOverride && typeof options.gridsOverride === "object" ? options.gridsOverride : null;
   await Promise.all(
     [...tabsToLoad].map(async (t) => {
+      if (gridsOverride && Array.isArray(gridsOverride[t])) {
+        gridsMap[t] = gridsOverride[t];
+        return;
+      }
       const rec = await getOrLoadVirtualTabGrid_(ctx, "master", t, null).catch(() => null);
       gridsMap[t] = Array.isArray(rec?.values_grid) ? rec.values_grid : [];
     })
@@ -1291,7 +1298,7 @@ async function runSingleMasterReconcilePass_(ctx, tabNames = ALL_PHASE4_MASTER_T
     timeEntriesCount: 0,
   };
 
-  if (needsConfig) {
+  if (needsConfig && !options?.skipConfigUpsert) {
     const cfg = extractMasterSyncConfigFromGrids(ctx.clientId, ctx.clientName, gridsMap);
     const { error: cfgErr } = await supabase
       .from("pulse_master_sync_configs")

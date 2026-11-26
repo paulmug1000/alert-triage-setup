@@ -105,8 +105,24 @@ function buildBundle() {
     return false;
   };
 
+  const NATIVE_HOOKABLE_FUNCS = new Set([
+    "PullInvoicesBasedOn",
+    "PullCRMBasedOn",
+    "syncAccountingDataToSheet",
+    "PullPLBasedOn",
+    "PullYear0PLBasedOn",
+    "refreshAccountingToolChartOfAccounts",
+    "fetchSingleMonthPLReport_",
+    "updateSingleMonthPLInSheet_",
+  ]);
+
   // 3. Compute fixed-point transitive closure of async functions
   const asyncFuncNames = new Set();
+  for (const hName of NATIVE_HOOKABLE_FUNCS) {
+    if (allNamedFuncs.some((f) => f.name === hName)) {
+      asyncFuncNames.add(hName);
+    }
+  }
   for (const { name, node } of allNamedFuncs) {
     walk(node.body, node, (n) => {
       if (n.type === "CallExpression" && isAsyncPrimitiveCall(n)) {
@@ -144,6 +160,13 @@ function buildBundle() {
     if (!node.async && !markedFuncStarts.has(node.start)) {
       markedFuncStarts.add(node.start);
       insertions.push({ pos: node.start, text: "async ", order: 2 });
+    }
+    if (NATIVE_HOOKABLE_FUNCS.has(name) && node.body?.type === "BlockStatement") {
+      insertions.push({
+        pos: node.body.start + 1,
+        text: ` if (env?.nativeConnectorHooks?.${name}) { return await env.nativeConnectorHooks.${name}(Array.prototype.slice.call(arguments), { setLastConnectorError: typeof setLastConnectorError === 'function' ? setLastConnectorError : null, setLastCrmSyncBlocked_: typeof setLastCrmSyncBlocked_ === 'function' ? setLastCrmSyncBlocked_ : null, setLastCrmSyncOverrideUsed: (v) => { try { LAST_CRM_SYNC_OVERRIDE_USED_ = v; } catch (_) {} }, syncExpenseTransactionBreakdownToClientSheet_: typeof syncExpenseTransactionBreakdownToClientSheet_ === 'function' ? syncExpenseTransactionBreakdownToClientSheet_ : null }); }`,
+        order: 4,
+      });
     }
   }
 

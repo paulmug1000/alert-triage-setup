@@ -34,6 +34,10 @@ import {
 import {
   verifyNativeMasterComparisonParity,
 } from "./nativeMasterComparisonService.js";
+import {
+  checkPhase6NativeConnectorsSchemaStatus,
+  verifyNativeConnectorsStateParity,
+} from "./nativeConnectorsParityService.js";
 import { flushPendingClientRecomputes } from "./masterEngineService.js";
 
 /**
@@ -768,16 +772,19 @@ function indexSuiteResultsByClient_(suiteReport) {
 }
 
 async function runFullActiveClientsParityCheck_() {
-  const [phase4Schema, phase4ReconSchema, phase5FinSchema, phase6Schema] = await Promise.all([
+  const [phase4Schema, phase4ReconSchema, phase5FinSchema, phase6Schema, phase6cSchema] = await Promise.all([
     checkPhase4MasterSchemaStatus().catch(() => ({ schemaReady: false })),
     checkPhase4ReconSchemaStatus().catch(() => ({ schemaReady: false })),
     checkPhase5FinancialsSchemaStatus().catch(() => ({ schemaReady: false })),
     checkPhase6NativeComputeSchemaStatus().catch(() => ({ schemaReady: false })),
+    checkPhase6NativeConnectorsSchemaStatus().catch(() => ({ schemaReady: false })),
   ]);
   const phase4Ready = Boolean(phase4Schema?.schemaReady);
   const phase4ReconReady = Boolean(phase4ReconSchema?.schemaReady);
   const phase5FinReady = Boolean(phase5FinSchema?.schemaReady);
   const phase6Ready = Boolean(phase6Schema?.schemaReady);
+
+  const phase6cReady = Boolean(phase6cSchema?.schemaReady);
 
   const [
     sheetReport,
@@ -793,6 +800,7 @@ async function runFullActiveClientsParityCheck_() {
     finReadRep,
     natClientRep,
     natMasterRep,
+    natConnRep,
     invariantsRep,
   ] = await Promise.all([
     verifyBridgedClientsParity({
@@ -828,6 +836,9 @@ async function runFullActiveClientsParityCheck_() {
     phase6Ready
       ? verifyNativeMasterComparisonParity({ source: "db", onlyActiveOrShadow: true }).catch(() => ({ results: [] }))
       : Promise.resolve({ results: [] }),
+    phase6cReady
+      ? verifyNativeConnectorsStateParity({ onlyActiveOrShadow: true }).catch(() => ({ results: [] }))
+      : Promise.resolve({ results: [] }),
     verifyRelationalAccountingInvariants({ onlyActive: true }).catch(() => ({ results: [] })),
   ]);
 
@@ -843,6 +854,7 @@ async function runFullActiveClientsParityCheck_() {
   const finReadMap = indexSuiteResultsByClient_(finReadRep);
   const natClientMap = indexSuiteResultsByClient_(natClientRep);
   const natMasterMap = indexSuiteResultsByClient_(natMasterRep);
+  const natConnMap = indexSuiteResultsByClient_(natConnRep);
   const invariantsMap = indexSuiteResultsByClient_(invariantsRep);
 
   const activeNames = (sheetReport?.results || []).map((r) => r?.clientName).filter(Boolean);
@@ -860,6 +872,7 @@ async function runFullActiveClientsParityCheck_() {
     const fRead = finReadMap.get(name);
     const nClient = natClientMap.get(name);
     const nMaster = natMasterMap.get(name);
+    const nConn = natConnMap.get(name);
     const inv = invariantsMap.get(name);
     const hasRelIssue =
       (jDb && (jDb.error || !jDb.matched)) ||
@@ -874,6 +887,7 @@ async function runFullActiveClientsParityCheck_() {
       (fRead && (fRead.error || !fRead.matched)) ||
       (nClient && (nClient.error || !nClient.matched)) ||
       (nMaster && (nMaster.error || !nMaster.matched)) ||
+      (nConn && (nConn.error || !nConn.matched)) ||
       (inv && (inv.error || !inv.matched));
     if (hasRelIssue) {
       clientsNeedingSettle.push(name);
@@ -900,6 +914,7 @@ async function runFullActiveClientsParityCheck_() {
       const fRead = finReadMap.get(name);
       const nClient = natClientMap.get(name);
       const nMaster = natMasterMap.get(name);
+      const nConn = natConnMap.get(name);
       const inv = invariantsMap.get(name);
 
       if (jDb && (jDb.error || !jDb.matched)) {
@@ -986,6 +1001,13 @@ async function runFullActiveClientsParityCheck_() {
             .catch(() => { })
         );
       }
+      if (nConn && (nConn.error || !nConn.matched)) {
+        retries.push(
+          verifyNativeConnectorsStateParity({ clientName: name, onlyActiveOrShadow: true })
+            .then((r) => { if (r?.results?.[0]) natConnMap.set(name, r.results[0]); })
+            .catch(() => { })
+        );
+      }
       if (inv && (inv.error || !inv.matched)) {
         retries.push(
           verifyRelationalAccountingInvariants({ clientName: name, onlyActive: true })
@@ -1013,6 +1035,7 @@ async function runFullActiveClientsParityCheck_() {
     const fRead = finReadMap.get(name) || null;
     const nClient = natClientMap.get(name) || null;
     const nMaster = natMasterMap.get(name) || null;
+    const nConn = natConnMap.get(name) || null;
     const inv = invariantsMap.get(name) || null;
 
     const suites = [
@@ -1028,6 +1051,7 @@ async function runFullActiveClientsParityCheck_() {
       { label: "Financials SQL read", rec: fRead, isRead: false },
       { label: "Native client calc", rec: nClient, isRead: false },
       { label: "Native master comp", rec: nMaster, isRead: false },
+      { label: "Native connectors", rec: nConn, isRead: false },
       { label: "Accounting invariants", rec: inv, isRead: false },
     ];
 
@@ -1068,6 +1092,7 @@ async function runFullActiveClientsParityCheck_() {
       relationalFinancialsReadMatched: fRead ? Boolean(fRead.matched && !fRead.error) : true,
       nativeClientCalcMatched: nClient ? Boolean(nClient.matched && !nClient.error) : true,
       nativeMasterCompMatched: nMaster ? Boolean(nMaster.matched && !nMaster.error) : true,
+      nativeConnectorsMatched: nConn ? Boolean(nConn.matched && !nConn.error) : true,
       accountingInvariantsMatched: inv ? Boolean(inv.matched && !inv.error) : true,
       totalMismatchCount,
       sampleMismatches,

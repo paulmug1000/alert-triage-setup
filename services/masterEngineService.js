@@ -447,8 +447,8 @@ export async function resolveSupabaseSheetContext({ spreadsheetId = "", clientNa
         try {
           let { data, error } = await supabase
             .from("clients")
-            .select("id, client_name, normalized_key, master_mode, client_mode, jobs_mode, jobs_read_mode, inputs_mode, inputs_read_mode, master_ingestion_mode, master_read_mode, recon_mode, recon_read_mode, financials_mode, financials_read_mode, client_compute_mode, master_compute_mode, client_sheet_id, master_sheet_id, recon_sheet_id, metadata");
-          if (error && (String(error.message || "").includes("client_compute_mode") || String(error.message || "").includes("master_compute_mode"))) {
+            .select("id, client_name, normalized_key, master_mode, client_mode, jobs_mode, jobs_read_mode, inputs_mode, inputs_read_mode, master_ingestion_mode, master_read_mode, recon_mode, recon_read_mode, financials_mode, financials_read_mode, client_compute_mode, master_compute_mode, connector_pull_mode, client_sheet_id, master_sheet_id, recon_sheet_id, metadata");
+          if (error && (String(error.message || "").includes("client_compute_mode") || String(error.message || "").includes("master_compute_mode") || String(error.message || "").includes("connector_pull_mode"))) {
             ({ data, error } = await supabase
               .from("clients")
               .select("id, client_name, normalized_key, master_mode, client_mode, jobs_mode, jobs_read_mode, inputs_mode, inputs_read_mode, master_ingestion_mode, master_read_mode, recon_mode, recon_read_mode, financials_mode, financials_read_mode, client_sheet_id, master_sheet_id, recon_sheet_id, metadata"));
@@ -535,6 +535,7 @@ export async function resolveSupabaseSheetContext({ spreadsheetId = "", clientNa
                   : "grid",
                 clientComputeMode: String(row.client_compute_mode || row.metadata?.client_compute_mode || "grid_gas").trim().toLowerCase(),
                 masterComputeMode: String(row.master_compute_mode || row.metadata?.master_compute_mode || "grid_gas").trim().toLowerCase(),
+                connectorPullMode: String(row.connector_pull_mode || row.metadata?.connector_pull_mode || "grid_gas").trim().toLowerCase(),
                 sheetBridgeMode: String(row.metadata?.sheet_bridge_mode || "off").trim().toLowerCase(),
                 clientSheetId: cId,
                 masterSheetId: mId,
@@ -943,6 +944,19 @@ function shouldStoreClientRecordInCache_(existingEntry, { valuesOnly = false, in
   return Boolean(existingEntry.record?._valuesOnlyLoaded && existingEntry.record?._notesLoaded === false);
 }
 
+export const NATIVE_CONNECTOR_BYPASS_GRID_TABS = new Set([
+  "InvFromApp",
+  "RevFromApp",
+  "JnlsFromApp",
+  "PLFromApp",
+  "Year0PLFromApp",
+  "DataFromCRM",
+  "CRMGoogleBridge",
+  "CRMExcelBridge",
+  "CRMExcelCopy",
+  "GasScriptProps",
+]);
+
 export async function getOrLoadVirtualTabGrid_(ctx, sheetRole, tabName, rawSheetsApi = null, options = {}) {
   const valuesOnly = Boolean(options?.valuesOnly);
   const includeNotes = Boolean(options?.includeNotes);
@@ -1052,6 +1066,78 @@ export async function getOrLoadVirtualTabGrid_(ctx, sheetRole, tabName, rawSheet
         }
       } catch (natMasterErr) {
         console.warn(`[masterEngineService] Native master tab load fallback (${ctx.clientName}/${tabName}):`, natMasterErr?.message);
+      }
+    }
+
+    if (
+      sheetRole === "master" &&
+      ctx.connectorPullMode === "native" &&
+      NATIVE_CONNECTOR_BYPASS_GRID_TABS.has(tabName)
+    ) {
+      try {
+        if (
+          tabName === "CRMGoogleBridge" ||
+          tabName === "CRMExcelBridge" ||
+          tabName === "CRMExcelCopy" ||
+          tabName === "GasScriptProps"
+        ) {
+          const { data: cfg6c } = await supabase
+            .from("pulse_master_sync_configs")
+            .select("crm_google_bridge_grid, crm_excel_bridge_grid, crm_excel_copy_grid, script_properties")
+            .eq("client_id", ctx.clientId)
+            .maybeSingle();
+          if (cfg6c) {
+            let vGrid = [];
+            if (tabName === "CRMGoogleBridge") vGrid = Array.isArray(cfg6c.crm_google_bridge_grid) ? cfg6c.crm_google_bridge_grid : [];
+            else if (tabName === "CRMExcelBridge") vGrid = Array.isArray(cfg6c.crm_excel_bridge_grid) ? cfg6c.crm_excel_bridge_grid : [];
+            else if (tabName === "CRMExcelCopy") vGrid = Array.isArray(cfg6c.crm_excel_copy_grid) ? cfg6c.crm_excel_copy_grid : [];
+            else if (tabName === "GasScriptProps") {
+              const sp = cfg6c.script_properties && typeof cfg6c.script_properties === "object" ? cfg6c.script_properties : {};
+              vGrid = [["Key", "Value"], ...Object.entries(sp).map(([k, v]) => [k, String(v ?? "")])];
+            }
+            const compacted = compactGrid2D(vGrid);
+            const recOut = {
+              client_id: ctx.clientId,
+              client_name: ctx.clientName,
+              sheet_role: "master",
+              tab_name: tabName,
+              values_grid: compacted,
+              formulas_grid: compacted,
+              notes_grid: {},
+              row_count: compacted.length,
+              col_count: compacted.reduce((m, r) => Math.max(m, Array.isArray(r) ? r.length : 0), 0),
+              updated_at: new Date().toISOString(),
+            };
+            setGridMemoryCache_(cacheKey, recOut);
+            return recOut;
+          }
+        } else {
+          const {
+            preloadClientRelationalMasterBundle,
+            reconstructRelationalMasterTabFromBundle,
+          } = await import("./relationalMasterService.js");
+          const bundle = await preloadClientRelationalMasterBundle(ctx, { source: "db" });
+          const rGrid = await reconstructRelationalMasterTabFromBundle(bundle, tabName, ctx);
+          if (Array.isArray(rGrid)) {
+            const compacted = compactGrid2D(rGrid);
+            const recOut = {
+              client_id: ctx.clientId,
+              client_name: ctx.clientName,
+              sheet_role: "master",
+              tab_name: tabName,
+              values_grid: compacted,
+              formulas_grid: compacted,
+              notes_grid: {},
+              row_count: compacted.length,
+              col_count: compacted.reduce((m, r) => Math.max(m, Array.isArray(r) ? r.length : 0), 0),
+              updated_at: new Date().toISOString(),
+            };
+            setGridMemoryCache_(cacheKey, recOut);
+            return recOut;
+          }
+        }
+      } catch (c6LoadErr) {
+        console.warn(`[masterEngineService] Native connector tab load fallback (${ctx.clientName}/${tabName}):`, c6LoadErr?.message);
       }
     }
 
@@ -1583,6 +1669,46 @@ export async function saveVirtualTabGrid_(
       }
       return;
     }
+  }
+
+  if (
+    sheetRole === "master" &&
+    ctx.connectorPullMode === "native" &&
+    NATIVE_CONNECTOR_BYPASS_GRID_TABS.has(tabName)
+  ) {
+    if (
+      tabName === "CRMGoogleBridge" ||
+      tabName === "CRMExcelBridge" ||
+      tabName === "CRMExcelCopy" ||
+      tabName === "GasScriptProps"
+    ) {
+      const colPatch = {};
+      if (tabName === "CRMGoogleBridge") colPatch.crm_google_bridge_grid = compactedValues;
+      else if (tabName === "CRMExcelBridge") colPatch.crm_excel_bridge_grid = compactedValues;
+      else if (tabName === "CRMExcelCopy") colPatch.crm_excel_copy_grid = compactedValues;
+      else if (tabName === "GasScriptProps") {
+        const spMap = {};
+        for (let r = 1; r < compactedValues.length; r++) {
+          const k = String(compactedValues[r]?.[0] ?? "").trim();
+          if (k) spMap[k] = String(compactedValues[r]?.[1] ?? "");
+        }
+        colPatch.script_properties = spMap;
+      }
+      await supabase
+        .from("pulse_master_sync_configs")
+        .upsert(
+          { client_id: ctx.clientId, client_name: ctx.clientName, ...colPatch, updated_at: new Date().toISOString() },
+          { onConflict: "client_id" }
+        );
+      return;
+    }
+
+    const { reconcileClientMasterIngestionFromGrids } = await import("./relationalMasterService.js");
+    await reconcileClientMasterIngestionFromGrids(ctx, [tabName], {
+      gridsOverride: { [tabName]: compactedValues },
+      skipConfigUpsert: true,
+    });
+    return;
   }
 
   const { error: upsertErr } = await supabase.from("master_sheet_grids").upsert(payload, {
@@ -6921,6 +7047,7 @@ export async function getStage2Status(targetClientName = "APPTEST") {
     phase4ReconStats,
     phase5FinancialsStats,
     phase6NativeStats,
+    phase6ConnectorsStats,
   ] = await Promise.all([
     Promise.all(
       STAGE2_TABLES.map(async (t) => {
@@ -6944,10 +7071,10 @@ export async function getStage2Status(targetClientName = "APPTEST") {
     (() =>
       supabase
         .from("clients")
-        .select("id, client_name, normalized_key, status, master_mode, client_mode, jobs_mode, jobs_read_mode, inputs_mode, inputs_read_mode, master_ingestion_mode, master_read_mode, recon_mode, recon_read_mode, financials_mode, financials_read_mode, client_compute_mode, master_compute_mode, client_sheet_id, master_sheet_id, recon_sheet_id, metadata")
+        .select("id, client_name, normalized_key, status, master_mode, client_mode, jobs_mode, jobs_read_mode, inputs_mode, inputs_read_mode, master_ingestion_mode, master_read_mode, recon_mode, recon_read_mode, financials_mode, financials_read_mode, client_compute_mode, master_compute_mode, connector_pull_mode, client_sheet_id, master_sheet_id, recon_sheet_id, metadata")
         .order("client_name", { ascending: true })
         .then(async (res) => {
-          if (res.error && (String(res.error.message || "").includes("client_compute_mode") || String(res.error.message || "").includes("master_compute_mode"))) {
+          if (res.error && (String(res.error.message || "").includes("client_compute_mode") || String(res.error.message || "").includes("master_compute_mode") || String(res.error.message || "").includes("connector_pull_mode"))) {
             res = await supabase
               .from("clients")
               .select("id, client_name, normalized_key, status, master_mode, client_mode, jobs_mode, jobs_read_mode, inputs_mode, inputs_read_mode, master_ingestion_mode, master_read_mode, recon_mode, recon_read_mode, financials_mode, financials_read_mode, client_sheet_id, master_sheet_id, recon_sheet_id, metadata")
@@ -7050,6 +7177,11 @@ export async function getStage2Status(targetClientName = "APPTEST") {
     import("./nativeClientCalcService.js")
       .then(({ getPhase6NativeComputeOverviewStats }) =>
         getPhase6NativeComputeOverviewStats()
+      )
+      .catch(() => null),
+    import("./nativeConnectorsParityService.js")
+      .then(({ getPhase6NativeConnectorsOverviewStats }) =>
+        getPhase6NativeConnectorsOverviewStats()
       )
       .catch(() => null),
   ]);
@@ -7167,8 +7299,10 @@ export async function getStage2Status(targetClientName = "APPTEST") {
         relationalFinancialsState: c.metadata?.relational_financials_state || null,
         clientComputeMode: String(c.client_compute_mode || c.metadata?.client_compute_mode || "grid_gas").trim().toLowerCase(),
         masterComputeMode: String(c.master_compute_mode || c.metadata?.master_compute_mode || "grid_gas").trim().toLowerCase(),
+        connectorPullMode: String(c.connector_pull_mode || c.metadata?.connector_pull_mode || "grid_gas").trim().toLowerCase(),
         nativeClientCalcState: c.metadata?.native_client_calc_state || null,
         nativeMasterCompState: c.metadata?.native_master_comp_state || null,
+        nativeConnectorsState: c.metadata?.native_connectors_state || null,
         masterTabCount: gs.masterTabCount,
         reconTabCount: gs.reconTabCount,
         clientTabCount: gs.clientTabCount,
@@ -7211,6 +7345,9 @@ export async function getStage2Status(targetClientName = "APPTEST") {
   let clientComputeShadowCount = 0;
   let masterComputeNativeCount = 0;
   let masterComputeShadowCount = 0;
+  let connectorNativeCount = 0;
+  let connectorShadowCount = 0;
+  let phase6ConnectorsBackfilledCount = 0;
   for (const c of clientsData || []) {
     if (c?.metadata?.relational_jobs_state?.lastBackfilledAt) backfilledClientsCount++;
     if (String(c?.jobs_mode || c?.metadata?.jobs_mode || "").trim().toLowerCase() === "relational") relationalModeClientsCount++;
@@ -7229,12 +7366,16 @@ export async function getStage2Status(targetClientName = "APPTEST") {
     if (String(c?.financials_read_mode || c?.metadata?.financials_read_mode || "").trim().toLowerCase() === "relational") financialsReadModeClientsCount++;
     if (c?.metadata?.native_client_calc_state?.lastBackfilledAt) phase6ClientBackfilledCount++;
     if (c?.metadata?.native_master_comp_state?.lastBackfilledAt) phase6MasterBackfilledCount++;
+    if (c?.metadata?.native_connectors_state?.lastBackfilledAt) phase6ConnectorsBackfilledCount++;
     const cComp = String(c?.client_compute_mode || c?.metadata?.client_compute_mode || "").trim().toLowerCase();
     if (cComp === "native") clientComputeNativeCount++;
     else if (cComp === "shadow") clientComputeShadowCount++;
     const mComp = String(c?.master_compute_mode || c?.metadata?.master_compute_mode || "").trim().toLowerCase();
     if (mComp === "native") masterComputeNativeCount++;
     else if (mComp === "shadow") masterComputeShadowCount++;
+    const cPull = String(c?.connector_pull_mode || c?.metadata?.connector_pull_mode || "").trim().toLowerCase();
+    if (cPull === "native") connectorNativeCount++;
+    else if (cPull === "shadow") connectorShadowCount++;
   }
 
   return {
@@ -7371,6 +7512,21 @@ export async function getStage2Status(targetClientName = "APPTEST") {
         clientComputeShadowCount,
         masterComputeNativeCount,
         masterComputeShadowCount,
+      },
+    phase6NativeConnectors: phase6ConnectorsStats
+      ? {
+        ...phase6ConnectorsStats,
+        backfilledCount: phase6ConnectorsBackfilledCount,
+        connectorNativeCount,
+        connectorShadowCount,
+      }
+      : {
+        schemaReady: false,
+        migrationSql: "",
+        totalConfigs: 0,
+        backfilledCount: phase6ConnectorsBackfilledCount,
+        connectorNativeCount,
+        connectorShadowCount,
       },
   };
 }

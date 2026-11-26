@@ -150,6 +150,8 @@ export default function DbView({
   const [relationalFinancialsReadParityReport, setRelationalFinancialsReadParityReport] = useState(null);
   const [nativeClientCalcParityReport, setNativeClientCalcParityReport] = useState(null);
   const [nativeMasterCompParityReport, setNativeMasterCompParityReport] = useState(null);
+  const [nativeConnectorsParityReport, setNativeConnectorsParityReport] = useState(null);
+  const [nativeConnectorsMockReport, setNativeConnectorsMockReport] = useState(null);
   const [accountingInvariantsReport, setAccountingInvariantsReport] = useState(null);
   const [copied0012Sql, setCopied0012Sql] = useState(false);
   const [copied0013Sql, setCopied0013Sql] = useState(false);
@@ -157,6 +159,7 @@ export default function DbView({
   const [copied0015Sql, setCopied0015Sql] = useState(false);
   const [copied0016Sql, setCopied0016Sql] = useState(false);
   const [copied0017Sql, setCopied0017Sql] = useState(false);
+  const [copied0018Sql, setCopied0018Sql] = useState(false);
 
   // Live operation progress & feedback state
   const [activeOp, setActiveOp] = useState(null); // { key, label, startedAt }
@@ -1473,6 +1476,96 @@ export default function DbView({
         return {
           type: (r.errorClientsCount || 0) > 0 || (r.mismatchClientsCount || 0) > 0 ? "info" : "success",
           text: `Accounting invariants (Gate 4) checked across ${r.clientsChecked || 0} client(s): ${r.matchedClientsCount || 0} passed 100%, ${r.mismatchClientsCount || 0} issue(s).`,
+        };
+      }
+    );
+  };
+
+  const handleBackfillNativeConnectors = (allClients = false, clientOverride = null) => {
+    const targetClient = typeof clientOverride === "string" && clientOverride ? clientOverride : activeClientName;
+    runTrackedOperation(
+      allClients ? "backfill_native_connectors_all" : `backfill_native_connectors_${targetClient}`,
+      allClients
+        ? "Backfilling Phase 6C connector state across all clients..."
+        : `Backfilling Phase 6C connector state for ${targetClient}...`,
+      async () => {
+        const res = await fetch("/api/pma/master-engine", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            action: "backfill_native_connectors",
+            allClients,
+            clientName: targetClient,
+            automationCommanderSheetId,
+          }),
+        });
+        const data = await res.json();
+        if (!data.success) throw new Error(data.error || "Phase 6C connector backfill failed.");
+        if (data.status) setStage2Data(data.status);
+        const r = data.result || {};
+        return {
+          type: "success",
+          text: allClients
+            ? `Backfilled Phase 6C connector state for ${r.clientsProcessed || 0} client(s).`
+            : `Backfilled connector state for ${targetClient}.`,
+        };
+      }
+    );
+  };
+
+  const handleVerifyNativeConnectorsParity = (allClients = true) => {
+    runTrackedOperation(
+      "native_connectors_parity",
+      "Verifying Phase 6C native connector parity and 12-suite mock replay...",
+      async () => {
+        const res = await fetch("/api/pma/master-engine", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            action: "verify_native_connectors_parity",
+            allClients,
+            clientName: activeClientName,
+            includeMockReplay: true,
+            automationCommanderSheetId,
+          }),
+        });
+        const data = await res.json();
+        if (!data.success) throw new Error(data.error || "Phase 6C native connector parity check failed.");
+        const r = data.parityReport || {};
+        const mr = data.mockReplayReport || null;
+        setNativeConnectorsParityReport(r);
+        setNativeConnectorsMockReport(mr);
+        const replayFailed = mr ? (mr.suitesFailed || 0) : 0;
+        return {
+          type: (r.errorClientsCount || 0) > 0 || (r.mismatchClientsCount || 0) > 0 || replayFailed > 0 ? "info" : "success",
+          text: `Native connectors verified: ${r.matchedClientsCount || 0} of ${r.clientsChecked || 0} client(s) matched${mr ? `, ${mr.suitesPassed || 0}/${mr.suitesTotal || 0} replay suite(s) passed` : ""}.`,
+        };
+      }
+    );
+  };
+
+  const handleSetClientConnectorPullMode = (nextMode, clientOverride = null) => {
+    const targetClient = typeof clientOverride === "string" && clientOverride ? clientOverride : activeClientName;
+    runTrackedOperation(
+      `set_connector_pull_mode_${nextMode}`,
+      `Switching ${targetClient} connector pull engine mode to ${nextMode}...`,
+      async () => {
+        const res = await fetch("/api/pma/master-engine", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            action: "set_client_connector_pull_mode",
+            clientName: targetClient,
+            connectorPullMode: nextMode,
+            automationCommanderSheetId,
+          }),
+        });
+        const data = await res.json();
+        if (!data.success) throw new Error(data.error || "Could not update connector pull mode.");
+        if (data.status) setStage2Data(data.status);
+        return {
+          type: "success",
+          text: `Switched ${targetClient} connector pull mode to ${nextMode}.`,
         };
       }
     );
@@ -5986,6 +6079,18 @@ export default function DbView({
                 >
                   {stage2Data?.phase6NativeCompute?.schemaReady ? "Schema ready (0017)" : "Migration 0017 required"}
                 </span>
+                <span
+                  style={{
+                    padding: "3px 9px",
+                    borderRadius: "999px",
+                    fontSize: "11px",
+                    fontWeight: 600,
+                    background: stage2Data?.phase6NativeConnectors?.schemaReady ? "#dcfce7" : "#fef3c7",
+                    color: stage2Data?.phase6NativeConnectors?.schemaReady ? "#166534" : "#92400e",
+                  }}
+                >
+                  {stage2Data?.phase6NativeConnectors?.schemaReady ? "Schema ready (0018)" : "Migration 0018 required"}
+                </span>
                 {stage2Data?.phase6NativeCompute?.schemaReady && (
                   <span
                     style={{
@@ -5997,7 +6102,7 @@ export default function DbView({
                       color: "#1e40af",
                     }}
                   >
-                    {`${stage2Data.phase6NativeCompute.clientComputeNativeCount || 0} native calc (${stage2Data.phase6NativeCompute.clientComputeShadowCount || 0} shadow) · ${stage2Data.phase6NativeCompute.masterComputeNativeCount || 0} native master (${stage2Data.phase6NativeCompute.masterComputeShadowCount || 0} shadow)`}
+                    {`${stage2Data.phase6NativeCompute.clientComputeNativeCount || 0} native calc · ${stage2Data.phase6NativeCompute.masterComputeNativeCount || 0} native master · ${stage2Data?.phase6NativeConnectors?.connectorNativeCount || 0} native pulls`}
                   </span>
                 )}
               </div>
@@ -6048,6 +6153,51 @@ export default function DbView({
               </div>
             )}
 
+            {!stage2Data?.phase6NativeConnectors?.schemaReady && stage2Data?.phase6NativeConnectors?.migrationSql && (
+              <div
+                style={{
+                  marginBottom: "12px",
+                  padding: "10px 12px",
+                  borderRadius: "7px",
+                  background: "#fffbeb",
+                  border: "1px solid #fde68a",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                  gap: "10px",
+                  flexWrap: "wrap",
+                  fontSize: "12px",
+                  color: "#92400e",
+                }}
+              >
+                <span>
+                  Run migration 0018 in the Supabase SQL editor to add connector pull mode and bridge state columns for phase 6C native connectors.
+                </span>
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (typeof navigator !== "undefined" && navigator.clipboard) {
+                      navigator.clipboard.writeText(stage2Data.phase6NativeConnectors.migrationSql);
+                      setCopied0018Sql(true);
+                      setTimeout(() => setCopied0018Sql(false), 2500);
+                    }
+                  }}
+                  style={{
+                    padding: "5px 10px",
+                    fontSize: "11.5px",
+                    fontWeight: 600,
+                    borderRadius: "6px",
+                    border: "1px solid #f59e0b",
+                    background: "#ffffff",
+                    color: "#92400e",
+                    cursor: "pointer",
+                  }}
+                >
+                  {copied0018Sql ? "Copied migration 0018 SQL" : "Copy migration 0018 SQL"}
+                </button>
+              </div>
+            )}
+
             {stage2Data?.phase6NativeCompute?.schemaReady && (
               <div
                 style={{
@@ -6064,6 +6214,8 @@ export default function DbView({
                   { label: "Native master comp", value: stage2Data.phase6NativeCompute.masterComputeNativeCount || 0 },
                   { label: "6A backfilled clients", value: stage2Data.phase6NativeCompute.clientBackfilledCount || 0 },
                   { label: "6B backfilled clients", value: stage2Data.phase6NativeCompute.masterBackfilledCount || 0 },
+                  { label: "Native connectors (6C)", value: stage2Data?.phase6NativeConnectors?.connectorNativeCount || 0 },
+                  { label: "6C backfilled clients", value: stage2Data?.phase6NativeConnectors?.backfilledCount || 0 },
                 ].map((stat) => (
                   <div
                     key={stat.label}
@@ -6247,6 +6399,79 @@ export default function DbView({
                 )}
                 <span>{`Run accounting invariants (${allClients.length})`}</span>
               </button>
+
+              <button
+                type="button"
+                disabled={!stage2Data?.phase6NativeConnectors?.schemaReady || isBusy}
+                onClick={() => handleBackfillNativeConnectors(true)}
+                style={{
+                  ...actionBtnBase,
+                  background: !stage2Data?.phase6NativeConnectors?.schemaReady ? "#f3f4f6" : "#eff6ff",
+                  borderColor: !stage2Data?.phase6NativeConnectors?.schemaReady ? "#cbd5e1" : "#93c5fd",
+                  color: !stage2Data?.phase6NativeConnectors?.schemaReady ? "#9ca3af" : "#1e40af",
+                  cursor: !stage2Data?.phase6NativeConnectors?.schemaReady ? "not-allowed" : isBusy ? "wait" : "pointer",
+                }}
+              >
+                {activeOp?.key === "backfill_native_connectors_all" && (
+                  <Spinner size={11} color="#1e40af" style={{ marginRight: 0 }} />
+                )}
+                <span>{`Backfill 6C connectors (${allClients.length})`}</span>
+              </button>
+
+              <button
+                type="button"
+                disabled={!s2Ready || isBusy}
+                onClick={() => handleVerifyNativeConnectorsParity(true)}
+                style={{
+                  ...actionBtnBase,
+                  background: "#ffffff",
+                  borderColor: "#cbd5e1",
+                  color: "#1e293b",
+                  cursor: !s2Ready ? "not-allowed" : isBusy ? "wait" : "pointer",
+                }}
+              >
+                {activeOp?.key === "native_connectors_parity" && (
+                  <Spinner size={11} color="#1e293b" style={{ marginRight: 0 }} />
+                )}
+                <span>{`Verify 6C connectors and replay`}</span>
+              </button>
+
+              <button
+                type="button"
+                disabled={!stage2Data?.phase6NativeConnectors?.schemaReady || isBusy}
+                onClick={() => {
+                  const cur = activeClientObj?.connectorPullMode || "grid_gas";
+                  const next = cur === "grid_gas" ? "shadow" : cur === "shadow" ? "native" : "grid_gas";
+                  handleSetClientConnectorPullMode(next, activeClientName);
+                }}
+                style={{
+                  ...actionBtnBase,
+                  background: !stage2Data?.phase6NativeConnectors?.schemaReady
+                    ? "#f3f4f6"
+                    : activeClientObj?.connectorPullMode === "native"
+                      ? "#fef2f2"
+                      : "#f0fdf4",
+                  borderColor: !stage2Data?.phase6NativeConnectors?.schemaReady
+                    ? "#cbd5e1"
+                    : activeClientObj?.connectorPullMode === "native"
+                      ? "#fecaca"
+                      : "#86efac",
+                  color: !stage2Data?.phase6NativeConnectors?.schemaReady
+                    ? "#9ca3af"
+                    : activeClientObj?.connectorPullMode === "native"
+                      ? "#b91c1c"
+                      : "#166534",
+                  cursor: !stage2Data?.phase6NativeConnectors?.schemaReady ? "not-allowed" : isBusy ? "wait" : "pointer",
+                }}
+              >
+                <span>
+                  {activeClientObj?.connectorPullMode === "native"
+                    ? `Revert ${activeClientName} 6C to grid_gas`
+                    : activeClientObj?.connectorPullMode === "shadow"
+                      ? `Switch ${activeClientName} 6C to native`
+                      : `Switch ${activeClientName} 6C to shadow`}
+                </span>
+              </button>
             </div>
 
             {nativeClientCalcParityReport && (
@@ -6375,6 +6600,69 @@ export default function DbView({
                       }}
                     >
                       {`${r.clientName}: ${r.matched ? `Passed (${r.checksPassed || 0}/${r.checksTotal || 0})` : r.error || `${r.mismatchCount} issue(s)`}`}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {(nativeConnectorsParityReport || nativeConnectorsMockReport) && (
+              <div
+                style={{
+                  marginTop: "10px",
+                  padding: "10px 12px",
+                  borderRadius: "7px",
+                  background: "#f8fafc",
+                  border: `1px solid ${(nativeConnectorsParityReport?.mismatchClientsCount || 0) > 0 || (nativeConnectorsMockReport?.suitesFailed || 0) > 0 ? "#fde68a" : "#bbf7d0"}`,
+                  fontSize: "11.5px",
+                }}
+              >
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "6px" }}>
+                  <strong style={{ color: "#0f172a" }}>
+                    {`Phase 6C native connectors parity — ${nativeConnectorsParityReport?.matchedClientsCount || 0} of ${nativeConnectorsParityReport?.clientsChecked || 0} client(s) · ${nativeConnectorsMockReport?.suitesPassed || 0}/${nativeConnectorsMockReport?.suitesTotal || 0} replay suite(s)`}
+                  </strong>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setNativeConnectorsParityReport(null);
+                      setNativeConnectorsMockReport(null);
+                    }}
+                    style={{ padding: "2px 7px", fontSize: "11px", borderRadius: "4px", border: "1px solid #cbd5e1", background: "#ffffff", cursor: "pointer" }}
+                  >
+                    Hide
+                  </button>
+                </div>
+                <div style={{ display: "flex", flexWrap: "wrap", gap: "6px" }}>
+                  {(nativeConnectorsMockReport?.suites || []).map((s) => (
+                    <span
+                      key={s.id}
+                      title={JSON.stringify(s.diffs || [])}
+                      style={{
+                        padding: "2px 8px",
+                        borderRadius: "999px",
+                        fontSize: "10.5px",
+                        fontWeight: 600,
+                        background: s.matched ? "#dcfce7" : "#fee2e2",
+                        color: s.matched ? "#166534" : "#991b1b",
+                      }}
+                    >
+                      {`Suite ${s.id} (${s.name}): ${s.matched ? "Matched" : `${s.diffs?.length || 0} diff(s)`}`}
+                    </span>
+                  ))}
+                  {(nativeConnectorsParityReport?.results || []).map((r) => (
+                    <span
+                      key={r.clientName}
+                      title={r.error || JSON.stringify(r.sampleMismatches || [])}
+                      style={{
+                        padding: "2px 8px",
+                        borderRadius: "999px",
+                        fontSize: "10.5px",
+                        fontWeight: 600,
+                        background: r.error || !r.matched ? "#fee2e2" : "#dbeafe",
+                        color: r.error || !r.matched ? "#991b1b" : "#1e40af",
+                      }}
+                    >
+                      {`${r.clientName}: ${r.matched ? "State matched" : r.error || `${r.mismatchCount} diff(s)`}`}
                     </span>
                   ))}
                 </div>

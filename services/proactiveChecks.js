@@ -726,20 +726,31 @@ export async function checkCrmSyncBlocked_(clientName, masterSheetId, sharedData
   try {
     let block = null;
 
+    // 0. Native Phase 6C script_properties JSONB check (when provided in sharedData)
+    const rawDirectProp = sharedData?.scriptProperties?.CRM_SYNC_SWING_BLOCK_JSON;
+    if (rawDirectProp) {
+      try {
+        const parsed = typeof rawDirectProp === "string" ? JSON.parse(rawDirectProp) : rawDirectProp;
+        if (parsed && typeof parsed === "object") block = parsed;
+      } catch (_) { }
+    }
+
     // 1. Primary source: GasScriptProps (authoritative for Supabase masters)
-    const gasScriptProps = Array.isArray(sharedData?.gasScriptProps) ? sharedData.gasScriptProps : [];
-    for (let i = 0; i < gasScriptProps.length; i++) {
-      const row = gasScriptProps[i];
-      if (!Array.isArray(row)) continue;
-      if (String(row[0] || "").trim() === "CRM_SYNC_SWING_BLOCK_JSON") {
-        const rawVal = String(row[1] || "").trim();
-        if (rawVal) {
-          try {
-            const parsed = JSON.parse(rawVal);
-            if (parsed && typeof parsed === "object") block = parsed;
-          } catch (_) { }
+    if (!block) {
+      const gasScriptProps = Array.isArray(sharedData?.gasScriptProps) ? sharedData.gasScriptProps : [];
+      for (let i = 0; i < gasScriptProps.length; i++) {
+        const row = gasScriptProps[i];
+        if (!Array.isArray(row)) continue;
+        if (String(row[0] || "").trim() === "CRM_SYNC_SWING_BLOCK_JSON") {
+          const rawVal = String(row[1] || "").trim();
+          if (rawVal) {
+            try {
+              const parsed = JSON.parse(rawVal);
+              if (parsed && typeof parsed === "object") block = parsed;
+            } catch (_) { }
+          }
+          break;
         }
-        break;
       }
     }
 

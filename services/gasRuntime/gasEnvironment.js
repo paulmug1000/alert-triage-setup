@@ -1157,7 +1157,7 @@ class VirtualRangeList {
   }
 }
 
-class VirtualSheet {
+export class VirtualSheet {
   constructor(spreadsheet, name, valuesGrid = [], formulasGrid = [], notesGrid = {}, sheetId = 0, maxRows = 1000, maxCols = 50, rowGroups = []) {
     this.spreadsheet = spreadsheet;
     this.name = name;
@@ -1590,7 +1590,7 @@ class VirtualSheet {
   }
 }
 
-class VirtualSpreadsheet {
+export class VirtualSpreadsheet {
   constructor({ id, name, sheetRole, isRemoteGoogleSheet = false, env }) {
     this.id = id;
     this.name = name || id;
@@ -2033,6 +2033,41 @@ export async function createGasEnvironment({
       }
     } catch (relReconErr) {
       console.warn(`[gasEnvironment] Phase 4C relational recon preload warning (${ctx.clientName}):`, relReconErr?.message);
+    }
+  }
+
+  // Hydrate persisted ScriptProperties & Phase 6C bridge tabs from `pulse_master_sync_configs`
+  // when running in `connector_pull_mode === 'native'`, otherwise from `GasScriptProps` virtual tab.
+  if (ctx.connectorPullMode === "native") {
+    try {
+      const { data: cfg6c } = await supabase
+        .from("pulse_master_sync_configs")
+        .select("crm_google_bridge_grid, crm_excel_bridge_grid, crm_excel_copy_grid, script_properties")
+        .eq("client_id", ctx.clientId)
+        .maybeSingle();
+      if (cfg6c) {
+        if (Array.isArray(cfg6c.crm_google_bridge_grid) && cfg6c.crm_google_bridge_grid.length > 0) {
+          applyRelationalGridToVirtualSS_(masterSS, "CRMGoogleBridge", cfg6c.crm_google_bridge_grid, {});
+        }
+        if (Array.isArray(cfg6c.crm_excel_bridge_grid) && cfg6c.crm_excel_bridge_grid.length > 0) {
+          applyRelationalGridToVirtualSS_(masterSS, "CRMExcelBridge", cfg6c.crm_excel_bridge_grid, {});
+        }
+        if (Array.isArray(cfg6c.crm_excel_copy_grid) && cfg6c.crm_excel_copy_grid.length > 0) {
+          applyRelationalGridToVirtualSS_(masterSS, "CRMExcelCopy", cfg6c.crm_excel_copy_grid, {});
+        }
+        const sp = cfg6c.script_properties && typeof cfg6c.script_properties === "object" ? cfg6c.script_properties : null;
+        if (sp) {
+          for (const [k, v] of Object.entries(sp)) {
+            if (k && !envState.scriptProperties.has(k)) {
+              envState.scriptProperties.set(k, String(v ?? ""));
+            }
+          }
+          const propRows = [["Key", "Value"], ...Object.entries(sp).map(([k, v]) => [k, String(v ?? "")])];
+          applyRelationalGridToVirtualSS_(masterSS, "GasScriptProps", propRows, {});
+        }
+      }
+    } catch (c6Err) {
+      console.warn(`[gasEnvironment] Phase 6C connector state preload warning (${ctx.clientName}):`, c6Err?.message);
     }
   }
 
@@ -2590,8 +2625,21 @@ export async function createGasEnvironment({
         "PLComp",
         "TimeComp",
       ]);
+      const NATIVE_CONNECTOR_BYPASS_GRID_TABS = new Set([
+        "InvFromApp",
+        "RevFromApp",
+        "JnlsFromApp",
+        "PLFromApp",
+        "Year0PLFromApp",
+        "DataFromCRM",
+        "CRMGoogleBridge",
+        "CRMExcelBridge",
+        "CRMExcelCopy",
+        "GasScriptProps",
+      ]);
       const upserts = [];
       const nativeMasterDirtyTabs = [];
+      const nativeConnectorDirtyTabs = [];
       const nowIso = new Date().toISOString();
       const collectUpsert = (sObj, sheetRole) => {
         if (!sObj.dirty) return;
@@ -2611,6 +2659,15 @@ export async function createGasEnvironment({
           NATIVE_MASTER_BYPASS_GRID_TABS.has(sObj.name)
         ) {
           nativeMasterDirtyTabs.push(sObj.name);
+          sObj.dirty = false;
+          return;
+        }
+        if (
+          ctx.connectorPullMode === "native" &&
+          sheetRole === "master" &&
+          NATIVE_CONNECTOR_BYPASS_GRID_TABS.has(sObj.name)
+        ) {
+          nativeConnectorDirtyTabs.push(sObj.name);
           sObj.dirty = false;
           return;
         }
@@ -2659,8 +2716,64 @@ export async function createGasEnvironment({
       }
 
       const masterMutatedTabs = upserts.filter((u) => u.sheet_role === "master").map((u) => u.tab_name);
-      const allMasterMutatedTabs = [...new Set([...masterMutatedTabs, ...nativeMasterDirtyTabs])];
+      const allMasterMutatedTabs = [...new Set([...masterMutatedTabs, ...nativeMasterDirtyTabs, ...nativeConnectorDirtyTabs])];
       const reconMutatedTabs = upserts.filter((u) => u.sheet_role === "recon").map((u) => u.tab_name);
+      if (nativeConnectorDirtyTabs.length > 0 && ctx.clientId) {
+        try {
+          const cfgPatch6c = {};
+          const bridgeColByTab = {
+            CRMGoogleBridge: "crm_google_bridge_grid",
+            CRMExcelBridge: "crm_excel_bridge_grid",
+            CRMExcelCopy: "crm_excel_copy_grid",
+          };
+          for (const tName of nativeConnectorDirtyTabs) {
+            const sObj = masterSS.getSheetByName(tName);
+            if (!sObj) continue;
+            if (bridgeColByTab[tName]) {
+              cfgPatch6c[bridgeColByTab[tName]] = sObj.valuesGrid || [];
+            } else if (tName === "GasScriptProps") {
+              const spMap = {};
+              const rows = sObj.valuesGrid || [];
+              for (let r = 1; r < rows.length; r++) {
+                const k = String(rows[r]?.[0] ?? "").trim();
+                if (k) spMap[k] = String(rows[r]?.[1] ?? "");
+              }
+              cfgPatch6c.script_properties = spMap;
+            }
+          }
+          if (Object.keys(cfgPatch6c).length > 0) {
+            await supabase
+              .from("pulse_master_sync_configs")
+              .upsert(
+                { client_id: ctx.clientId, client_name: ctx.clientName, ...cfgPatch6c, updated_at: nowIso },
+                { onConflict: "client_id" }
+              );
+          }
+          const rawPhase4Tabs6c = nativeConnectorDirtyTabs.filter((t) =>
+            ["InvFromApp", "RevFromApp", "JnlsFromApp", "PLFromApp", "Year0PLFromApp", "DataFromCRM"].includes(t)
+          );
+          if (rawPhase4Tabs6c.length > 0) {
+            const gridsOverride = {};
+            for (const t of rawPhase4Tabs6c) {
+              gridsOverride[t] = masterSS.getSheetByName(t)?.valuesGrid || [];
+            }
+            const kiObj = masterSS.getSheetByName("KeyInfo");
+            if (kiObj?.valuesGrid) gridsOverride.KeyInfo = kiObj.valuesGrid;
+            const clObj = masterSS.getSheetByName("CRMList");
+            if (clObj?.valuesGrid) gridsOverride.CRMList = clObj.valuesGrid;
+            const { reconcileClientMasterIngestionFromGrids } = await import("../relationalMasterService.js");
+            await reconcileClientMasterIngestionFromGrids(ctx, rawPhase4Tabs6c, {
+              gridsOverride,
+              skipConfigUpsert: true,
+            });
+          }
+        } catch (c6FlushErr) {
+          console.warn(
+            `[gasEnvironment] Phase 6C native connector flush warning for ${ctx.clientName}:`,
+            c6FlushErr?.message
+          );
+        }
+      }
       if (allMasterMutatedTabs.length > 0) {
         invalidateMasterEngineCache(ctx.clientName, "master", allMasterMutatedTabs);
         if (ctx.masterIngestionMode === "relational") {

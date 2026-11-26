@@ -229,6 +229,7 @@ export async function readHandledAlertHashes(sheets, automationCommanderSheetId,
           .select("fingerprint_hash, status")
           .not("status", "in", '("cached","pending_automation")')
           .order("sheet_row_index", { ascending: true })
+          .order("id", { ascending: true })
       );
       if (Array.isArray(rows)) {
         const handledMap = {};
@@ -355,14 +356,18 @@ export async function queryAlertMemoryTargeted(
           fetchAllSupabaseRows_(() =>
             applySecondaryFilters(
               sb.from("alert_memory").select(selectCols).in("fingerprint_hash", chunk)
-            ).order("sheet_row_index", { ascending: true })
+            )
+              .order("sheet_row_index", { ascending: true })
+              .order("id", { ascending: true })
           )
         );
       }
     } else if (hasSecondaryFilters) {
       queries.push(
         fetchAllSupabaseRows_(() =>
-          applySecondaryFilters(sb.from("alert_memory").select(selectCols)).order("sheet_row_index", { ascending: true })
+          applySecondaryFilters(sb.from("alert_memory").select(selectCols))
+            .order("sheet_row_index", { ascending: true })
+            .order("id", { ascending: true })
         )
       );
     }
@@ -2112,7 +2117,7 @@ export async function searchAlertMemoryEntries(sheets, automationCommanderSheetI
           }
         }
         if (q) {
-          const safeQ = q.replace(/[%_,()"'\\]/g, "");
+          const safeQ = q.replace(/[%_*,()"'\\]/g, "");
           if (safeQ) {
             builder = builder.or(
               `fingerprint_hash.ilike.%${safeQ}%,alert_summary.ilike.%${safeQ}%,client_name.ilike.%${safeQ}%,alert_type.ilike.%${safeQ}%,ignore_reason.ilike.%${safeQ}%`

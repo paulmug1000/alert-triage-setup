@@ -1,4 +1,4 @@
-import { resolveLiveSessionUser } from "../../../services/authService.js";
+import { resolveLiveSessionUser, checkRateLimit, getTrustedClientIp } from "../../../services/authService.js";
 import { getSheetsClient, withRetry } from "../../../services/sheetsClient.js";
 import { getCanonicalAcSheetId, matchesClientName, isPulseOnlyUser, canAccessPma, installSheetIdBoundary } from "../../../services/userPermissions.js";
 import { getClientSetupStatusForPortal } from "../../../services/setupService.js";
@@ -26,6 +26,11 @@ export default async function handler(req, res) {
     return res.status(401).json({ success: false, error: "Unauthorized: Active session required" });
   }
   installSheetIdBoundary(req, res, sessionUser);
+
+  const rl = await checkRateLimit("portal-clients", sessionUser.email || getTrustedClientIp(req), 120, 60);
+  if (!rl.allowed) {
+    return res.status(429).json({ success: false, error: "Too many requests. Please retry shortly." });
+  }
 
   try {
     const acId = getCanonicalAcSheetId();

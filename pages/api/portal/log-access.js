@@ -1,8 +1,9 @@
-import { resolveLiveSessionUser, getTrustedClientIp } from "../../../services/authService.js";
+import { resolveLiveSessionUser, getTrustedClientIp, checkRateLimit } from "../../../services/authService.js";
 import { getSheetsClient } from "../../../services/sheetsClient.js";
 import { verifyUserAuthorizedForSheet, isUserAuthorizedForClient } from "../../../services/userPermissions.js";
+import { assertClientPortalLive } from "../../../services/setupService.js";
 import { logPulseActivity } from "../../../services/pulseLogger.js";
-import { installSheetIdBoundary } from "../../../services/sheetTokenService.js";
+import { installSheetIdBoundary, unwrapSheetId } from "../../../services/sheetTokenService.js";
 import { assertTrustedOrigin, sanitizeSpreadsheetTerms } from "../../../utils/helpers.js";
 
 export default async function handler(req, res) {
@@ -18,6 +19,11 @@ export default async function handler(req, res) {
 
   installSheetIdBoundary(req, res, sessionUser);
 
+  const rl = await checkRateLimit("portal-log-access", sessionUser.email || getTrustedClientIp(req), 60, 60);
+  if (!rl.allowed) {
+    return res.status(429).json({ success: false, error: "Too many requests. Please slow down." });
+  }
+
   const { clientName, clientSheetId, action = "PORTAL_ENTERED" } = req.body || {};
 
   if (!clientName && !clientSheetId) {
@@ -26,10 +32,11 @@ export default async function handler(req, res) {
 
   try {
     const sheets = await getSheetsClient();
+    const cleanSheetId = clientSheetId ? unwrapSheetId(clientSheetId) : "";
 
     let targetClient = (clientName || "").trim();
-    if (clientSheetId) {
-      const auth = await verifyUserAuthorizedForSheet(sessionUser, clientSheetId, clientName, sheets);
+    if (cleanSheetId) {
+      const auth = await verifyUserAuthorizedForSheet(sessionUser, cleanSheetId, clientName, sheets);
       if (!auth.authorized) {
         return res.status(auth.status || 403).json({ success: false, error: auth.error });
       }
@@ -37,14 +44,20 @@ export default async function handler(req, res) {
     } else if (!isUserAuthorizedForClient(sessionUser, targetClient)) {
       return res.status(403).json({ success: false, error: "Forbidden: Not authorized for this client" });
     }
+    const liveGate = await assertClientPortalLive(sessionUser, targetClient, res);
+    if (!liveGate.allowed) return;
     const clientIp = getTrustedClientIp(req);
 
     await logPulseActivity(sheets, {
       clientName: targetClient,
       category: "PORTAL",
-      action: "PORTAL_ENTERED",
+      action: action === "PORTAL_ENTERED" ? "PORTAL_ENTERED" : "PORTAL_ENTERED",
       summary: `${sessionUser.name || sessionUser.email} accessed ${targetClient} workspace`,
-      details: { role: sessionUser.role, clientSheetId: clientSheetId || "-", ip: clientIp },
+      details: {
+        role: sessionUser.role,
+        ...(sessionUser.isAdmin && cleanSheetId ? { clientSheetId: cleanSheetId } : {}),
+        ip: clientIp,
+      },
       user: sessionUser.name || sessionUser.email
     });
 

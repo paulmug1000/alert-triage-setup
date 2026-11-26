@@ -988,23 +988,25 @@ export async function syncBeyondTheBlueprintConversations_({ masterSS = null, ct
     });
 
     if (supabase) {
-      const { data: curClient } = await supabase
+      const { data: curClient, error: curErr } = await supabase
         .from("clients")
         .select("metadata")
         .eq("client_name", targetClient)
         .maybeSingle();
 
-      const prevMeta = curClient?.metadata && typeof curClient.metadata === "object" ? curClient.metadata : {};
-      await supabase
-        .from("clients")
-        .update({
-          metadata: {
-            ...prevMeta,
-            btb_conversations_count: count,
-            btb_conversations_updated_at: new Date().toISOString(),
-          },
-        })
-        .eq("client_name", targetClient);
+      if (!curErr && curClient) {
+        const prevMeta = curClient.metadata && typeof curClient.metadata === "object" ? curClient.metadata : {};
+        await supabase
+          .from("clients")
+          .update({
+            metadata: {
+              ...prevMeta,
+              btb_conversations_count: count,
+              btb_conversations_updated_at: new Date().toISOString(),
+            },
+          })
+          .eq("client_name", targetClient);
+      }
     }
 
     console.log(`[BtB Hook] Updated Delivered!D81 to ${count} active conversations.`);
@@ -1291,23 +1293,26 @@ export async function runNativeMasterSync({
   attachNativeConnectorHooksToEnv_(env, ctx, false);
   const gas = createMasterGasInstance(env);
 
-  const { data: curSched } = await supabase
+  const { data: curSched, error: schedErr } = await supabase
     .from("sync_schedules")
     .select("flags")
     .eq("client_name", ctx.clientName)
     .maybeSingle();
+  const hasSchedRow = !schedErr && Boolean(curSched);
   const baseFlags = curSched?.flags && typeof curSched.flags === "object" ? curSched.flags : {};
 
-  await supabase
-    .from("sync_schedules")
-    .update({
-      flags: {
-        ...baseFlags,
-        in_flight_since: runStartedIso,
-        in_flight_seqs: activeSeqs,
-      },
-    })
-    .eq("client_name", ctx.clientName);
+  if (hasSchedRow) {
+    await supabase
+      .from("sync_schedules")
+      .update({
+        flags: {
+          ...baseFlags,
+          in_flight_since: runStartedIso,
+          in_flight_seqs: activeSeqs,
+        },
+      })
+      .eq("client_name", ctx.clientName);
+  }
 
   // Execute the verbatim GAS `runAgencyAutomator`
   let capturedInvPreflightState = null;
@@ -1754,39 +1759,76 @@ export async function dispatchDueNativeMasterSyncs({
         const sMode = String(c?.sync_orchestrator_mode || c?.metadata?.sync_orchestrator_mode || "grid_gas").toLowerCase();
         return c?.client_compute_mode !== "native" || sMode !== "native";
       });
+      const fetchEstatePaged_ = async (buildQ, orderCol) => {
+        const out = [];
+        for (let from = 0; ; from += 1000) {
+          const { data: page, error: qErr } = await buildQ()
+            .order(orderCol, { ascending: true })
+            .range(from, from + 999);
+          if (qErr || !Array.isArray(page) || page.length === 0) break;
+          out.push(...page);
+          if (page.length < 1000) break;
+        }
+        return { data: out };
+      };
+
       const [{ data: masterMetaRows }, { data: localGridRows }, { data: nativeSyncCfgMeta }, { data: bpUpdatedRows }, { data: reconCfgRows }, { data: reconPeriodRows }] = await Promise.all([
         nonNativeMasterCandidates.length > 0
-          ? supabase
-            .from("master_sheet_grids")
-            .select("client_name, tab_name, values_grid")
-            .eq("sheet_role", "master")
-            .in("tab_name", ["KeyInfo", "CRMList"])
-            .in("client_name", nonNativeMasterCandidates)
+          ? fetchEstatePaged_(
+              () =>
+                supabase
+                  .from("master_sheet_grids")
+                  .select("client_name, tab_name, values_grid")
+                  .eq("sheet_role", "master")
+                  .in("tab_name", ["KeyInfo", "CRMList"])
+                  .in("client_name", nonNativeMasterCandidates),
+              "id"
+            )
           : Promise.resolve({ data: [] }),
         nonNativeSyncCandidates.length > 0
-          ? supabase
-            .from("master_sheet_grids")
-            .select("client_name, sheet_role, tab_name, updated_at")
-            .in("sheet_role", ["client", "recon"])
-            .in("client_name", nonNativeSyncCandidates)
+          ? fetchEstatePaged_(
+              () =>
+                supabase
+                  .from("master_sheet_grids")
+                  .select("client_name, sheet_role, tab_name, updated_at")
+                  .in("sheet_role", ["client", "recon"])
+                  .in("client_name", nonNativeSyncCandidates),
+              "id"
+            )
           : Promise.resolve({ data: [] }),
-        supabase
-          .from("pulse_master_sync_configs")
-          .select("client_name, master_key_info_grid, crm_list_config")
-          .in("client_name", candidateNames),
-        supabase
-          .from("pulse_client_tab_blueprints")
-          .select("client_name, tab_name, updated_at")
-          .in("tab_name", ["Pipeline", "Confirmed", "Outgoings", "OutgNotes"])
-          .in("client_name", candidateNames),
-        supabase
-          .from("pulse_recon_configs")
-          .select("client_name, updated_at")
-          .in("client_name", candidateNames),
-        supabase
-          .from("bank_recon_periods")
-          .select("client_name, updated_at")
-          .in("client_name", candidateNames),
+        fetchEstatePaged_(
+          () =>
+            supabase
+              .from("pulse_master_sync_configs")
+              .select("client_name, master_key_info_grid, crm_list_config")
+              .in("client_name", candidateNames),
+          "client_id"
+        ),
+        fetchEstatePaged_(
+          () =>
+            supabase
+              .from("pulse_client_tab_blueprints")
+              .select("client_name, tab_name, updated_at")
+              .in("tab_name", ["Pipeline", "Confirmed", "Outgoings", "OutgNotes"])
+              .in("client_name", candidateNames),
+          "id"
+        ),
+        fetchEstatePaged_(
+          () =>
+            supabase
+              .from("pulse_recon_configs")
+              .select("client_name, updated_at")
+              .in("client_name", candidateNames),
+          "client_id"
+        ),
+        fetchEstatePaged_(
+          () =>
+            supabase
+              .from("bank_recon_periods")
+              .select("client_name, updated_at")
+              .in("client_name", candidateNames),
+          "id"
+        ),
       ]);
 
       const kiByClient = new Map();

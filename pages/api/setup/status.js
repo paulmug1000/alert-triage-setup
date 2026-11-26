@@ -8,8 +8,8 @@
  * are being requested.
  */
 
-import { resolveLiveSessionUser } from "../../../services/authService.js";
-import { isUserAuthorizedForClient, verifyUserAuthorizedForSheet, matchesClientName, canAccessPma } from "../../../services/userPermissions.js";
+import { resolveLiveSessionUser, checkRateLimit, getTrustedClientIp } from "../../../services/authService.js";
+import { assertSetupClientSheetBinding, canAccessPma } from "../../../services/userPermissions.js";
 import { getSheetsClient } from "../../../services/sheetsClient.js";
 import { getClientSetupStatusForPortal } from "../../../services/setupService.js";
 import { installSheetIdBoundary } from "../../../services/sheetTokenService.js";
@@ -26,34 +26,29 @@ export default async function handler(req, res) {
   }
   installSheetIdBoundary(req, res, sessionUser);
 
+  const rl = await checkRateLimit("setup-status", sessionUser.email || getTrustedClientIp(req), 120, 60);
+  if (!rl.allowed) {
+    return res.status(429).json({ success: false, error: "Too many requests. Please slow down." });
+  }
+
   const { clientName, masterSheetId, clientSheetId } = req.query;
   if (!clientName) {
     return res.status(400).json({ success: false, error: "Missing required clientName parameter." });
   }
 
-  // Ensure user is authorized for this client
-  if (!sessionUser.isAdmin && !isUserAuthorizedForClient(sessionUser, clientName)) {
-    return res.status(403).json({ success: false, error: "Access denied to this client." });
-  }
-  if (!sessionUser.isAdmin && (clientSheetId || masterSheetId)) {
-    try {
-      const sheets = await getSheetsClient();
-      let boundClient = String(clientName || "").trim();
-      for (const sid of [clientSheetId, masterSheetId].filter(Boolean)) {
-        const auth = await verifyUserAuthorizedForSheet(sessionUser, sid, boundClient, sheets);
-        if (!auth.authorized) {
-          return res.status(auth.status || 403).json({ success: false, error: auth.error || "Access denied to this client." });
-        }
-        if (auth.clientName) {
-          if (boundClient && !matchesClientName(boundClient, auth.clientName)) {
-            return res.status(403).json({ success: false, error: "Access denied to this client." });
-          }
-          boundClient = auth.clientName;
-        }
-      }
-    } catch (_) {
-      return res.status(403).json({ success: false, error: "Access denied to this client." });
+  try {
+    const sheets = await getSheetsClient();
+    const bindAuth = await assertSetupClientSheetBinding(sessionUser, {
+      clientName,
+      masterSheetId: masterSheetId || "",
+      clientSheetId: clientSheetId || "",
+      sheets,
+    });
+    if (!bindAuth.authorized) {
+      return res.status(bindAuth.status || 403).json({ success: false, error: bindAuth.error || "Access denied to this client." });
     }
+  } catch (_) {
+    return res.status(403).json({ success: false, error: "Access denied to this client." });
   }
 
   try {

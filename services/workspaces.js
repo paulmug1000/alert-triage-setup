@@ -10836,11 +10836,13 @@ export async function handleMarkPipelineAlreadyConfirmed(req, res, sheets) {
       })
     );
 
-    // Invalidate caches
+    const tenantClient = clientName || (await resolveClientNameBySheetId(sheets, sheetIdClean, req.body.automationCommanderSheetId));
+    await flushImmediateAndScheduleBackgroundClientRecomputes(sheets, tenantClient).catch(() => { });
+
+    // Invalidate caches after recomputes flush
     await invalidatePmaClientCache(sheetIdClean, null, ["jobs", "retainers", "invoices", "cash"]).catch(() => { });
 
     // Log activity
-    const tenantClient = clientName || (await resolveClientNameBySheetId(sheets, sheetIdClean, req.body.automationCommanderSheetId));
     logPmaActivity(sheets, {
       automationCommanderSheetId: req.body.automationCommanderSheetId,
       clientName: tenantClient,
@@ -10854,7 +10856,6 @@ export async function handleMarkPipelineAlreadyConfirmed(req, res, sheets) {
       }
     }).catch(e => console.error("PMA log failed:", e));
 
-    await flushImmediateAndScheduleBackgroundClientRecomputes(sheets, tenantClient).catch(() => { });
     return res.status(200).json({ success: true });
   } catch (err) {
     console.error("❌ handleMarkPipelineAlreadyConfirmed error:", err);

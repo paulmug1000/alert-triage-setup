@@ -126,6 +126,23 @@ export async function backfillClientNativeConnectors(clientName) {
 
   const ctx = await resolveSupabaseSheetContext({ clientName });
   if (!ctx?.clientId) throw new Error(`Client "${clientName}" not found.`);
+  if (ctx.gridStorageRetired) {
+    const supa = getSupabaseAdmin();
+    const { data: existingCfg } = await supa
+      .from("pulse_master_sync_configs")
+      .select("crm_google_bridge_grid, crm_excel_bridge_grid, crm_excel_copy_grid, accounting_coa_categories, script_properties")
+      .eq("client_id", ctx.clientId)
+      .maybeSingle();
+    return {
+      clientName: ctx.clientName,
+      skippedRetired: true,
+      googleBridgeRows: Math.max(0, (existingCfg?.crm_google_bridge_grid?.length || 1) - 1),
+      excelBridgeRows: Math.max(0, (existingCfg?.crm_excel_bridge_grid?.length || 1) - 1),
+      excelCopyRows: existingCfg?.crm_excel_copy_grid?.length || 0,
+      coaCount: Array.isArray(existingCfg?.accounting_coa_categories) ? existingCfg.accounting_coa_categories.length : 0,
+      scriptPropKeys: existingCfg?.script_properties ? Object.keys(existingCfg.script_properties).length : 0,
+    };
+  }
 
   const supabase = getSupabaseAdmin();
   const tabsToRead = ["KeyInfo", "CRMGoogleBridge", "CRMExcelBridge", "CRMExcelCopy", "GasScriptProps"];
@@ -192,7 +209,7 @@ export async function backfillClientNativeConnectors(clientName) {
     .upsert(cfgPatch, { onConflict: "client_id" });
   if (upErr) throw new Error(`Failed saving connector state for ${ctx.clientName}: ${upErr.message}`);
 
-  const { data: curClient } = await supabase
+  const { data: curClient, error: curClientErr } = await supabase
     .from("clients")
     .select("metadata")
     .eq("id", ctx.clientId)
@@ -211,7 +228,9 @@ export async function backfillClientNativeConnectors(clientName) {
     },
   };
 
-  await supabase.from("clients").update({ metadata: nextMeta }).eq("id", ctx.clientId);
+  if (!curClientErr && curClient) {
+    await supabase.from("clients").update({ metadata: nextMeta }).eq("id", ctx.clientId);
+  }
   invalidateClientRelationalMasterCache(ctx.clientName);
   invalidateMasterEngineCache(ctx.clientName);
 
@@ -268,8 +287,13 @@ export async function setClientConnectorPullMode(clientName, modeRaw) {
 
   const ctx = await resolveSupabaseSheetContext({ clientName });
   if (!ctx?.clientId) throw new Error(`Client "${clientName}" not found.`);
+  if (ctx.gridStorageRetired && mode !== "native") {
+    throw new Error(
+      `Client "${clientName}" has retired grid storage and cannot be downgraded from 'native' connector_pull_mode.`
+    );
+  }
 
-  if (mode === "native") {
+  if (mode === "native" && !ctx.gridStorageRetired) {
     const supabase = getSupabaseAdmin();
     const { data: cfg } = await supabase
       .from("pulse_master_sync_configs")
@@ -290,11 +314,14 @@ export async function setClientConnectorPullMode(clientName, modeRaw) {
   }
 
   const supabase = getSupabaseAdmin();
-  const { data: curClient } = await supabase
+  const { data: curClient, error: curClErr } = await supabase
     .from("clients")
     .select("metadata")
     .eq("id", ctx.clientId)
     .maybeSingle();
+  if (curClErr || !curClient) {
+    throw new Error(curClErr?.message || `Client metadata load failed for "${ctx.clientName}".`);
+  }
 
   const nextMeta = {
     ...(curClient?.metadata || {}),

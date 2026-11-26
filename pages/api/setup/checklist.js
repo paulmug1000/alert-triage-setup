@@ -7,9 +7,9 @@
  * POST: Updates a specific checklist task's completion status.
  */
 
-import { resolveLiveSessionUser } from "../../../services/authService.js";
+import { resolveLiveSessionUser, checkRateLimit, getTrustedClientIp } from "../../../services/authService.js";
 import { installSheetIdBoundary } from "../../../services/sheetTokenService.js";
-import { isUserAuthorizedForClient, verifyUserAuthorizedForSheet, canAccessPma, isReadOnlySession } from "../../../services/userPermissions.js";
+import { assertSetupClientSheetBinding, canAccessPma, isReadOnlySession } from "../../../services/userPermissions.js";
 import { getSheetsClient } from "../../../services/sheetsClient.js";
 import { getClientChecklistState, updateClientChecklistTask } from "../../../services/setupService.js";
 import { sanitizeSpreadsheetTerms, assertTrustedOrigin } from "../../../utils/helpers.js";
@@ -19,24 +19,24 @@ function sanitizeChecklistStateForUser(state, sessionUser) {
   const sanitizeTask = (t) =>
     t && typeof t === "object"
       ? {
-          ...t,
-          title: t.title ? sanitizeSpreadsheetTerms(t.title) : t.title,
-          description: t.description ? sanitizeSpreadsheetTerms(t.description) : t.description,
-          instructions: Array.isArray(t.instructions)
-            ? t.instructions.map((step) => sanitizeSpreadsheetTerms(String(step || "")))
-            : t.instructions,
-          metadata: t.metadata ? sanitizeSpreadsheetTerms(String(t.metadata)) : t.metadata,
-        }
+        ...t,
+        title: t.title ? sanitizeSpreadsheetTerms(t.title) : t.title,
+        description: t.description ? sanitizeSpreadsheetTerms(t.description) : t.description,
+        instructions: Array.isArray(t.instructions)
+          ? t.instructions.map((step) => sanitizeSpreadsheetTerms(String(step || "")))
+          : t.instructions,
+        metadata: t.metadata ? sanitizeSpreadsheetTerms(String(t.metadata)) : t.metadata,
+      }
       : t;
   const filteredPhases = Array.isArray(state.phases)
     ? state.phases
-        .filter((p) => p && p.id !== "phase_1" && !p.adminOnly)
-        .map((p) => ({
-          ...p,
-          title: p.title ? sanitizeSpreadsheetTerms(p.title) : p.title,
-          description: p.description ? sanitizeSpreadsheetTerms(p.description) : p.description,
-          tasks: Array.isArray(p.tasks) ? p.tasks.map(sanitizeTask) : p.tasks,
-        }))
+      .filter((p) => p && p.id !== "phase_1" && !p.adminOnly)
+      .map((p) => ({
+        ...p,
+        title: p.title ? sanitizeSpreadsheetTerms(p.title) : p.title,
+        description: p.description ? sanitizeSpreadsheetTerms(p.description) : p.description,
+        tasks: Array.isArray(p.tasks) ? p.tasks.map(sanitizeTask) : p.tasks,
+      }))
     : state.phases;
   const filteredTasks = Array.isArray(state.tasks)
     ? state.tasks.filter((t) => t && t.phaseId !== "phase_1").map(sanitizeTask)
@@ -80,6 +80,11 @@ export default async function handler(req, res) {
     return res.status(403).json({ success: false, error: "Access denied: PMA configuration requires staff privileges." });
   }
 
+  const rl = await checkRateLimit("setup-checklist", sessionUser.email || getTrustedClientIp(req), 120, 60);
+  if (!rl.allowed) {
+    return res.status(429).json({ success: false, error: "Too many requests. Please slow down." });
+  }
+
   const sheets = await getSheetsClient();
 
   if (req.method === "GET") {
@@ -88,14 +93,13 @@ export default async function handler(req, res) {
       return res.status(400).json({ success: false, error: "Missing required clientName parameter." });
     }
 
-    if (!sessionUser.isAdmin && !isUserAuthorizedForClient(sessionUser, clientName)) {
-      return res.status(403).json({ success: false, error: "Access denied to this client." });
-    }
-    if (!sessionUser.isAdmin && masterSheetId) {
-      const auth = await verifyUserAuthorizedForSheet(sessionUser, masterSheetId, clientName, sheets);
-      if (!auth.authorized) {
-        return res.status(auth.status || 403).json({ success: false, error: auth.error || "Access denied to this client." });
-      }
+    const bindAuth = await assertSetupClientSheetBinding(sessionUser, {
+      clientName,
+      masterSheetId: masterSheetId || "",
+      sheets,
+    });
+    if (!bindAuth.authorized) {
+      return res.status(bindAuth.status || 403).json({ success: false, error: bindAuth.error || "Access denied to this client." });
     }
 
     try {
@@ -120,14 +124,13 @@ export default async function handler(req, res) {
       return res.status(403).json({ success: false, error: "Step 0 tasks can only be modified by administrators." });
     }
 
-    if (!sessionUser.isAdmin && !isUserAuthorizedForClient(sessionUser, clientName)) {
-      return res.status(403).json({ success: false, error: "Access denied to this client." });
-    }
-    if (!sessionUser.isAdmin && masterSheetId) {
-      const auth = await verifyUserAuthorizedForSheet(sessionUser, masterSheetId, clientName, sheets);
-      if (!auth.authorized) {
-        return res.status(auth.status || 403).json({ success: false, error: auth.error || "Access denied to this client." });
-      }
+    const bindAuth = await assertSetupClientSheetBinding(sessionUser, {
+      clientName,
+      masterSheetId: masterSheetId || "",
+      sheets,
+    });
+    if (!bindAuth.authorized) {
+      return res.status(bindAuth.status || 403).json({ success: false, error: bindAuth.error || "Access denied to this client." });
     }
 
     try {

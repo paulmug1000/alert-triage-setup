@@ -149,11 +149,17 @@ async function upsertClientRegistryRecord_(sb, rawRow) {
 
   if (existingId) {
     const payload = buildClientRegistryPayload_(rawRow, { isUpdate: true });
-    const { data: existingRow } = await sb
+    const { data: existingRow, error: existingErr } = await sb
       .from("clients")
       .select("id, client_name, metadata, client_sheet_id, master_sheet_id, recon_sheet_id, client_mode, master_mode")
       .eq("id", existingId)
       .maybeSingle();
+    if (existingErr) {
+      throw new Error(`Failed loading client "${existingId}": ${existingErr.message}`);
+    }
+    if (!existingRow) {
+      throw new Error(`Client "${existingId}" was not found.`);
+    }
 
     if (
       existingRow?.client_name &&
@@ -629,6 +635,9 @@ export default async function handler(req, res) {
       const { rows } = req.body || {};
       if (!Array.isArray(rows) || rows.length === 0) {
         return res.status(400).json({ success: false, error: "At least one client row is required." });
+      }
+      if (rows.length > 200) {
+        return res.status(400).json({ success: false, error: "Batch client registry size exceeds maximum limit (200)." });
       }
       const sb = getSupabaseAdmin();
       const savedClients = [];

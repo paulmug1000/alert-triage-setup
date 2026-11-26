@@ -642,7 +642,7 @@ async function runSingleReconReconcilePass_(ctx, tabNames = null, options = {}) 
   let reconRows = [];
 
   if (recordsOverride || ctx.syncOrchestratorMode === "native") {
-    const bundle = await preloadClientRelationalReconBundle(ctx, { source: "db" }).catch(() => null);
+    const bundle = await preloadClientRelationalReconBundle(ctx, { source: "db" });
     if (bundle) {
       for (const mKey of bundle.periodByMonth?.keys?.() || []) {
         const rec = reconstructRelationalReconTabFromBundle(bundle, mKey);
@@ -807,7 +807,11 @@ async function runSingleReconReconcilePass_(ctx, tabNames = null, options = {}) 
       })
       .map((r) => r.id);
     for (let i = 0; i < staleItemIds.length; i += 200) {
-      await supabase.from("bank_recon_items").delete().in("id", staleItemIds.slice(i, i + 200));
+      const { error: delErr } = await supabase
+        .from("bank_recon_items")
+        .delete()
+        .in("id", staleItemIds.slice(i, i + 200));
+      if (delErr) throw new Error(`bank_recon_items delete failed: ${delErr.message}`);
     }
   }
 
@@ -824,7 +828,11 @@ async function runSingleReconReconcilePass_(ctx, tabNames = null, options = {}) 
       .filter((p) => !keepMonthSet.has(p.month_key))
       .map((p) => p.id);
     for (let i = 0; i < stalePeriodIds.length; i += 200) {
-      await supabase.from("bank_recon_periods").delete().in("id", stalePeriodIds.slice(i, i + 200));
+      const { error: delErr } = await supabase
+        .from("bank_recon_periods")
+        .delete()
+        .in("id", stalePeriodIds.slice(i, i + 200));
+      if (delErr) throw new Error(`bank_recon_periods delete failed: ${delErr.message}`);
     }
   }
 
@@ -879,7 +887,11 @@ async function runSingleReconReconcilePass_(ctx, tabNames = null, options = {}) 
       .filter((r) => !keepPatterns.has(r.match_pattern))
       .map((r) => r.id);
     for (let i = 0; i < staleLearnIds.length; i += 200) {
-      await supabase.from("bank_recon_learning_map").delete().in("id", staleLearnIds.slice(i, i + 200));
+      const { error: delErr } = await supabase
+        .from("bank_recon_learning_map")
+        .delete()
+        .in("id", staleLearnIds.slice(i, i + 200));
+      if (delErr) throw new Error(`bank_recon_learning_map delete failed: ${delErr.message}`);
     }
   }
 
@@ -895,19 +907,21 @@ async function runSingleReconReconcilePass_(ctx, tabNames = null, options = {}) 
   };
 
   if (options.updateBackfillTimestamp) {
-    const { data: cRow } = await supabase
+    const { data: cRow, error: cErr } = await supabase
       .from("clients")
       .select("metadata")
       .eq("id", ctx.clientId)
       .maybeSingle();
-    const nextMeta = {
-      ...(cRow?.metadata || {}),
-      relational_recon_state: {
-        lastBackfilledAt: new Date().toISOString(),
-        ...summary,
-      },
-    };
-    await supabase.from("clients").update({ metadata: nextMeta }).eq("id", ctx.clientId);
+    if (!cErr && cRow) {
+      const nextMeta = {
+        ...(cRow.metadata || {}),
+        relational_recon_state: {
+          lastBackfilledAt: new Date().toISOString(),
+          ...summary,
+        },
+      };
+      await supabase.from("clients").update({ metadata: nextMeta }).eq("id", ctx.clientId);
+    }
   }
 
   return summary;
@@ -941,7 +955,18 @@ export async function reconcileClientReconFromGrids(
   } else {
     for (const t of targetTabs) pendingEntry.tabs.add(t);
   }
-  pendingEntry.opts = { ...pendingEntry.opts, ...options };
+  const prevOpts = pendingEntry.opts || {};
+  const mergedRecordsOverride =
+    prevOpts.recordsOverride || options?.recordsOverride
+      ? { ...(prevOpts.recordsOverride || {}), ...(options?.recordsOverride || {}) }
+      : undefined;
+  pendingEntry.opts = {
+    ...prevOpts,
+    ...options,
+    forceFullUpsert: Boolean(prevOpts.forceFullUpsert || options?.forceFullUpsert),
+    updateBackfillTimestamp: Boolean(prevOpts.updateBackfillTimestamp || options?.updateBackfillTimestamp),
+    ...(mergedRecordsOverride ? { recordsOverride: mergedRecordsOverride } : {}),
+  };
   _pendingReconReconcileByClient.set(key, pendingEntry);
 
   if (_inFlightReconReconcileByClient.has(key)) {
@@ -985,11 +1010,15 @@ export async function deleteClientReconPeriod(ctxOrClientName, monthKey) {
 
   const supabase = getSupabaseAdmin();
   if (!supabase) return null;
-  await supabase
+  const { error: delErr } = await supabase
     .from("bank_recon_periods")
     .delete()
     .eq("client_id", ctx.clientId)
     .eq("month_key", cleanMonth);
+  if (delErr) {
+    throw new Error(`bank_recon_periods delete failed (${ctx.clientName}/${cleanMonth}): ${delErr.message}`);
+  }
+  invalidateClientRelationalReconCache(ctx.clientName);
 
   return reconcileClientReconFromGrids(ctx, null, { forceFullUpsert: true });
 }
@@ -1002,6 +1031,16 @@ export async function backfillClientRecon(clientName) {
   const ctx = await resolveSupabaseSheetContext({ clientName });
   if (!ctx?.clientId) {
     throw new Error(`Client "${clientName}" was not found in Supabase.`);
+  }
+  if (ctx.gridStorageRetired) {
+    return {
+      clientName: ctx.clientName,
+      skippedRetired: true,
+      periodsCount: 0,
+      reconciledItemsCount: 0,
+      unreconciledItemsCount: 0,
+      learningRulesCount: 0,
+    };
   }
   return reconcileClientReconFromGrids(ctx, null, {
     forceFullUpsert: true,
@@ -1163,6 +1202,9 @@ export async function preloadClientRelationalReconBundle(ctxOrClientName, { sour
     fetchAllRowsByClientId_(supabase, "bank_recon_items", ctx.clientId, "row_index"),
     fetchAllRowsByClientId_(supabase, "bank_recon_learning_map", ctx.clientId, "match_pattern"),
   ]);
+  if (cfgRes.error) {
+    throw new Error(`pulse_recon_configs load failed (${ctx.clientName}): ${cfgRes.error.message}`);
+  }
 
   const periodByMonth = new Map();
   for (const p of periods) {
@@ -1322,12 +1364,17 @@ export async function setClientReconMode(clientName, mode) {
   const supabase = getSupabaseAdmin();
   const { data: cl, error: fErr } = await supabase
     .from("clients")
-    .select("id, client_name, metadata")
+    .select("id, client_name, grid_storage_retired, metadata")
     .eq("client_name", clientName)
     .maybeSingle();
   if (fErr || !cl) throw new Error(fErr?.message || `Client "${clientName}" not found.`);
+  if (cl.grid_storage_retired && cleanMode !== "relational") {
+    throw new Error(
+      `Client "${clientName}" has retired grid storage and cannot be downgraded from 'relational' recon_mode.`
+    );
+  }
 
-  if (cleanMode === "relational") {
+  if (cleanMode === "relational" && !cl.grid_storage_retired) {
     await backfillClientRecon(clientName);
   }
 
@@ -1356,10 +1403,15 @@ export async function setClientReconReadMode(clientName, mode) {
   const supabase = getSupabaseAdmin();
   const { data: cl, error: fErr } = await supabase
     .from("clients")
-    .select("id, client_name, recon_mode, metadata")
+    .select("id, client_name, recon_mode, grid_storage_retired, metadata")
     .eq("client_name", clientName)
     .maybeSingle();
   if (fErr || !cl) throw new Error(fErr?.message || `Client "${clientName}" not found.`);
+  if (cl.grid_storage_retired && cleanMode !== "relational") {
+    throw new Error(
+      `Client "${clientName}" has retired grid storage and cannot be downgraded from 'relational' recon_read_mode.`
+    );
+  }
 
   if (cleanMode === "relational" && cl.recon_mode !== "relational") {
     throw new Error(`Switch ${clientName} to relational bank reconciliation mode before enabling direct SQL reads.`);

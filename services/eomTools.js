@@ -2068,7 +2068,7 @@ export async function handleEomSaveCashBalance(req, res, sheets) {
       }).catch((err) => console.warn("Failed to persist EoM bank breakdown:", err.message));
     }
 
-    await invalidatePmaClientCache(cashClientSheetId, cashClientName, ["cash"]).catch(() => {});
+    await invalidatePmaClientCache(cashClientSheetId, null, ["cash"]).catch(() => {});
 
     const cashWorkMonthKey = eomTargetMonthToWorkMonth_(cashTargetMonthKey);
     const completedTaskId = await autoCompleteLinkedEomTask_(sheets, automationCommanderSheetId, cashClientName, "cash_balance", cashWorkMonthKey);

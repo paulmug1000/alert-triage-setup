@@ -39,7 +39,10 @@ import {
   invalidateSalariesCache,
 } from "./salariesService.js";
 import { invalidatePmaClientCache } from "./cacheService.js";
-import { flushImmediateAndScheduleBackgroundClientRecomputes } from "./masterEngineService.js";
+import {
+  flushImmediateAndScheduleBackgroundClientRecomputes,
+  resolveClientSheetIdFromMaster,
+} from "./masterEngineService.js";
 import { logPmaActivity } from "./pmaLogger.js";
 import { sanitizeFormulaInput } from "./userPermissions.js";
 import { toSheetDateFormat } from "../utils/helpers.js";
@@ -894,7 +897,11 @@ export async function pullAndBuildStarterPlData({ clientName, masterSheetId }) {
   const b15to17 = vr[1]?.values || [];
   const splitDelivery = String(b15to17[1]?.[0] || "Yes").trim().toLowerCase() !== "no";
   const currency = String(b15to17[2]?.[0] || "GBP").trim() || "GBP";
-  const cleanClientId = resolveCleanId(vr[2]?.values?.[0]?.[0] || "");
+  const cleanClientId = await resolveClientSheetIdFromMaster({
+    clientName,
+    masterSheetId: cleanMasterId,
+    rawKeyInfoX28: vr[2]?.values?.[0]?.[0] || "",
+  });
   if (!cleanClientId) throw new Error("Client workspace sheet ID is not configured.");
 
   const trackedRawList = (vr[3]?.values || []).map((r) => String(r[0] || "").trim()).filter(Boolean);
@@ -1477,7 +1484,11 @@ export async function pushStarterPlSetup({
     })
   );
   const startDate = parseYear0Date(kiResp.data?.valueRanges?.[0]?.values?.[0]?.[0]);
-  const cleanClientId = resolveCleanId(kiResp.data?.valueRanges?.[1]?.values?.[0]?.[0] || "");
+  const cleanClientId = await resolveClientSheetIdFromMaster({
+    clientName,
+    masterSheetId: cleanMasterId,
+    rawKeyInfoX28: kiResp.data?.valueRanges?.[1]?.values?.[0]?.[0] || "",
+  });
   if (!cleanClientId) throw new Error("Client workspace sheet ID is not configured.");
 
   // Read Client Outgoings headers (UNFORMATTED_VALUE), landmarks/formulas (FORMULA), Salaries headers, and sheet GIDs
@@ -1897,11 +1908,11 @@ export async function pushStarterPlSetup({
   ).catch(() => {});
 
   if (cleanClientId.startsWith("sb-") || cleanMasterId.startsWith("sb-")) {
-    await flushImmediateAndScheduleBackgroundClientRecomputes(clientName || cleanMasterId).catch(() => {});
+    await flushImmediateAndScheduleBackgroundClientRecomputes(sheets, clientName || cleanMasterId).catch(() => {});
   }
   await Promise.allSettled([
     invalidateSalariesCache(cleanMasterId, cleanClientId),
-    invalidatePmaClientCache(cleanClientId, clientName, ["outgoings", "budget", "cash", "dashboard", "expenses", "views", "all"]),
+    invalidatePmaClientCache(cleanClientId, cleanMasterId, ["outgoings", "budget", "cash", "dashboard", "expenses", "views", "all"]),
   ]);
 
   await logPmaActivity(sheets, {
@@ -2044,7 +2055,7 @@ export async function assignStarterPlCategoryMapping({
     );
   }
 
-  await invalidatePmaClientCache(cleanMasterId, clientName, ["setup", "all"]).catch(() => {});
+  await invalidatePmaClientCache(null, cleanMasterId, ["setup", "all"]).catch(() => {});
   await logPmaActivity(sheets, {
     clientName: clientName || "",
     category: "SETUP",

@@ -60,6 +60,15 @@ export const MASTER_TRANSIENT_CLIENT_MIRROR_TABS = new Set([
   "Outgoings",
   "OutgNotes",
   "NBtoFind",
+  "Budget",
+  "Salaries",
+  "Dashboard",
+  "Performance",
+  "Cash",
+  "Calcs",
+  "DataForReport",
+  "Welcome",
+  "MthlyClient",
 ]);
 
 export const PHASE6D_MASTER_LOG_AND_AUX_TABS = new Set([
@@ -331,29 +340,38 @@ export async function loadBatchClientAutomationLogGrids(canonicalClientNames = [
   if (!supabase) return { byLowerClientName, failed: true };
 
   try {
-    const { data: rows, error } = await supabase
-      .from("pulse_automation_logs")
-      .select("client_name, sort_seq, raw_timestamp_cell, timestamp_display, category, summary, details")
-      .in("client_name", names)
-      .order("sort_seq", { ascending: false })
-      .limit(Math.max(500, names.length * Math.min(limitPerClient, 250)));
-
-    if (error) {
-      return { byLowerClientName, failed: true, error: error.message };
-    }
-
     const grouped = new Map();
-    for (const r of rows || []) {
-      const key = String(r.client_name || "").trim().toLowerCase();
-      if (!key) continue;
-      if (!grouped.has(key)) grouped.set(key, [AUTOLOG_HEADERS]);
-      const arr = grouped.get(key);
-      if (arr.length - 1 >= limitPerClient) continue;
-      const tsCell =
-        r.raw_timestamp_cell !== null && r.raw_timestamp_cell !== undefined && r.raw_timestamp_cell !== ""
-          ? r.raw_timestamp_cell
-          : (r.timestamp_display || "");
-      arr.push([tsCell, r.category || "", r.summary || "", r.details || ""]);
+    const perClientCap = Math.max(1, Math.min(Number(limitPerClient) || 250, 1000));
+    for (let i = 0; i < names.length; i += 4) {
+      const batch = names.slice(i, i + 4);
+      const batchRes = await Promise.all(
+        batch.map((cName) =>
+          supabase
+            .from("pulse_automation_logs")
+            .select("client_name, sort_seq, raw_timestamp_cell, timestamp_display, category, summary, details")
+            .eq("client_name", cName)
+            .order("sort_seq", { ascending: false })
+            .order("id", { ascending: false })
+            .limit(perClientCap)
+        )
+      );
+      for (const { data: rows, error } of batchRes) {
+        if (error) {
+          return { byLowerClientName, failed: true, error: error.message };
+        }
+        for (const r of rows || []) {
+          const key = String(r.client_name || "").trim().toLowerCase();
+          if (!key) continue;
+          if (!grouped.has(key)) grouped.set(key, [AUTOLOG_HEADERS]);
+          const arr = grouped.get(key);
+          if (arr.length - 1 >= perClientCap) continue;
+          const tsCell =
+            r.raw_timestamp_cell !== null && r.raw_timestamp_cell !== undefined && r.raw_timestamp_cell !== ""
+              ? r.raw_timestamp_cell
+              : (r.timestamp_display || "");
+          arr.push([tsCell, r.category || "", r.summary || "", r.details || ""]);
+        }
+      }
     }
 
     for (const n of names) {
@@ -533,6 +551,21 @@ export async function backfillClientNativeSync(clientName) {
 
   const ctx = await resolveSupabaseSheetContext({ clientName });
   if (!ctx?.clientId) throw new Error(`Client "${clientName}" not found.`);
+  if (ctx.gridStorageRetired) {
+    const supa = getSupabaseAdmin();
+    const [aCnt, eCnt, cfgRes] = await Promise.all([
+      supa.from("pulse_automation_logs").select("id", { count: "exact", head: true }).eq("client_id", ctx.clientId),
+      supa.from("pulse_execution_logs").select("id", { count: "exact", head: true }).eq("client_id", ctx.clientId),
+      supa.from("pulse_master_sync_configs").select("master_year0_data_grid, master_rev_comp_grid, master_mgmt_rep_grid").eq("client_id", ctx.clientId).maybeSingle(),
+    ]);
+    return {
+      clientName: ctx.clientName,
+      skippedRetired: true,
+      autoLogsCount: aCnt.count ?? 0,
+      execLogsCount: eCnt.count ?? 0,
+      auxTabsSynced: cfgRes?.data ? Object.values(cfgRes.data).filter((g) => Array.isArray(g) && g.length > 0).length : 0,
+    };
+  }
 
   const supabase = getSupabaseAdmin();
   const targetTabs = ["AutoLog", "GasExecLogs", ...MASTER_AUX_TABS];
@@ -592,7 +625,7 @@ export async function backfillClientNativeSync(clientName) {
     .upsert(cfgPatch, { onConflict: "client_id" });
   if (cfgErr) throw new Error(`Failed backfilling Phase 6D aux grids for ${ctx.clientName}: ${cfgErr.message}`);
 
-  const { data: curClient } = await supabase
+  const { data: curClient, error: curClientErr } = await supabase
     .from("clients")
     .select("metadata")
     .eq("id", ctx.clientId)
@@ -609,7 +642,9 @@ export async function backfillClientNativeSync(clientName) {
       hasMgmtRep: Boolean((byTab.get("MgmtRep")?.values_grid || []).length > 0),
     },
   };
-  await supabase.from("clients").update({ metadata: nextMeta }).eq("id", ctx.clientId);
+  if (!curClientErr && curClient) {
+    await supabase.from("clients").update({ metadata: nextMeta }).eq("id", ctx.clientId);
+  }
 
   invalidateMasterEngineCache(ctx.clientName);
   invalidateClientRelationalMasterCache(ctx.clientName);
@@ -665,6 +700,21 @@ export async function setClientSyncOrchestratorMode(clientName, modeRaw) {
 
   const ctx = await resolveSupabaseSheetContext({ clientName });
   if (!ctx?.clientId) throw new Error(`Client "${clientName}" not found.`);
+  if (ctx.gridStorageRetired) {
+    const supa = getSupabaseAdmin();
+    const [aCnt, eCnt, cfgRes] = await Promise.all([
+      supa.from("pulse_automation_logs").select("id", { count: "exact", head: true }).eq("client_id", ctx.clientId),
+      supa.from("pulse_execution_logs").select("id", { count: "exact", head: true }).eq("client_id", ctx.clientId),
+      supa.from("pulse_master_sync_configs").select("master_year0_data_grid, master_rev_comp_grid, master_mgmt_rep_grid").eq("client_id", ctx.clientId).maybeSingle(),
+    ]);
+    return {
+      clientName: ctx.clientName,
+      skippedRetired: true,
+      autoLogsCount: aCnt.count ?? 0,
+      execLogsCount: eCnt.count ?? 0,
+      auxTabsSynced: cfgRes?.data ? Object.values(cfgRes.data).filter((g) => Array.isArray(g) && g.length > 0).length : 0,
+    };
+  }
 
   const supabase = getSupabaseAdmin();
   if (mode === "native") {

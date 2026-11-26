@@ -8,7 +8,7 @@ import {
   addExpenseCategory,
 } from "../../../services/expensesService.js";
 import { getClients } from "../../../services/workspaces.js";
-import { verifyUserAuthorizedForSheet, canAccessPma, isReadOnlySession } from "../../../services/userPermissions.js";
+import { verifyUserAuthorizedForSheet, assertSetupClientSheetBinding, canAccessPma, isReadOnlySession } from "../../../services/userPermissions.js";
 import { getSheetsClient } from "../../../services/sheetsClient.js";
 import { installSheetIdBoundary } from "../../../services/sheetTokenService.js";
 import { assertTrustedOrigin, sanitizeSpreadsheetTerms } from "../../../utils/helpers.js";
@@ -53,14 +53,16 @@ export default async function handler(req, res) {
       });
     }
 
-    if (!sessionUser.isAdmin) {
-      const sheets = await getSheetsClient();
-      const auth = await verifyUserAuthorizedForSheet(sessionUser, clientSheetId, clientName, sheets);
-      if (!auth.authorized) {
-        return res.status(auth.status || 403).json({ success: false, error: auth.error || "Access denied to this client." });
-      }
-      clientName = auth.clientName || clientName;
+    const sheets = await getSheetsClient();
+    const bindAuth = await assertSetupClientSheetBinding(sessionUser, {
+      clientName,
+      clientSheetId,
+      sheets,
+    });
+    if (!bindAuth.authorized) {
+      return res.status(bindAuth.status || 403).json({ success: false, error: bindAuth.error || "Access denied to this client." });
     }
+    clientName = bindAuth.clientName || clientName;
 
     try {
       const data = await fetchExpensesData(
@@ -111,14 +113,16 @@ export default async function handler(req, res) {
       return res.status(400).json({ success: false, error: "Missing required clientSheetId." });
     }
 
-    if (!sessionUser.isAdmin) {
-      const sheets = await getSheetsClient();
-      const auth = await verifyUserAuthorizedForSheet(sessionUser, clientSheetId, clientName, sheets);
-      if (!auth.authorized) {
-        return res.status(auth.status || 403).json({ success: false, error: auth.error || "Access denied to this client." });
-      }
-      clientName = auth.clientName || clientName;
+    const sheets = await getSheetsClient();
+    const bindAuth = await assertSetupClientSheetBinding(sessionUser, {
+      clientName,
+      clientSheetId,
+      sheets,
+    });
+    if (!bindAuth.authorized) {
+      return res.status(bindAuth.status || 403).json({ success: false, error: bindAuth.error || "Access denied to this client." });
     }
+    clientName = bindAuth.clientName || clientName;
 
     try {
       const outgoingItemUuid = req.body?.outgoingItemUuid || null;
@@ -169,11 +173,16 @@ export default async function handler(req, res) {
 
       // Action: save_batch (batch update amounts and notes across rows/columns)
       if (action === "save_batch") {
+        const updates = Array.isArray(req.body?.updates) ? req.body.updates : [];
+        const cellNotes = Array.isArray(req.body?.cellNotes) ? req.body.cellNotes : [];
+        if (updates.length > 500 || cellNotes.length > 500) {
+          return res.status(400).json({ success: false, error: "Batch update size exceeds maximum limit (500)." });
+        }
         const result = await saveExpenseBatch({
           clientName: clientName || "Client",
           clientSheetId,
-          updates: Array.isArray(req.body?.updates) ? req.body.updates : [],
-          cellNotes: Array.isArray(req.body?.cellNotes) ? req.body.cellNotes : [],
+          updates,
+          cellNotes,
           userEmail: sessionUser.email,
         });
         return res.status(200).json(result);
@@ -205,7 +214,7 @@ export default async function handler(req, res) {
         error: sessionUser.isAdmin ? (err.message || "Failed to save expenses") : sanitizeSpreadsheetTerms(err.message || "Failed to save expenses")
       });
     } finally {
-      await flushImmediateAndScheduleBackgroundClientRecomputes().catch(() => { });
+      await flushImmediateAndScheduleBackgroundClientRecomputes(sheets, clientName || "").catch(() => { });
     }
   }
 

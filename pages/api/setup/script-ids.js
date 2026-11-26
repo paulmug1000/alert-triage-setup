@@ -7,7 +7,7 @@
  * and marks task p1_script_ids as complete.
  */
 
-import { resolveLiveSessionUser } from "../../../services/authService.js";
+import { resolveLiveSessionUser, checkRateLimit, getTrustedClientIp } from "../../../services/authService.js";
 import { isUserAuthorizedForClient, isReadOnlySession } from "../../../services/userPermissions.js";
 import { getSheetsClient } from "../../../services/sheetsClient.js";
 import { saveScriptIdsToTracker } from "../../../services/setupService.js";
@@ -26,6 +26,11 @@ export default async function handler(req, res) {
 
   if (!sessionUser.isAdmin || isReadOnlySession(sessionUser)) {
     return res.status(403).json({ success: false, error: "Access denied: Admin privileges required." });
+  }
+
+  const rl = await checkRateLimit("setup-script-ids", sessionUser.email || getTrustedClientIp(req), 60, 60);
+  if (!rl.allowed) {
+    return res.status(429).json({ success: false, error: "Too many requests. Please slow down." });
   }
 
   const { clientName, clientScriptId, masterScriptId, reconScriptId } = req.body || {};

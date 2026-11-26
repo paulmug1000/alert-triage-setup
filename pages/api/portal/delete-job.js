@@ -67,15 +67,17 @@ export default async function handler(req, res) {
     return res.status(400).json({ success: false, error: "Valid job identifier is required" });
   }
 
+  let sheets = null;
+  let verifiedClientName = "";
   try {
-    const sheets = await getSheetsClient();
+    sheets = await getSheetsClient();
 
     // Universal Fail-Closed Authorization Guard: binds sheetId to tenant identity
     const auth = await verifyUserAuthorizedForSheet(sessionUser, clientSheetId, clientName, sheets);
     if (!auth.authorized) {
       return res.status(auth.status || 403).json({ success: false, error: auth.error });
     }
-    const verifiedClientName = auth.clientName;
+    verifiedClientName = auth.clientName;
     const liveGate = await assertClientPortalLive(sessionUser, verifiedClientName, res);
     if (!liveGate.allowed) return;
 
@@ -557,6 +559,6 @@ export default async function handler(req, res) {
       error: sessionUser?.isAdmin ? err.message : sanitizeSpreadsheetTerms(err.message || "Request failed."),
     });
   } finally {
-    await flushImmediateAndScheduleBackgroundClientRecomputes().catch(() => { });
+    await flushImmediateAndScheduleBackgroundClientRecomputes(sheets, verifiedClientName || clientName || "").catch(() => { });
   }
 }

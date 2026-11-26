@@ -12,9 +12,8 @@
 import { resolveLiveSessionUser, checkRateLimit, getTrustedClientIp } from "../../services/authService.js";
 import {
   canAccessPma,
-  isUserAuthorizedForClient,
   isReadOnlySession,
-  verifyUserAuthorizedForSheet
+  assertSetupClientSheetBinding
 } from "../../services/userPermissions.js";
 import { getSheetsClient } from "../../services/sheetsClient.js";
 import { installSheetIdBoundary } from "../../services/sheetTokenService.js";
@@ -62,31 +61,22 @@ export default async function handler(req, res) {
     });
   }
 
-  // 3. Multi-tenant client authorization check
+  // 3. Multi-tenant client & dual-sheet binding check (unconditional across admins and non-admins)
   const targetClient = req.method === "GET" ? req.query.clientName : req.body?.clientName;
   const reqMasterSheetId = req.method === "GET" ? req.query.masterSheetId : req.body?.masterSheetId;
   const reqClientSheetId = req.method === "GET" ? req.query.clientSheetId : req.body?.clientSheetId;
-  if (!sessionUser.isAdmin) {
-    if (!isUserAuthorizedForClient(sessionUser, targetClient)) {
-      return res.status(403).json({
-        success: false,
-        error: "Forbidden: Access denied to this client."
-      });
-    }
-    const sheetIds = [reqMasterSheetId, reqClientSheetId].filter(Boolean);
-    if (sheetIds.length > 0) {
-      const sheets = await getSheetsClient();
-      const authChecks = await Promise.all(
-        sheetIds.map((sId) => verifyUserAuthorizedForSheet(sessionUser, sId, targetClient, sheets))
-      );
-      const denied = authChecks.find((check) => !check.authorized);
-      if (denied) {
-        return res.status(denied.status || 403).json({
-          success: false,
-          error: denied.error || "Forbidden: Spreadsheet access denied for this client."
-        });
-      }
-    }
+  const sheetsForAuth = await getSheetsClient();
+  const bindAuth = await assertSetupClientSheetBinding(sessionUser, {
+    clientName: targetClient || "",
+    masterSheetId: reqMasterSheetId || "",
+    clientSheetId: reqClientSheetId || "",
+    sheets: sheetsForAuth,
+  });
+  if (!bindAuth.authorized) {
+    return res.status(bindAuth.status || 403).json({
+      success: false,
+      error: bindAuth.error || "Forbidden: Spreadsheet access denied for this client."
+    });
   }
 
   // 3. GET: Fetch settings or lazy CRM preview
@@ -308,7 +298,7 @@ export default async function handler(req, res) {
         });
       }
     } finally {
-      await flushImmediateAndScheduleBackgroundClientRecomputes().catch(() => { });
+      await flushImmediateAndScheduleBackgroundClientRecomputes(sheetsForAuth, targetClient || "").catch(() => { });
     }
   }
 

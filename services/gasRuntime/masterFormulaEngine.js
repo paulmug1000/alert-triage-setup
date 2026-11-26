@@ -2264,7 +2264,7 @@ export function evaluateCRMComp(grids) {
 // 5. KeyInfo & PLComp
 // ============================================================================
 
-export function evaluateKeyInfoAndPLComp(grids) {
+export function evaluateKeyInfoAndPLComp(grids, options = {}) {
   const keyInfo = grids.KeyInfo;
   const plComp = grids.PLComp;
   const plFromApp = grids.PLFromApp;
@@ -2272,6 +2272,18 @@ export function evaluateKeyInfoAndPLComp(grids) {
   const year0PL = grids.Year0PLFromApp;
   const crmList = grids.CRMList;
   if (!Array.isArray(keyInfo)) return;
+
+  // Ensure KeyInfo!X28 reflects the client's workspace ID (fallback extracted from KeyInfo!C1)
+  const explicitClientId = String(options?.clientSheetId || "").trim();
+  if (explicitClientId) {
+    setCell(keyInfo, 27, 23, explicitClientId);
+  } else if (isBlankCell(getCell(keyInfo, 27, 23))) {
+    const c1Val = String(getCell(keyInfo, 0, 2) ?? "").trim();
+    const idMatch = c1Val.match(/\/d\/([a-zA-Z0-9_-]+)/) || (/^sb-client-[a-z0-9_-]+$/i.test(c1Val) ? [c1Val, c1Val] : null);
+    if (idMatch?.[1]) {
+      setCell(keyInfo, 27, 23, idMatch[1]);
+    }
+  }
 
   // Evaluate KeyInfo header/schedule formula cells verbatim from Master Template:
   //   E2 = month(B2)

@@ -221,7 +221,18 @@ export default async function handler(req, res) {
 
     // Invalidate caches for this client across both Portal and PMA
     try {
-      await invalidatePmaClientCache(clientSheetId, null, ["outgoings", "expenses", "salaries", "views", "cash", "jobs"]);
+      await invalidatePmaClientCache(clientSheetId, null, [
+        "outgoings",
+        "expenses",
+        "salaries",
+        "nbtofind",
+        "budget",
+        "views",
+        "dashboard",
+        "performance",
+        "cash",
+        "jobs",
+      ]);
     } catch (cacheErr) {
       console.warn("⚠️ Cache invalidation warning:", cacheErr.message);
     }

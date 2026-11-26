@@ -9,8 +9,8 @@
  * Access restricted to Admins and assigned ClientManagers.
  */
 
-import { resolveLiveSessionUser } from "../../../services/authService.js";
-import { isUserAuthorizedForClient, verifyUserAuthorizedForSheet, canAccessPma, isReadOnlySession } from "../../../services/userPermissions.js";
+import { resolveLiveSessionUser, checkRateLimit, getTrustedClientIp } from "../../../services/authService.js";
+import { assertSetupClientSheetBinding, canAccessPma, isReadOnlySession } from "../../../services/userPermissions.js";
 import { getSheetsClient } from "../../../services/sheetsClient.js";
 import { getClientSetupConfig, saveClientSetupConfig } from "../../../services/setupService.js";
 import { installSheetIdBoundary } from "../../../services/sheetTokenService.js";
@@ -27,27 +27,29 @@ export default async function handler(req, res) {
     return res.status(403).json({ success: false, error: "Access denied: PMA configuration requires staff privileges." });
   }
 
+  const rl = await checkRateLimit("setup-config", sessionUser.email || getTrustedClientIp(req), 120, 60);
+  if (!rl.allowed) {
+    return res.status(429).json({ success: false, error: "Too many requests. Please slow down." });
+  }
+
   if (req.method === "GET") {
     const { clientName, masterSheetId } = req.query;
     if (!clientName) {
       return res.status(400).json({ success: false, error: "Missing required clientName parameter." });
     }
 
-    // Role scoping: ClientManagers can only view assigned clients
-    if (!sessionUser.isAdmin && !isUserAuthorizedForClient(sessionUser, clientName)) {
-      return res.status(403).json({ success: false, error: "Access denied to this client." });
-    }
-
-    if (!sessionUser.isAdmin && masterSheetId) {
-      try {
-        const sheets = await getSheetsClient();
-        const auth = await verifyUserAuthorizedForSheet(sessionUser, masterSheetId, clientName, sheets);
-        if (!auth.authorized) {
-          return res.status(auth.status || 403).json({ success: false, error: auth.error });
-        }
-      } catch (_) {
-        return res.status(403).json({ success: false, error: "Access denied to this spreadsheet." });
+    try {
+      const sheets = await getSheetsClient();
+      const bindAuth = await assertSetupClientSheetBinding(sessionUser, {
+        clientName,
+        masterSheetId: masterSheetId || "",
+        sheets,
+      });
+      if (!bindAuth.authorized) {
+        return res.status(bindAuth.status || 403).json({ success: false, error: bindAuth.error || "Access denied to this client." });
       }
+    } catch (_) {
+      return res.status(403).json({ success: false, error: "Access denied to this spreadsheet." });
     }
 
     try {
@@ -93,21 +95,18 @@ export default async function handler(req, res) {
       return res.status(400).json({ success: false, error: "Missing required clientName parameter." });
     }
 
-    // Role scoping: ClientManagers can only edit assigned clients
-    if (!sessionUser.isAdmin && !isUserAuthorizedForClient(sessionUser, clientName)) {
-      return res.status(403).json({ success: false, error: "Access denied to modify this client." });
-    }
-
-    if (!sessionUser.isAdmin && masterSheetId) {
-      try {
-        const sheets = await getSheetsClient();
-        const auth = await verifyUserAuthorizedForSheet(sessionUser, masterSheetId, clientName, sheets);
-        if (!auth.authorized) {
-          return res.status(auth.status || 403).json({ success: false, error: auth.error });
-        }
-      } catch (_) {
-        return res.status(403).json({ success: false, error: "Access denied to this spreadsheet." });
+    try {
+      const sheets = await getSheetsClient();
+      const bindAuth = await assertSetupClientSheetBinding(sessionUser, {
+        clientName,
+        masterSheetId: masterSheetId || "",
+        sheets,
+      });
+      if (!bindAuth.authorized) {
+        return res.status(bindAuth.status || 403).json({ success: false, error: bindAuth.error || "Access denied to modify this client." });
       }
+    } catch (_) {
+      return res.status(403).json({ success: false, error: "Access denied to this spreadsheet." });
     }
 
     try {

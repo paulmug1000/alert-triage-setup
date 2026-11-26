@@ -18,6 +18,7 @@ import {
   parseCrmDealsFromGrids,
   projectCrmDealsToDataFromCrmGrid,
   preloadClientRelationalMasterBundle,
+  reconstructRelationalMasterTabFromBundle,
   invalidateClientRelationalMasterCache,
 } from "./relationalMasterService.js";
 import {
@@ -315,6 +316,7 @@ async function upsertCrmRowsInChunks_(supabase, clientId, parsedRows) {
       .from("crm_deals_raw")
       .select("id, sheet_row_num")
       .eq("client_id", clientId)
+      .order("id", { ascending: true })
       .range(from, from + 999);
     if (error) throw new Error(`crm_deals_raw select failed: ${error.message}`);
     const batch = Array.isArray(data) ? data : [];
@@ -324,7 +326,8 @@ async function upsertCrmRowsInChunks_(supabase, clientId, parsedRows) {
   }
   const staleIds = existing.filter((r) => !keepNums.has(Number(r.sheet_row_num))).map((r) => r.id);
   for (let i = 0; i < staleIds.length; i += 200) {
-    await supabase.from("crm_deals_raw").delete().in("id", staleIds.slice(i, i + 200));
+    const { error: delErr } = await supabase.from("crm_deals_raw").delete().in("id", staleIds.slice(i, i + 200));
+    if (delErr) throw new Error(`crm_deals_raw delete failed: ${delErr.message}`);
   }
 }
 
@@ -1143,6 +1146,10 @@ async function fetchExternalGoogleSheetCrm_({
   if (forbiddenIds.has(targetSheetId)) {
     throw new Error("Access denied: Target spreadsheet matches an internal Pulse workbook rather than an external CRM sheet.");
   }
+  if (!fetchImpl) {
+    const { assertExternalCrmSpreadsheet } = await import("./googleSheetService.js");
+    await assertExternalCrmSpreadsheet(null, targetSheetId);
+  }
 
   // Metadata preflight (matches 6_Routing_Logic.gs:359-380)
   const metaUrl = `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(targetSheetId)}?fields=sheets.properties.title`;
@@ -1791,16 +1798,19 @@ export async function pullNativeCrmDeals(ctx, options = {}) {
   if (!existingGrid || ctx?.connectorPullMode === "native") {
     const bundle = await preloadClientRelationalMasterBundle(ctx, { source: "db" }).catch(() => null);
     if (bundle) {
-      crmListGrid = Array.isArray(bundle.masterConfig?.crm_list_grid) ? bundle.masterConfig.crm_list_grid : [];
+      const reconCrmList = await reconstructRelationalMasterTabFromBundle(bundle, "CRMList", ctx).catch(() => null);
+      if (Array.isArray(reconCrmList)) {
+        crmListGrid = reconCrmList;
+      }
       if (!existingGrid) {
         const hdrs =
-          Array.isArray(bundle.masterConfig?.data_from_crm_headers) &&
-          bundle.masterConfig.data_from_crm_headers.length > 0
-            ? bundle.masterConfig.data_from_crm_headers
+          Array.isArray(bundle.config?.crm_raw_headers) &&
+          bundle.config.crm_raw_headers.length > 0
+            ? bundle.config.crm_raw_headers
             : connectorOut.headers;
         existingGrid = projectCrmDealsToDataFromCrmGrid({
           headers: hdrs,
-          records: bundle.crmDealsRaw || [],
+          records: bundle.crmDeals || [],
         });
       }
     }
@@ -1882,7 +1892,7 @@ export async function pullNativeCrmDeals(ctx, options = {}) {
       await upsertCrmRowsInChunks_(supabase, ctx.clientId, parsedCrm.rows);
 
       const cfgPatch = {
-        data_from_crm_headers: nextGrid[0] || connectorOut.headers,
+        crm_raw_headers: nextGrid[0] || connectorOut.headers,
       };
       if (connectorOut.nextBridgeGrid) {
         if (tool === "googlesheet") cfgPatch.crm_google_bridge_grid = connectorOut.nextBridgeGrid;

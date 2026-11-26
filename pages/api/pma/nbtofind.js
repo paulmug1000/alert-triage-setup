@@ -5,7 +5,7 @@ import {
   saveNBToFindMonthlyValues,
 } from "../../../services/nbToFindService.js";
 import { getClients } from "../../../services/workspaces.js";
-import { verifyUserAuthorizedForSheet, canAccessPma, isReadOnlySession } from "../../../services/userPermissions.js";
+import { assertSetupClientSheetBinding, canAccessPma, isReadOnlySession } from "../../../services/userPermissions.js";
 import { getSheetsClient } from "../../../services/sheetsClient.js";
 import { installSheetIdBoundary } from "../../../services/sheetTokenService.js";
 import { assertTrustedOrigin, sanitizeSpreadsheetTerms } from "../../../utils/helpers.js";
@@ -50,14 +50,16 @@ export default async function handler(req, res) {
       });
     }
 
-    if (!sessionUser.isAdmin) {
-      const sheets = await getSheetsClient();
-      const auth = await verifyUserAuthorizedForSheet(sessionUser, clientSheetId, clientName, sheets);
-      if (!auth.authorized) {
-        return res.status(auth.status || 403).json({ success: false, error: auth.error || "Access denied to this client." });
-      }
-      clientName = auth.clientName || clientName;
+    const sheets = await getSheetsClient();
+    const bindAuth = await assertSetupClientSheetBinding(sessionUser, {
+      clientName,
+      clientSheetId,
+      sheets,
+    });
+    if (!bindAuth.authorized) {
+      return res.status(bindAuth.status || 403).json({ success: false, error: bindAuth.error || "Access denied to this client." });
     }
+    clientName = bindAuth.clientName || clientName;
 
     try {
       const data = await fetchNBToFindData(
@@ -107,14 +109,16 @@ export default async function handler(req, res) {
       return res.status(400).json({ success: false, error: "Missing required clientSheetId." });
     }
 
-    if (!sessionUser.isAdmin) {
-      const sheets = await getSheetsClient();
-      const auth = await verifyUserAuthorizedForSheet(sessionUser, clientSheetId, clientName, sheets);
-      if (!auth.authorized) {
-        return res.status(auth.status || 403).json({ success: false, error: auth.error || "Access denied to this client." });
-      }
-      clientName = auth.clientName || clientName;
+    const sheets = await getSheetsClient();
+    const bindAuth = await assertSetupClientSheetBinding(sessionUser, {
+      clientName,
+      clientSheetId,
+      sheets,
+    });
+    if (!bindAuth.authorized) {
+      return res.status(bindAuth.status || 403).json({ success: false, error: bindAuth.error || "Access denied to this client." });
     }
+    clientName = bindAuth.clientName || clientName;
 
     try {
       // Action: save_settings (Cells A9, A12, and A21)
@@ -152,7 +156,7 @@ export default async function handler(req, res) {
         error: sessionUser.isAdmin ? (err.message || "Failed to save NB to find data") : sanitizeSpreadsheetTerms(err.message || "Failed to save NB to find data")
       });
     } finally {
-      await flushImmediateAndScheduleBackgroundClientRecomputes().catch(() => {});
+      await flushImmediateAndScheduleBackgroundClientRecomputes(sheets, clientName || "").catch(() => {});
     }
   }
 

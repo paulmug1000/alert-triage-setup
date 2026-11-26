@@ -21,7 +21,10 @@ import { unwrapSheetId } from "./sheetTokenService.js";
 import { resolveAccountingToolAuth } from "./accountingSuggestionsService.js";
 import { assertValidQBRealmId } from "./quickbooksService.js";
 import { invalidatePmaClientCache } from "./cacheService.js";
-import { flushImmediateAndScheduleBackgroundClientRecomputes } from "./masterEngineService.js";
+import {
+  flushImmediateAndScheduleBackgroundClientRecomputes,
+  resolveClientSheetIdFromMaster,
+} from "./masterEngineService.js";
 import { logPmaActivity } from "./pmaLogger.js";
 import { sanitizeFormulaInput } from "./userPermissions.js";
 
@@ -145,7 +148,7 @@ async function syncYear0DataToClientSheet(sheets, cleanMasterId, rawClientSheetI
   if (!cleanClientId) return;
 
   try {
-    const [valResp, formResp] = await Promise.all([
+    const [valResp, formResp, clientFormResp] = await Promise.all([
       withRetry(() =>
         sheets.spreadsheets.values.get({
           spreadsheetId: cleanMasterId,
@@ -160,20 +163,30 @@ async function syncYear0DataToClientSheet(sheets, cleanMasterId, rawClientSheetI
           valueRenderOption: "FORMULA",
         })
       ),
+      withRetry(() =>
+        sheets.spreadsheets.values.get({
+          spreadsheetId: cleanClientId,
+          range: "Year0Data!A1:BZ205",
+          valueRenderOption: "FORMULA",
+        })
+      ).catch(() => null),
     ]);
 
     const values = valResp.data?.values || [];
     const formulas = formResp.data?.values || [];
+    const clientFormulas = clientFormResp?.data?.values || [];
     const rowCount = Math.max(values.length, formulas.length, 205);
     const out = [];
 
     for (let r = 0; r < rowCount; r++) {
       const fRow = formulas[r] || [];
       const vRow = values[r] || [];
+      const cfRow = clientFormulas[r] || [];
       const outRow = new Array(78).fill("");
       for (let c = 0; c < 78; c++) {
         const f = fRow[c];
         const v = vRow[c] !== undefined ? vRow[c] : "";
+        const cf = cfRow[c];
         if (typeof f === "string" && f.startsWith("=")) {
           if (/Year0PLFromApp|KeyInfo!\$?B[AE]|CC2:CC502|AZ71/i.test(f)) {
             outRow[c] = typeof v === "string" ? sanitizeFormulaInput(v) : v;
@@ -182,6 +195,8 @@ async function syncYear0DataToClientSheet(sheets, cleanMasterId, rawClientSheetI
           } else {
             outRow[c] = f;
           }
+        } else if (typeof cf === "string" && cf.startsWith("=")) {
+          outRow[c] = cf;
         } else {
           outRow[c] = typeof v === "string" ? sanitizeFormulaInput(v) : v;
         }
@@ -755,15 +770,19 @@ export async function pullYear0PL({ clientName, masterSheetId }) {
   );
 
   // Ensure Client Sheet gets evaluated Year0Data snapshot (for Sheet and Supabase modes)
-  const cleanClientId = resolveCleanId(rawClientSheetId);
+  const cleanClientId = await resolveClientSheetIdFromMaster({
+    clientName,
+    masterSheetId: cleanMasterId,
+    rawKeyInfoX28: rawClientSheetId,
+  });
   if (cleanMasterId.startsWith("sb-")) {
-    await flushImmediateAndScheduleBackgroundClientRecomputes(clientName || cleanMasterId).catch(() => { });
+    await flushImmediateAndScheduleBackgroundClientRecomputes(sheets, clientName || cleanMasterId).catch(() => { });
   }
   if (cleanClientId) {
     await syncYear0DataToClientSheet(sheets, cleanMasterId, cleanClientId);
   }
 
-  await invalidatePmaClientCache(cleanMasterId, clientName, ["setup", "dashboard", "mgmtRep", "all"]).catch(() => { });
+  await invalidatePmaClientCache(cleanClientId || null, cleanMasterId, ["setup", "dashboard", "mgmtRep", "all"]).catch(() => { });
 
   await logPmaActivity(sheets, {
     clientName: clientName || "",
@@ -1141,15 +1160,19 @@ export async function saveYear0Adjustments({
     })
   );
 
-  const cleanClientId = resolveCleanId(rawClientSheetId);
+  const cleanClientId = await resolveClientSheetIdFromMaster({
+    clientName,
+    masterSheetId: cleanMasterId,
+    rawKeyInfoX28: rawClientSheetId,
+  });
   if (cleanMasterId.startsWith("sb-")) {
-    await flushImmediateAndScheduleBackgroundClientRecomputes(clientName || cleanMasterId).catch(() => { });
+    await flushImmediateAndScheduleBackgroundClientRecomputes(sheets, clientName || cleanMasterId).catch(() => { });
   }
   if (cleanClientId) {
     await syncYear0DataToClientSheet(sheets, cleanMasterId, cleanClientId);
   }
 
-  await invalidatePmaClientCache(cleanMasterId, clientName, ["setup", "dashboard", "mgmtRep", "all"]).catch(() => { });
+  await invalidatePmaClientCache(cleanClientId || null, cleanMasterId, ["setup", "dashboard", "mgmtRep", "all"]).catch(() => { });
 
   const divTotal = monthlyDividends.reduce((s, v) => s + parseYear0Number(v), 0);
   await logPmaActivity(sheets, {

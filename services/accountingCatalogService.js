@@ -1211,15 +1211,19 @@ export async function refreshAccountingCatalogSource({
 
     let prevPreflight = null;
     let baseFlags = {};
+    let hasSchedRow = false;
     if (sb) {
-      const { data: sched } = await sb
+      const { data: sched, error: schedErr } = await sb
         .from("sync_schedules")
         .select("flags")
         .eq("client_name", supaCtx.clientName)
         .maybeSingle();
-      if (sched?.flags && typeof sched.flags === "object") {
-        baseFlags = sched.flags;
-        prevPreflight = sched.flags[flagKey] || null;
+      if (!schedErr && sched) {
+        hasSchedRow = true;
+        if (sched.flags && typeof sched.flags === "object") {
+          baseFlags = sched.flags;
+          prevPreflight = sched.flags[flagKey] || null;
+        }
       }
     }
 
@@ -1302,11 +1306,19 @@ export async function refreshAccountingCatalogSource({
           completedAtIso,
           prevPreflight,
         });
-        if (pf?.state) {
-          await sb
+        if (pf?.state && hasSchedRow) {
+          const { data: freshSched, error: freshErr } = await sb
             .from("sync_schedules")
-            .update({ flags: { ...baseFlags, [flagKey]: pf.state } })
-            .eq("client_name", supaCtx.clientName);
+            .select("flags")
+            .eq("client_name", supaCtx.clientName)
+            .maybeSingle();
+          if (!freshErr && freshSched) {
+            const latestFlags = freshSched.flags && typeof freshSched.flags === "object" ? freshSched.flags : baseFlags;
+            await sb
+              .from("sync_schedules")
+              .update({ flags: { ...latestFlags, [flagKey]: pf.state } })
+              .eq("client_name", supaCtx.clientName);
+          }
         }
       } catch (pfErr) {
         console.warn("[refreshAccountingCatalogSource] Baseline update note:", pfErr.message);

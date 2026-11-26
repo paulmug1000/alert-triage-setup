@@ -336,6 +336,44 @@ export async function connectorFetch(
   };
 }
 
+export async function fetchQuickBooksWithRetry_(
+  url,
+  options = {},
+  { label = "QuickBooks API", maxRetries = 3, fetchImpl = null, sleepImpl = null } = {}
+) {
+  const sleep = typeof sleepImpl === "function" ? sleepImpl : defaultSleepMs;
+  let lastResp = null;
+  let lastErr = null;
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    lastErr = null;
+    try {
+      lastResp = await connectorFetch(url, { ...options, fetchImpl });
+      const code = lastResp.status;
+      if (code !== 429 && code !== 500 && code !== 502 && code !== 503 && code !== 504) {
+        return lastResp;
+      }
+      if (attempt === maxRetries) return lastResp;
+      let waitMs = Math.min(60000, 1500 * Math.pow(2, attempt) + Math.floor(Math.random() * 500));
+      try {
+        const retryAfterSec = parseFloat(String(lastResp.headers?.["retry-after"] || "").trim());
+        if (Number.isFinite(retryAfterSec) && retryAfterSec > 0) {
+          waitMs = Math.min(60000, Math.max(1000, Math.round(retryAfterSec * 1000) + 500));
+        }
+      } catch { }
+      console.warn(`[${label}] HTTP ${code} rate-limited/transient (attempt ${attempt + 1}/${maxRetries}). Waiting ${waitMs}ms...`);
+      await sleep(waitMs);
+    } catch (err) {
+      lastErr = err;
+      if (attempt === maxRetries) throw err;
+      const waitMs = Math.min(30000, 1000 * Math.pow(2, attempt) + Math.floor(Math.random() * 300));
+      console.warn(`[${label}] Network error (${err?.message || err}); retry ${attempt + 1}/${maxRetries} in ${waitMs}ms...`);
+      await sleep(waitMs);
+    }
+  }
+  if (lastErr) throw lastErr;
+  return lastResp;
+}
+
 export async function fetchXeroWithRetry_(
   url,
   options = {},
@@ -623,7 +661,10 @@ export async function loadConnectorContextState(ctx, keyInfoOverride = null) {
       .select("*")
       .eq("client_id", ctx.clientId)
       .maybeSingle();
-    if (!error && data) cfgRow = data;
+    if (error && !/42P01|does not exist/i.test(String(error.message || ""))) {
+      throw new Error(`Failed loading pulse_master_sync_configs for ${ctx.clientName}: ${error.message}`);
+    }
+    if (data) cfgRow = data;
   }
 
   let keyInfoGrid = Array.isArray(keyInfoOverride) && keyInfoOverride.length > 0
@@ -687,8 +728,9 @@ export async function saveConnectorConfigPatch(ctx, patch = {}) {
     .from("pulse_master_sync_configs")
     .upsert(payload, { onConflict: "client_id" });
   if (error) {
-    // Graceful fallback if Migration 0018 columns are not added yet
+    // Graceful fallback only if Migration 0018 columns are not added yet
     const safePatch = { ...patch };
+    let strippedAny = false;
     for (const col of [
       "crm_google_bridge_grid",
       "crm_excel_bridge_grid",
@@ -697,14 +739,21 @@ export async function saveConnectorConfigPatch(ctx, patch = {}) {
       "script_properties",
       "connectors_backfilled_at",
     ]) {
-      if (String(error.message || "").includes(col)) {
+      if (col in safePatch && String(error.message || "").includes(col)) {
         delete safePatch[col];
+        strippedAny = true;
       }
     }
+    if (!strippedAny) {
+      throw new Error(`pulse_master_sync_configs upsert failed (${ctx.clientName}): ${error.message}`);
+    }
     if (Object.keys(safePatch).length > 0) {
-      await supabase
+      const { error: retryErr } = await supabase
         .from("pulse_master_sync_configs")
         .upsert({ client_id: ctx.clientId, client_name: ctx.clientName, ...safePatch, updated_at: nowIso }, { onConflict: "client_id" });
+      if (retryErr) {
+        throw new Error(`pulse_master_sync_configs retry upsert failed (${ctx.clientName}): ${retryErr.message}`);
+      }
     }
   }
   invalidateClientRelationalMasterCache(ctx.clientName);

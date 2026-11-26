@@ -1283,7 +1283,14 @@ async function runSingleMasterReconcilePass_(ctx, tabNames = ALL_PHASE4_MASTER_T
         gridsMap[t] = gridsOverride[t];
         return;
       }
-      const rec = await getOrLoadVirtualTabGrid_(ctx, "master", t, null).catch(() => null);
+      const strictNative = Boolean(ctx.gridStorageRetired || ctx.connectorPullMode === "native");
+      let rec = null;
+      try {
+        rec = await getOrLoadVirtualTabGrid_(ctx, "master", t, null);
+      } catch (err) {
+        if (strictNative) throw err;
+        rec = null;
+      }
       gridsMap[t] = Array.isArray(rec?.values_grid) ? rec.values_grid : [];
     })
   );
@@ -1330,7 +1337,11 @@ async function runSingleMasterReconcilePass_(ctx, tabNames = ALL_PHASE4_MASTER_T
       .filter((r) => !keepInvNums.has(Number(r.sheet_row_num)))
       .map((r) => r.id);
     for (let i = 0; i < staleIds.length; i += 200) {
-      await supabase.from("accounting_invoices").delete().in("id", staleIds.slice(i, i + 200));
+      const { error: delErr } = await supabase
+        .from("accounting_invoices")
+        .delete()
+        .in("id", staleIds.slice(i, i + 200));
+      if (delErr) throw new Error(`accounting_invoices delete failed: ${delErr.message}`);
     }
     summary.invoicesCount = parsedInv.rows.length;
   }
@@ -1359,7 +1370,11 @@ async function runSingleMasterReconcilePass_(ctx, tabNames = ALL_PHASE4_MASTER_T
       .filter((r) => !keepRevNums.has(Number(r.sheet_row_num)))
       .map((r) => r.id);
     for (let i = 0; i < staleRevIds.length; i += 200) {
-      await supabase.from("accounting_invoices").delete().in("id", staleRevIds.slice(i, i + 200));
+      const { error: delErr } = await supabase
+        .from("accounting_invoices")
+        .delete()
+        .in("id", staleRevIds.slice(i, i + 200));
+      if (delErr) throw new Error(`accounting_invoices revenue_line delete failed: ${delErr.message}`);
     }
     summary.revenueLinesCount = parsedRev.rows.length;
   }
@@ -1388,7 +1403,11 @@ async function runSingleMasterReconcilePass_(ctx, tabNames = ALL_PHASE4_MASTER_T
       .filter((r) => !keepDirNums.has(Number(r.sheet_row_num)))
       .map((r) => r.id);
     for (let i = 0; i < staleDirIds.length; i += 200) {
-      await supabase.from("accounting_direct_costs").delete().in("id", staleDirIds.slice(i, i + 200));
+      const { error: delErr } = await supabase
+        .from("accounting_direct_costs")
+        .delete()
+        .in("id", staleDirIds.slice(i, i + 200));
+      if (delErr) throw new Error(`accounting_direct_costs delete failed: ${delErr.message}`);
     }
     summary.directCostsCount = parsedDir.rows.length;
   }
@@ -1424,7 +1443,11 @@ async function runSingleMasterReconcilePass_(ctx, tabNames = ALL_PHASE4_MASTER_T
       .filter((r) => !keepPlKeys.has(`${r.source_tab}::${r.sheet_row_num}`))
       .map((r) => r.id);
     for (let i = 0; i < stalePlIds.length; i += 200) {
-      await supabase.from("accounting_pl_lines").delete().in("id", stalePlIds.slice(i, i + 200));
+      const { error: delErr } = await supabase
+        .from("accounting_pl_lines")
+        .delete()
+        .in("id", stalePlIds.slice(i, i + 200));
+      if (delErr) throw new Error(`accounting_pl_lines delete failed: ${delErr.message}`);
     }
     summary.plLinesCount = allPlRows.length;
   }
@@ -1453,7 +1476,11 @@ async function runSingleMasterReconcilePass_(ctx, tabNames = ALL_PHASE4_MASTER_T
       .filter((r) => !keepCrmNums.has(Number(r.sheet_row_num)))
       .map((r) => r.id);
     for (let i = 0; i < staleCrmIds.length; i += 200) {
-      await supabase.from("crm_deals_raw").delete().in("id", staleCrmIds.slice(i, i + 200));
+      const { error: delErr } = await supabase
+        .from("crm_deals_raw")
+        .delete()
+        .in("id", staleCrmIds.slice(i, i + 200));
+      if (delErr) throw new Error(`crm_deals_raw delete failed: ${delErr.message}`);
     }
     summary.crmDealsCount = parsedCrm.rows.length;
   }
@@ -1483,7 +1510,11 @@ async function runSingleMasterReconcilePass_(ctx, tabNames = ALL_PHASE4_MASTER_T
       .filter((r) => !keepTimeKeys.has(`${r.entry_kind}::${r.sheet_row_num}`))
       .map((r) => r.id);
     for (let i = 0; i < staleTimeIds.length; i += 200) {
-      await supabase.from("time_entries_raw").delete().in("id", staleTimeIds.slice(i, i + 200));
+      const { error: delErr } = await supabase
+        .from("time_entries_raw")
+        .delete()
+        .in("id", staleTimeIds.slice(i, i + 200));
+      if (delErr) throw new Error(`time_entries_raw delete failed: ${delErr.message}`);
     }
     summary.timeEntriesCount = parsedTime.rows.length;
   }
@@ -1492,20 +1523,22 @@ async function runSingleMasterReconcilePass_(ctx, tabNames = ALL_PHASE4_MASTER_T
   invalidateClientRelationalMasterCache(ctx.clientName);
 
   if (options.updateBackfillTimestamp) {
-    const { data: cRow } = await supabase
+    const { data: cRow, error: cErr } = await supabase
       .from("clients")
       .select("metadata")
       .eq("id", ctx.clientId)
       .maybeSingle();
-    const nextMeta = {
-      ...(cRow?.metadata || {}),
-      relational_master_state: {
-        lastBackfilledAt: new Date().toISOString(),
-        ...summary,
-        ...fkLinks,
-      },
-    };
-    await supabase.from("clients").update({ metadata: nextMeta }).eq("id", ctx.clientId);
+    if (!cErr && cRow) {
+      const nextMeta = {
+        ...(cRow.metadata || {}),
+        relational_master_state: {
+          lastBackfilledAt: new Date().toISOString(),
+          ...summary,
+          ...fkLinks,
+        },
+      };
+      await supabase.from("clients").update({ metadata: nextMeta }).eq("id", ctx.clientId);
+    }
   }
 
   return {
@@ -1545,7 +1578,19 @@ export async function reconcileClientMasterIngestionFromGrids(
   const key = String(ctx.clientName || ctx.clientId).trim().toLowerCase();
   const pendingEntry = _pendingMasterReconcileByClient.get(key) || { tabs: new Set(), opts: {} };
   for (const t of targetTabs) pendingEntry.tabs.add(t);
-  pendingEntry.opts = { ...pendingEntry.opts, ...options };
+  const prevOpts = pendingEntry.opts || {};
+  const mergedGridsOverride =
+    prevOpts.gridsOverride || options?.gridsOverride
+      ? { ...(prevOpts.gridsOverride || {}), ...(options?.gridsOverride || {}) }
+      : undefined;
+  pendingEntry.opts = {
+    ...prevOpts,
+    ...options,
+    forceFullUpsert: Boolean(prevOpts.forceFullUpsert || options?.forceFullUpsert),
+    updateBackfillTimestamp: Boolean(prevOpts.updateBackfillTimestamp || options?.updateBackfillTimestamp),
+    skipConfigUpsert: Boolean(prevOpts.skipConfigUpsert && (options?.skipConfigUpsert ?? true)),
+    ...(mergedGridsOverride ? { gridsOverride: mergedGridsOverride } : {}),
+  };
   _pendingMasterReconcileByClient.set(key, pendingEntry);
 
   if (_inFlightMasterReconcileByClient.has(key)) {
@@ -1580,6 +1625,18 @@ export async function backfillClientMasterIngestion(clientName) {
   const ctx = await resolveSupabaseSheetContext({ clientName });
   if (!ctx?.clientId) {
     throw new Error(`Client "${clientName}" was not found in Supabase.`);
+  }
+  if (ctx.gridStorageRetired) {
+    return {
+      clientName: ctx.clientName,
+      skippedRetired: true,
+      invoicesCount: 0,
+      revenueLinesCount: 0,
+      directCostsCount: 0,
+      plLinesCount: 0,
+      crmDealsCount: 0,
+      timeEntriesCount: 0,
+    };
   }
   return reconcileClientMasterIngestionFromGrids(ctx, ALL_PHASE4_MASTER_TABS, {
     forceFullUpsert: true,
@@ -1729,6 +1786,9 @@ export async function preloadClientRelationalMasterBundle(ctxOrClientName, { sou
     fetchAllRowsByClientId_(supabase, "crm_deals_raw", ctx.clientId, "sheet_row_num"),
     fetchAllRowsByClientId_(supabase, "time_entries_raw", ctx.clientId, "sheet_row_num"),
   ]);
+  if (cfgRes.error) {
+    throw new Error(`pulse_master_sync_configs load failed (${ctx.clientName}): ${cfgRes.error.message}`);
+  }
 
   const bundle = {
     clientId: ctx.clientId,
@@ -1941,7 +2001,7 @@ export async function reconstructRelationalMasterTabFromBundle(bundle, tabName, 
       grids.ReconPLAdds = clone2D_(reconPlAddsRec.values_grid);
     }
     evaluateOutgoingsMasterTab(grids);
-    evaluateKeyInfoAndPLComp(grids);
+    evaluateKeyInfoAndPLComp(grids, { clientSheetId: ctx?.clientSheetId || "" });
     bundle.evaluatedTabsCache?.set("PLComp", grids.PLComp);
   }
   if (needsTime) {
@@ -1968,12 +2028,17 @@ export async function setClientMasterIngestionMode(clientName, mode) {
   const supabase = getSupabaseAdmin();
   const { data: cl, error: fErr } = await supabase
     .from("clients")
-    .select("id, client_name, metadata")
+    .select("id, client_name, grid_storage_retired, metadata")
     .eq("client_name", clientName)
     .maybeSingle();
   if (fErr || !cl) throw new Error(fErr?.message || `Client "${clientName}" not found.`);
+  if (cl.grid_storage_retired && cleanMode !== "relational") {
+    throw new Error(
+      `Client "${clientName}" has retired grid storage and cannot be downgraded from 'relational' master_ingestion_mode.`
+    );
+  }
 
-  if (cleanMode === "relational") {
+  if (cleanMode === "relational" && !cl.grid_storage_retired) {
     await backfillClientMasterIngestion(clientName);
   }
 
@@ -2004,10 +2069,15 @@ export async function setClientMasterReadMode(clientName, mode) {
   const supabase = getSupabaseAdmin();
   const { data: cl, error: fErr } = await supabase
     .from("clients")
-    .select("id, client_name, master_ingestion_mode, metadata")
+    .select("id, client_name, master_ingestion_mode, grid_storage_retired, metadata")
     .eq("client_name", clientName)
     .maybeSingle();
   if (fErr || !cl) throw new Error(fErr?.message || `Client "${clientName}" not found.`);
+  if (cl.grid_storage_retired && cleanMode !== "relational") {
+    throw new Error(
+      `Client "${clientName}" has retired grid storage and cannot be downgraded from 'relational' master_read_mode.`
+    );
+  }
 
   if (cleanMode === "relational" && cl.master_ingestion_mode !== "relational") {
     throw new Error(`Switch ${clientName} to relational master ingestion before enabling direct relational reads.`);

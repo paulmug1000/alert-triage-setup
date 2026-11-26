@@ -73,12 +73,25 @@ function isPhase5Tab_(tabName) {
 const NON_FORMULA_TABS = new Set(["Sessions", "AppLog", "Welcome"]);
 const ERROR_CELL_RE = /^#(?:REF!|NAME\?|VALUE!|DIV\/0!|NUM!|N\/A|ERROR!)\b/i;
 
-const CORE_CLIENT_FORMULA_TABS_SET = new Set([
-  ...CORE_CLIENT_TABS,
-  "REF",
-  "AppData",
-  "FormCheck",
-]);
+let _coreClientFormulaTabsSet = null;
+function getCoreClientFormulaTabsSet_() {
+  if (!_coreClientFormulaTabsSet) {
+    _coreClientFormulaTabsSet = new Set([...CORE_CLIENT_TABS, "REF", "AppData", "FormCheck"]);
+  }
+  return _coreClientFormulaTabsSet;
+}
+
+function extractMetaOnlyNotes_(notesGrid) {
+  if (!notesGrid || typeof notesGrid !== "object") return {};
+  const out = {};
+  if (notesGrid.__dateCells && typeof notesGrid.__dateCells === "object") {
+    out.__dateCells = notesGrid.__dateCells;
+  }
+  if (notesGrid.__bg_colors && typeof notesGrid.__bg_colors === "object") {
+    out.__bg_colors = notesGrid.__bg_colors;
+  }
+  return out;
+}
 
 const BUDGET_MANAGED_ROWS = new Set();
 for (let r = 5; r <= 9; r++) BUDGET_MANAGED_ROWS.add(r);
@@ -235,7 +248,7 @@ function wipeFormulaValuesForRecompute_(gridsObj) {
           if (tabName === "DataForReport" && (c === 6 || r === 2)) {
             continue;
           }
-          const refsNonCore = formulaRefsMissingSheetInMap_(f, tabName, CORE_CLIENT_FORMULA_TABS_SET);
+          const refsNonCore = formulaRefsMissingSheetInMap_(f, tabName, getCoreClientFormulaTabsSet_());
           const hasImportRange = /IMPORTRANGE\s*\(/i.test(f);
           if (
             (refsNonCore || hasImportRange) &&
@@ -425,12 +438,14 @@ export async function saveNativeClientTabBlueprint(
   const cacheKey = `${String(ctx.clientName).trim().toLowerCase()}::${tabName}`;
   const supabase = !options.memoryOnly ? getSupabaseAdmin() : null;
 
-  if (!options.memoryOnly && !options.allowClearAllNotes) {
-    const incomingNoteKeys = Object.keys(baseNotes).filter(
-      (k) => !k.startsWith("__") && String(baseNotes[k] ?? "").trim() !== ""
-    );
+  if (!options.memoryOnly) {
+    const incomingNoteKeys =
+      notesGrid && typeof notesGrid === "object"
+        ? Object.keys(baseNotes).filter((k) => !k.startsWith("__") && String(baseNotes[k] ?? "").trim() !== "")
+        : [];
+    const notesWereNotLoaded = notesGrid === null || notesGrid === undefined || Boolean(options.valuesOnly) || options.notesLoaded === false;
     const needFormulaPreserve =
-      Boolean(options.valuesOnly) && (!Array.isArray(formulasGrid) || formulasGrid.length === 0);
+      Boolean(options.valuesOnly) || !Array.isArray(formulasGrid) || formulasGrid.length === 0;
     if (incomingNoteKeys.length === 0 || needFormulaPreserve) {
       let existingRow = _blueprintCache.get(cacheKey)?.row || null;
       if (!existingRow && supabase) {
@@ -448,19 +463,21 @@ export async function saveNativeClientTabBlueprint(
       }
       if (existingRow) {
         if (incomingNoteKeys.length === 0 && existingRow.notes_meta && typeof existingRow.notes_meta === "object") {
-          let preservedCount = 0;
-          for (const [nk, nv] of Object.entries(existingRow.notes_meta)) {
-            if (!nk.startsWith("__") && String(nv ?? "").trim() !== "") {
-              baseNotes[nk] = nv;
-              preservedCount++;
-            }
-          }
+          const existingNoteKeys = Object.keys(existingRow.notes_meta).filter(
+            (nk) => !nk.startsWith("__") && String(existingRow.notes_meta[nk] ?? "").trim() !== ""
+          );
+          // Always preserve dateCells metadata if omitted; only resurrect cell notes when notes weren't loaded or bulk >= 5 notes wiped without allowClearAllNotes
           if (existingRow.notes_meta.__dateCells && !baseNotes.__dateCells) {
             baseNotes.__dateCells = existingRow.notes_meta.__dateCells;
           }
-          if (preservedCount > 0) {
+          const shouldPreserveNotes =
+            !options.allowClearAllNotes && (notesWereNotLoaded || existingNoteKeys.length >= 5);
+          if (shouldPreserveNotes && existingNoteKeys.length > 0) {
+            for (const nk of existingNoteKeys) {
+              baseNotes[nk] = existingRow.notes_meta[nk];
+            }
             console.warn(
-              `[nativeClientCalcService] Preserved ${preservedCount} existing user note(s) on ${ctx.clientName}/${tabName} against empty-notes save.`
+              `[nativeClientCalcService] Preserved ${existingNoteKeys.length} existing user note(s) on ${ctx.clientName}/${tabName} against empty-notes save.`
             );
           }
         }
@@ -529,6 +546,9 @@ export async function backfillClientNativeCalc(clientName) {
   }
   const ctx = await resolveSupabaseSheetContext({ clientName });
   if (!ctx?.clientId) throw new Error(`Client "${clientName}" not found.`);
+  if (ctx.gridStorageRetired) {
+    return { clientName: ctx.clientName, blueprintTabsCount: 0, skippedRetired: true };
+  }
 
   const supabase = getSupabaseAdmin();
   const rawTabs = await loadRawClientTabsFromGrids_(supabase, ctx.clientName, { valuesOnly: false });
@@ -585,37 +605,45 @@ export async function backfillClientNativeCalc(clientName) {
   }
 
   const keepTabs = new Set(rows.map((r) => r.tab_name));
-  const { data: existingRows } = await supabase
+  const { data: existingRows, error: exErr } = await supabase
     .from("pulse_client_tab_blueprints")
     .select("id, tab_name")
     .eq("client_id", ctx.clientId);
+  if (exErr) {
+    throw new Error(`Failed listing existing blueprints (${ctx.clientName}): ${exErr.message}`);
+  }
   const staleIds = (existingRows || []).filter((r) => !keepTabs.has(r.tab_name)).map((r) => r.id);
-  if (staleIds.length > 0) {
-    await supabase.from("pulse_client_tab_blueprints").delete().in("id", staleIds);
+  if (rows.length > 0 && staleIds.length > 0) {
+    const { error: delErr } = await supabase.from("pulse_client_tab_blueprints").delete().in("id", staleIds);
+    if (delErr) {
+      throw new Error(`Failed deleting stale blueprints (${ctx.clientName}): ${delErr.message}`);
+    }
   }
 
-  const { data: clRow } = await supabase
+  const { data: clRow, error: clErr } = await supabase
     .from("clients")
     .select("metadata")
     .eq("id", ctx.clientId)
     .maybeSingle();
-  const prevMeta = clRow?.metadata && typeof clRow.metadata === "object" ? clRow.metadata : {};
   const stateSummary = {
     lastBackfilledAt: nowIso,
     blueprintTabsCount: rows.length,
   };
-  await supabase
-    .from("clients")
-    .update({
-      metadata: {
-        ...prevMeta,
-        native_client_calc_state: {
-          ...(prevMeta.native_client_calc_state || {}),
-          ...stateSummary,
+  if (!clErr && clRow) {
+    const prevMeta = clRow.metadata && typeof clRow.metadata === "object" ? clRow.metadata : {};
+    await supabase
+      .from("clients")
+      .update({
+        metadata: {
+          ...prevMeta,
+          native_client_calc_state: {
+            ...(prevMeta.native_client_calc_state || {}),
+            ...stateSummary,
+          },
         },
-      },
-    })
-    .eq("id", ctx.clientId);
+      })
+      .eq("id", ctx.clientId);
+  }
 
   invalidateClientNativeCalcCache(ctx.clientName);
   return {
@@ -819,8 +847,9 @@ function overlaySparseReconForValuesOnly_(projectedVals = [], projectedForms = [
       if (rv === "" || rv === null || rv === undefined) continue;
       const cur = out[r][c];
       const fStr = pFormRow[c];
-      const isFormula = typeof fStr === "string" && fStr.startsWith("=");
-      if (cur === "" || cur === null || cur === undefined || isFormula) {
+      const hasStaticUserFormula =
+        typeof fStr === "string" && fStr !== "" && !fStr.startsWith("=") && cur !== "" && cur !== null && cur !== undefined;
+      if (!hasStaticUserFormula) {
         out[r][c] = rv;
       }
     }
@@ -858,7 +887,7 @@ export async function loadNativeClientTabRecordsBatch(
   const needOutgNotes = reqSet.has("OutgNotes");
   const needNb = reqSet.has("NBtoFind");
   const needBudget = reqSet.has("Budget");
-  const needCashAdj = reqSet.has("Cash") && !valuesOnly;
+  const needCashAdj = reqSet.has("Cash");
   const needAnyInputs = needSalaries || needOutgoings || needOutgNotes || needNb || needBudget || needCashAdj;
   const needFin = reqTabs.some((t) => isPhase5Tab_(t));
 
@@ -1072,7 +1101,7 @@ export async function loadNativeClientTabRecordsBatch(
         ),
         values_grid: finalVals,
         formulas_grid: finalForms,
-        notes_grid: includeNotes ? finalNotes : {},
+        notes_grid: includeNotes ? finalNotes : extractMetaOnlyNotes_(finalNotes),
         updated_at: bpExpanded?.updated_at || null,
       };
       continue;
@@ -1090,7 +1119,6 @@ export async function loadNativeClientTabRecordsBatch(
         ? overlaySparseReconForValuesOnly_(projected.valuesGrid, projected.formulasGrid, recon.valuesGrid)
         : projected.valuesGrid;
       const finalNotes = {
-        ...baseNotes,
         ...(recon?.notesGrid || {}),
         ...(projected.notesGrid || {}),
       };
@@ -1108,7 +1136,7 @@ export async function loadNativeClientTabRecordsBatch(
         col_count: Math.max(Number(bpExpanded?.col_count) || 0, finalVals.reduce((m, r) => Math.max(m, Array.isArray(r) ? r.length : 0), 0)),
         values_grid: finalVals,
         formulas_grid: !valuesOnly ? projected.formulasGrid : [],
-        notes_grid: includeNotes ? finalNotes : {},
+        notes_grid: includeNotes ? finalNotes : extractMetaOnlyNotes_(finalNotes),
         updated_at: bpExpanded?.updated_at || null,
       };
       continue;
@@ -1126,7 +1154,6 @@ export async function loadNativeClientTabRecordsBatch(
         ? overlaySparseReconForValuesOnly_(projected.valuesGrid, projected.formulasGrid, recon.valuesGrid)
         : projected.valuesGrid;
       const finalNotes = {
-        ...baseNotes,
         ...(recon?.notesGrid || {}),
         ...(projected.notesGrid || {}),
       };
@@ -1144,7 +1171,7 @@ export async function loadNativeClientTabRecordsBatch(
         col_count: Math.max(Number(bpExpanded?.col_count) || 0, finalVals.reduce((m, r) => Math.max(m, Array.isArray(r) ? r.length : 0), 0)),
         values_grid: finalVals,
         formulas_grid: !valuesOnly ? projected.formulasGrid : [],
-        notes_grid: includeNotes ? finalNotes : {},
+        notes_grid: includeNotes ? finalNotes : extractMetaOnlyNotes_(finalNotes),
         updated_at: bpExpanded?.updated_at || null,
       };
       continue;
@@ -1157,6 +1184,7 @@ export async function loadNativeClientTabRecordsBatch(
         baseFormulasGrid: baseForms,
         baseNotesGrid: baseNotes,
       });
+      const finalOutgNotes = { ...baseNotes, ...(projected.notesGrid || {}) };
       outByTab[tabName] = {
         sheet_role: "client",
         tab_name: tabName,
@@ -1164,7 +1192,7 @@ export async function loadNativeClientTabRecordsBatch(
         col_count: Math.max(Number(bpExpanded?.col_count) || 0, projected.valuesGrid.reduce((m, r) => Math.max(m, Array.isArray(r) ? r.length : 0), 0)),
         values_grid: projected.valuesGrid,
         formulas_grid: !valuesOnly ? projected.formulasGrid : [],
-        notes_grid: includeNotes ? { ...baseNotes, ...(projected.notesGrid || {}) } : {},
+        notes_grid: includeNotes ? finalOutgNotes : extractMetaOnlyNotes_(finalOutgNotes),
         updated_at: bpExpanded?.updated_at || null,
       };
       continue;
@@ -1182,7 +1210,6 @@ export async function loadNativeClientTabRecordsBatch(
         ? overlaySparseReconForValuesOnly_(projected.valuesGrid, projected.formulasGrid, recon.valuesGrid)
         : projected.valuesGrid;
       const finalNotes = {
-        ...baseNotes,
         ...(recon?.notesGrid || {}),
         ...(projected.notesGrid || {}),
       };
@@ -1200,7 +1227,7 @@ export async function loadNativeClientTabRecordsBatch(
         col_count: Math.max(Number(bpExpanded?.col_count) || 0, finalVals.reduce((m, r) => Math.max(m, Array.isArray(r) ? r.length : 0), 0)),
         values_grid: finalVals,
         formulas_grid: !valuesOnly ? projected.formulasGrid : [],
-        notes_grid: includeNotes ? finalNotes : {},
+        notes_grid: includeNotes ? finalNotes : extractMetaOnlyNotes_(finalNotes),
         updated_at: bpExpanded?.updated_at || null,
       };
       continue;
@@ -1238,7 +1265,6 @@ export async function loadNativeClientTabRecordsBatch(
         ? overlaySparseReconForValuesOnly_(projected.valuesGrid, projected.formulasGrid, recon.valuesGrid)
         : projected.valuesGrid;
       const finalNotes = {
-        ...cleanBaseNotes,
         ...(recon?.notesGrid || {}),
         ...(projected.notesGrid || {}),
       };
@@ -1256,7 +1282,7 @@ export async function loadNativeClientTabRecordsBatch(
         col_count: Math.max(Number(bpExpanded?.col_count) || 0, finalVals.reduce((m, r) => Math.max(m, Array.isArray(r) ? r.length : 0), 0)),
         values_grid: finalVals,
         formulas_grid: !valuesOnly ? projected.formulasGrid : [],
-        notes_grid: includeNotes ? finalNotes : {},
+        notes_grid: includeNotes ? finalNotes : extractMetaOnlyNotes_(finalNotes),
         updated_at: bpExpanded?.updated_at || null,
       };
       continue;
@@ -1273,7 +1299,7 @@ export async function loadNativeClientTabRecordsBatch(
           ...baseNotes,
           ...(finRec.notes_grid || {}),
         };
-        if (tabName === "Cash" && !valuesOnly && inputsBundle) {
+        if (tabName === "Cash" && inputsBundle) {
           const projected = projectCashAdjustmentsToGrid({
             adjustments: inputsBundle.cashAdjustments || [],
             baseValuesGrid: finalVals,
@@ -1281,7 +1307,7 @@ export async function loadNativeClientTabRecordsBatch(
             baseNotesGrid: finalNotes,
           });
           finalVals = projected.valuesGrid;
-          finalForms = projected.formulasGrid;
+          if (!valuesOnly) finalForms = projected.formulasGrid;
           finalNotes = projected.notesGrid;
         }
         outByTab[tabName] = {
@@ -1291,7 +1317,7 @@ export async function loadNativeClientTabRecordsBatch(
           col_count: Math.max(finRec.col_count || 0, Number(bpExpanded?.col_count) || 0),
           values_grid: finalVals,
           formulas_grid: finalForms,
-          notes_grid: includeNotes ? finalNotes : {},
+          notes_grid: includeNotes ? finalNotes : extractMetaOnlyNotes_(finalNotes),
           updated_at: finRec.updated_at || bpExpanded?.updated_at || null,
         };
         continue;
@@ -1306,7 +1332,7 @@ export async function loadNativeClientTabRecordsBatch(
         col_count: bpExpanded.col_count || 0,
         values_grid: baseVals,
         formulas_grid: !valuesOnly ? baseForms : [],
-        notes_grid: includeNotes ? baseNotes : {},
+        notes_grid: includeNotes ? baseNotes : extractMetaOnlyNotes_(baseNotes),
         updated_at: bpExpanded.updated_at || null,
       };
     }
@@ -1347,10 +1373,16 @@ export async function setClientComputeMode(clientName, mode) {
   const supabase = getSupabaseAdmin();
   const { data: cl, error: fErr } = await supabase
     .from("clients")
-    .select("id, client_name, jobs_mode, inputs_mode, financials_mode, metadata")
+    .select("id, client_name, jobs_mode, inputs_mode, financials_mode, grid_storage_retired, metadata")
     .eq("client_name", clientName)
     .maybeSingle();
   if (fErr || !cl) throw new Error(fErr?.message || `Client "${clientName}" not found.`);
+
+  if (cl.grid_storage_retired && cleanMode !== "native") {
+    throw new Error(
+      `Client "${clientName}" has retired grid storage and cannot be downgraded from 'native' client_compute_mode.`
+    );
+  }
 
   if (cleanMode === "native") {
     if (cl.jobs_mode !== "relational" || cl.inputs_mode !== "relational" || cl.financials_mode !== "relational") {
@@ -1361,7 +1393,7 @@ export async function setClientComputeMode(clientName, mode) {
   }
 
   let baseMeta = cl.metadata || {};
-  if (cleanMode === "shadow" || cleanMode === "native") {
+  if ((cleanMode === "shadow" || cleanMode === "native") && !cl.grid_storage_retired) {
     await backfillClientNativeCalc(clientName);
     const { data: freshCl } = await supabase
       .from("clients")
@@ -1451,27 +1483,29 @@ export async function runShadowClientCalcCheck(ctx, changedTabs = [], referenceG
     }
   }
 
-  const { data: clRow } = await supabase
+  const { data: clRow, error: clErr } = await supabase
     .from("clients")
     .select("metadata")
     .eq("id", ctx.clientId)
     .maybeSingle();
-  const prevMeta = clRow?.metadata && typeof clRow.metadata === "object" ? clRow.metadata : {};
-  await supabase
-    .from("clients")
-    .update({
-      metadata: {
-        ...prevMeta,
-        native_client_calc_state: {
-          ...(prevMeta.native_client_calc_state || {}),
-          lastShadowAt: new Date().toISOString(),
-          lastShadowMatched: totalDiffs === 0,
-          lastShadowDiffCount: totalDiffs,
-          sampleShadowDiffs: sampleDiffs.slice(0, 8),
+  if (!clErr && clRow) {
+    const prevMeta = clRow.metadata && typeof clRow.metadata === "object" ? clRow.metadata : {};
+    await supabase
+      .from("clients")
+      .update({
+        metadata: {
+          ...prevMeta,
+          native_client_calc_state: {
+            ...(prevMeta.native_client_calc_state || {}),
+            lastShadowAt: new Date().toISOString(),
+            lastShadowMatched: totalDiffs === 0,
+            lastShadowDiffCount: totalDiffs,
+            sampleShadowDiffs: sampleDiffs.slice(0, 8),
+          },
         },
-      },
-    })
-    .eq("id", ctx.clientId);
+      })
+      .eq("id", ctx.clientId);
+  }
 
   if (totalDiffs > 0) {
     console.warn(

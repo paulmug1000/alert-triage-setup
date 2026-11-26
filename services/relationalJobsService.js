@@ -1280,33 +1280,73 @@ function findMatchingExistingJob_(sourceJob, existingPool, indexes, usedExisting
   }
 
   const rowHit = byRowNum.get(sourceJob.sheet_row_num);
-  if (rowHit && !usedExistingJobIds.has(rowHit.id)) return rowHit;
+  if (rowHit && !usedExistingJobIds.has(rowHit.id)) {
+    const sameCode =
+      normalizeTextKey_(sourceJob.project_code) &&
+      normalizeTextKey_(sourceJob.project_code) === normalizeTextKey_(rowHit.project_code);
+    const sameJob =
+      normalizeTextKey_(sourceJob.job_name) &&
+      normalizeTextKey_(sourceJob.job_name) === normalizeTextKey_(rowHit.job_name);
+    const sameCust =
+      normalizeTextKey_(sourceJob.customer_name) &&
+      normalizeTextKey_(sourceJob.customer_name) === normalizeTextKey_(rowHit.customer_name);
+    if (sameCode || sameJob || sameCust) {
+      return rowHit;
+    }
+  }
 
   return null;
 }
 
+async function fetchPaginatedTableForClient_(supabase, tableName, selectCols, clientId, extraFilters = null) {
+  const out = [];
+  for (let from = 0; ; from += 1000) {
+    let q = supabase
+      .from(tableName)
+      .select(selectCols)
+      .eq("client_id", clientId)
+      .order("id", { ascending: true })
+      .range(from, from + 999);
+    if (typeof extraFilters === "function") q = extraFilters(q);
+    const { data, error } = await q;
+    if (error) throw new Error(`Failed loading ${tableName}: ${error.message}`);
+    if (!Array.isArray(data) || data.length === 0) break;
+    out.push(...data);
+    if (data.length < 1000) break;
+  }
+  return out;
+}
+
 async function syncPulseNotesJobIdsForClient_(supabase, clientId) {
-  const [{ data: notes }, { data: jobs }] = await Promise.all([
-    supabase
-      .from("pulse_notes")
-      .select("id, entity_type, entity_key, parent_entity_key, job_id")
-      .eq("client_id", clientId)
-      .is("deleted_at", null)
-      .in("entity_type", ["job", "invoice", "job_expense"])
-      .limit(1000),
-    supabase
-      .from("pulse_jobs")
-      .select("id, tab_type, sheet_row_num, customer_name, job_name, project_code")
-      .eq("client_id", clientId)
-      .limit(2000),
+  const [notes, jobs] = await Promise.all([
+    fetchPaginatedTableForClient_(
+      supabase,
+      "pulse_notes",
+      "id, entity_type, entity_key, parent_entity_key, job_id",
+      clientId,
+      (q) => q.is("deleted_at", null).in("entity_type", ["job", "invoice", "job_expense"])
+    ),
+    fetchPaginatedTableForClient_(
+      supabase,
+      "pulse_jobs",
+      "id, tab_type, sheet_row_num, customer_name, job_name, project_code",
+      clientId
+    ),
   ]);
   if (!Array.isArray(notes) || notes.length === 0 || !Array.isArray(jobs) || jobs.length === 0) return;
 
-  const jobIdByNoteKey = new Map();
-  // Sort so pipeline writes first and confirmed overrides on matching keys
+  const liveJobById = new Map(jobs.map((j) => [j.id, j]));
+  const jobsByKey = new Map();
+  const addKey = (k, j) => {
+    if (!k) return;
+    if (!jobsByKey.has(k)) jobsByKey.set(k, []);
+    jobsByKey.get(k).push(j);
+  };
+
+  // Sort so confirmed comes first when picking canonical link, preserving sheet order
   const orderedJobs = [...jobs].sort((a, b) => {
     if (a.tab_type === b.tab_type) return (a.sheet_row_num || 0) - (b.sheet_row_num || 0);
-    return a.tab_type === "pipeline" ? -1 : 1;
+    return a.tab_type === "confirmed" ? -1 : 1;
   });
   for (const j of orderedJobs) {
     const key = buildJobNoteKey({
@@ -1315,10 +1355,10 @@ async function syncPulseNotesJobIdsForClient_(supabase, clientId) {
       projectCode: j.project_code,
       rowNumber: j.sheet_row_num,
     });
-    if (key) jobIdByNoteKey.set(key, j.id);
+    addKey(key, j);
     if (!j.project_code && j.customer_name && j.job_name) {
       const altKey = buildJobNoteKey({ client: j.customer_name, jobName: j.job_name });
-      if (altKey) jobIdByNoteKey.set(altKey, j.id);
+      addKey(altKey, j);
     }
   }
 
@@ -1326,7 +1366,21 @@ async function syncPulseNotesJobIdsForClient_(supabase, clientId) {
   for (const n of notes) {
     const lookupKey = n.entity_type === "job" ? n.entity_key : n.parent_entity_key;
     if (!lookupKey) continue;
-    const matchedJobId = jobIdByNoteKey.get(lookupKey) || null;
+    const candidates = jobsByKey.get(lookupKey) || [];
+    if (candidates.length === 0) continue;
+
+    const existingLive = n.job_id ? liveJobById.get(n.job_id) : null;
+    // Never overwrite an already-valid live confirmed job_id due to variable-retainer M1..M11 -> M12 key collisions
+    if (
+      existingLive &&
+      existingLive.tab_type === "confirmed" &&
+      candidates.length > 1 &&
+      candidates.some((c) => c.id === existingLive.id)
+    ) {
+      continue;
+    }
+
+    const matchedJobId = candidates[0]?.id || null;
     if (matchedJobId && n.job_id !== matchedJobId) {
       updates.push(supabase.from("pulse_notes").update({ job_id: matchedJobId }).eq("id", n.id));
     }
@@ -1447,19 +1501,25 @@ async function runSingleReconcilePass_(ctx, targetTabs, options = {}) {
   const missingInvLookup = forceFullUpsert || [...neededInvRefs].some((rk) => !accInvFkByRef.has(rk));
   const missingExpLookup = forceFullUpsert || [...neededExpAppIds].some((ek) => !accCostFkByExtId.has(ek));
   if (missingInvLookup || missingExpLookup) {
-    const [accInvsResp, accDirectResp] = await Promise.all([
+    const [accInvsRows, accDirectRows] = await Promise.all([
       missingInvLookup && neededInvRefs.size > 0
-        ? supabase.from("accounting_invoices").select("id, invoice_number").eq("client_id", ctx.clientId)
-        : Promise.resolve({ data: [] }),
+        ? fetchPaginatedTableForClient_(
+            supabase,
+            "accounting_invoices",
+            "id, invoice_number",
+            ctx.clientId,
+            (q) => q.eq("record_kind", "invoice")
+          )
+        : Promise.resolve([]),
       missingExpLookup && neededExpAppIds.size > 0
-        ? supabase.from("accounting_direct_costs").select("id, external_id").eq("client_id", ctx.clientId)
-        : Promise.resolve({ data: [] }),
+        ? fetchPaginatedTableForClient_(supabase, "accounting_direct_costs", "id, external_id", ctx.clientId)
+        : Promise.resolve([]),
     ]);
-    for (const r of accInvsResp.data || []) {
+    for (const r of accInvsRows || []) {
       const refK = normalizeTextKey_(r.invoice_number);
       if (refK) accInvFkByRef.set(refK, r.id);
     }
-    for (const r of accDirectResp.data || []) {
+    for (const r of accDirectRows || []) {
       const extK = normalizeTextKey_(r.external_id);
       if (extK) accCostFkByExtId.set(extK, r.id);
     }
@@ -1525,8 +1585,12 @@ async function runSingleReconcilePass_(ctx, targetTabs, options = {}) {
   const obsoleteSeriesIds = existingSeries
     .filter((s) => !desiredSeriesKeys.has(`${s.tab_type}::${s.series_key}`))
     .map((s) => s.id);
-  if (obsoleteSeriesIds.length > 0) {
-    await supabase.from("pulse_retainer_series").delete().in("id", obsoleteSeriesIds);
+  for (let i = 0; i < obsoleteSeriesIds.length; i += 200) {
+    const { error: delSerErr } = await supabase
+      .from("pulse_retainer_series")
+      .delete()
+      .in("id", obsoleteSeriesIds.slice(i, i + 200));
+    if (delSerErr) throw new Error(`Failed deleting pulse_retainer_series: ${delSerErr.message}`);
   }
 
   // 2. Reconcile Jobs (multi-tier UUID preservation)
@@ -1651,11 +1715,6 @@ async function runSingleReconcilePass_(ctx, targetTabs, options = {}) {
     }
   }
 
-  const obsoleteJobIds = existingJobs.filter((ej) => !usedExistingJobIds.has(ej.id)).map((ej) => ej.id);
-  for (let i = 0; i < obsoleteJobIds.length; i += 200) {
-    await supabase.from("pulse_jobs").delete().in("id", obsoleteJobIds.slice(i, i + 200));
-  }
-
   for (let i = 0; i < updateJobPayloads.length; i += 200) {
     const { error: upErr } = await supabase
       .from("pulse_jobs")
@@ -1663,15 +1722,63 @@ async function runSingleReconcilePass_(ctx, targetTabs, options = {}) {
     if (upErr) throw new Error(`Failed updating pulse_jobs: ${upErr.message}`);
   }
 
+  const insertedJobsList = [];
   for (let i = 0; i < insertJobPayloads.length; i += 200) {
     const { data: insData, error: insErr } = await supabase
       .from("pulse_jobs")
       .insert(insertJobPayloads.slice(i, i + 200))
-      .select("id, tab_type, sheet_row_num");
+      .select("id, tab_type, sheet_row_num, project_code, customer_name, job_name");
     if (insErr) throw new Error(`Failed inserting pulse_jobs: ${insErr.message}`);
     for (const r of insData || []) {
       jobIdByTabAndRow.set(`${r.tab_type}:${r.sheet_row_num}`, r.id);
+      insertedJobsList.push(r);
     }
+  }
+
+  const obsoleteJobIds = existingJobs.filter((ej) => !usedExistingJobIds.has(ej.id)).map((ej) => ej.id);
+
+  // Re-point pulse_notes.job_id before obsolete Pipeline jobs are deleted on same-pass Pipeline -> Confirmed promotion
+  if (obsoleteJobIds.length > 0 && insertedJobsList.length > 0) {
+    const confirmedInserted = insertedJobsList.filter((r) => r.tab_type === "confirmed");
+    if (confirmedInserted.length > 0) {
+      const obsoleteSet = new Set(obsoleteJobIds);
+      const obsoletePipelineJobs = existingJobs.filter(
+        (ej) => obsoleteSet.has(ej.id) && ej.tab_type === "pipeline"
+      );
+      if (obsoletePipelineJobs.length > 0) {
+        const promoRemap = [];
+        for (const oldPipe of obsoletePipelineJobs) {
+          const pcK = normalizeTextKey_(oldPipe.project_code);
+          const nmK = `${normalizeTextKey_(oldPipe.customer_name)}|${normalizeTextKey_(oldPipe.job_name)}`;
+          const newConf =
+            (pcK && confirmedInserted.find((c) => normalizeTextKey_(c.project_code) === pcK)) ||
+            (nmK !== "|" &&
+              confirmedInserted.find(
+                (c) => `${normalizeTextKey_(c.customer_name)}|${normalizeTextKey_(c.job_name)}` === nmK
+              ));
+          if (newConf?.id && newConf.id !== oldPipe.id) {
+            promoRemap.push({ oldId: oldPipe.id, newId: newConf.id });
+          }
+        }
+        await Promise.all(
+          promoRemap.map(({ oldId, newId }) =>
+            supabase
+              .from("pulse_notes")
+              .update({ job_id: newId })
+              .eq("client_id", ctx.clientId)
+              .eq("job_id", oldId)
+          )
+        ).catch(() => {});
+      }
+    }
+  }
+
+  for (let i = 0; i < obsoleteJobIds.length; i += 200) {
+    const { error: delJobErr } = await supabase
+      .from("pulse_jobs")
+      .delete()
+      .in("id", obsoleteJobIds.slice(i, i + 200));
+    if (delJobErr) throw new Error(`Failed deleting obsolete pulse_jobs: ${delJobErr.message}`);
   }
 
   // 3. Reconcile Invoices & Expenses for affected tabs (preserving UUIDs by real ref/appId first, then slot)
@@ -1823,7 +1930,11 @@ async function runSingleReconcilePass_(ctx, targetTabs, options = {}) {
 
   const obsoleteInvIds = existingInvs.filter((r) => !usedInvIds.has(r.id)).map((r) => r.id);
   for (let i = 0; i < obsoleteInvIds.length; i += 200) {
-    await supabase.from("pulse_job_invoices").delete().in("id", obsoleteInvIds.slice(i, i + 200));
+    const { error: delInvErr } = await supabase
+      .from("pulse_job_invoices")
+      .delete()
+      .in("id", obsoleteInvIds.slice(i, i + 200));
+    if (delInvErr) throw new Error(`Failed deleting obsolete pulse_job_invoices: ${delInvErr.message}`);
   }
   for (let i = 0; i < invUpserts.length; i += 200) {
     const { error: e } = await supabase.from("pulse_job_invoices").upsert(invUpserts.slice(i, i + 200), { onConflict: "id" });
@@ -1836,7 +1947,11 @@ async function runSingleReconcilePass_(ctx, targetTabs, options = {}) {
 
   const obsoleteExpIds = existingExps.filter((r) => !usedExpIds.has(r.id)).map((r) => r.id);
   for (let i = 0; i < obsoleteExpIds.length; i += 200) {
-    await supabase.from("pulse_job_expenses").delete().in("id", obsoleteExpIds.slice(i, i + 200));
+    const { error: delExpErr } = await supabase
+      .from("pulse_job_expenses")
+      .delete()
+      .in("id", obsoleteExpIds.slice(i, i + 200));
+    if (delExpErr) throw new Error(`Failed deleting obsolete pulse_job_expenses: ${delExpErr.message}`);
   }
   for (let i = 0; i < expUpserts.length; i += 200) {
     const { error: e } = await supabase.from("pulse_job_expenses").upsert(expUpserts.slice(i, i + 200), { onConflict: "id" });
@@ -1850,7 +1965,10 @@ async function runSingleReconcilePass_(ctx, targetTabs, options = {}) {
   // Keep pulse_notes.job_id synchronized with live pulse_jobs UUIDs
   await syncPulseNotesJobIdsForClient_(supabase, ctx.clientId).catch(() => { });
 
-  const prevMeta = clMetaResp?.data?.metadata && typeof clMetaResp.data.metadata === "object" ? clMetaResp.data.metadata : {};
+  const prevMeta =
+    !clMetaResp?.error && clMetaResp?.data?.metadata && typeof clMetaResp.data.metadata === "object"
+      ? clMetaResp.data.metadata
+      : {};
   const prevState = prevMeta.relational_jobs_state && typeof prevMeta.relational_jobs_state === "object" ? prevMeta.relational_jobs_state : {};
   const prevHeaders = prevState.tabHeaders && typeof prevState.tabHeaders === "object" ? prevState.tabHeaders : {};
   const nextHeaders = { ...prevHeaders };
@@ -1886,15 +2004,17 @@ async function runSingleReconcilePass_(ctx, targetTabs, options = {}) {
     },
   };
 
-  await supabase
-    .from("clients")
-    .update({
-      metadata: {
-        ...prevMeta,
-        relational_jobs_state: summary,
-      },
-    })
-    .eq("id", ctx.clientId);
+  if (!clMetaResp?.error && clMetaResp?.data) {
+    await supabase
+      .from("clients")
+      .update({
+        metadata: {
+          ...prevMeta,
+          relational_jobs_state: summary,
+        },
+      })
+      .eq("id", ctx.clientId);
+  }
 
   return summary;
 }
@@ -1921,7 +2041,18 @@ export async function reconcileClientRelationalJobsFromGrids(
   const key = String(ctx.clientName || ctx.clientId).trim().toLowerCase();
   const pendingEntry = _pendingReconcileTabsByClient.get(key) || { tabs: new Set(), opts: {} };
   for (const t of targetTabs) pendingEntry.tabs.add(t);
-  pendingEntry.opts = { ...pendingEntry.opts, ...options };
+  const prevOpts = pendingEntry.opts || {};
+  const mergedPreloaded =
+    prevOpts.preloadedGrids || options?.preloadedGrids
+      ? { ...(prevOpts.preloadedGrids || {}), ...(options?.preloadedGrids || {}) }
+      : undefined;
+  pendingEntry.opts = {
+    ...prevOpts,
+    ...options,
+    forceFullUpsert: Boolean(prevOpts.forceFullUpsert || options?.forceFullUpsert),
+    updateBackfillTimestamp: Boolean(prevOpts.updateBackfillTimestamp || options?.updateBackfillTimestamp),
+    ...(mergedPreloaded ? { preloadedGrids: mergedPreloaded } : {}),
+  };
   _pendingReconcileTabsByClient.set(key, pendingEntry);
 
   if (_inFlightReconcileByClient.has(key)) {
@@ -2116,6 +2247,17 @@ export async function backfillClientRelationalJobs(clientName) {
   const ctx = await resolveSupabaseSheetContext({ clientName });
   if (!ctx?.clientId) {
     throw new Error(`Client "${clientName}" was not found in Supabase.`);
+  }
+  if (ctx.gridStorageRetired) {
+    return {
+      clientName: ctx.clientName,
+      skippedRetired: true,
+      confirmedJobsCount: 0,
+      pipelineJobsCount: 0,
+      retainerSeriesCount: 0,
+      invoicesCount: 0,
+      expensesCount: 0,
+    };
   }
 
   return reconcileClientRelationalJobsFromGrids(ctx, ["Confirmed", "Pipeline"], {
@@ -2332,13 +2474,18 @@ export async function setClientJobsMode(clientName, jobsMode) {
   const supabase = getSupabaseAdmin();
   const { data: cl, error: clErr } = await supabase
     .from("clients")
-    .select("id, client_name, metadata, client_sheet_id")
+    .select("id, client_name, grid_storage_retired, metadata, client_sheet_id")
     .eq("client_name", clientName)
     .maybeSingle();
   if (clErr || !cl) throw new Error(`Client "${clientName}" not found.`);
+  if (cl.grid_storage_retired && jobsMode !== "relational") {
+    throw new Error(
+      `Client "${clientName}" has retired grid storage and cannot be downgraded from 'relational' jobs_mode.`
+    );
+  }
 
   let backfillSummary = null;
-  if (jobsMode === "relational") {
+  if (jobsMode === "relational" && !cl.grid_storage_retired) {
     backfillSummary = await backfillClientRelationalJobs(cl.client_name);
     const parity = await verifyRelationalJobsParity({ clientName: cl.client_name, source: "db" });
     const rec = parity.results?.[0];
@@ -3374,12 +3521,17 @@ export async function setClientJobsReadMode(clientName, jobsReadMode) {
   const supabase = getSupabaseAdmin();
   const { data: cl, error: clErr } = await supabase
     .from("clients")
-    .select("id, client_name, jobs_mode, metadata, client_sheet_id, master_sheet_id")
+    .select("id, client_name, jobs_mode, grid_storage_retired, metadata, client_sheet_id, master_sheet_id")
     .eq("client_name", clientName)
     .maybeSingle();
   if (clErr || !cl) throw new Error(`Client "${clientName}" not found.`);
+  if (cl.grid_storage_retired && jobsReadMode !== "relational") {
+    throw new Error(
+      `Client "${clientName}" has retired grid storage and cannot be downgraded from 'relational' jobs_read_mode.`
+    );
+  }
 
-  if (jobsReadMode === "relational") {
+  if (jobsReadMode === "relational" && !cl.grid_storage_retired) {
     if (String(cl.jobs_mode || cl.metadata?.jobs_mode || "grid").toLowerCase() !== "relational") {
       throw new Error(`Client "${cl.client_name}" must be in relational jobs_mode before enabling direct relational reads.`);
     }

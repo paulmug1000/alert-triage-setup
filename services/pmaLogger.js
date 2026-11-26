@@ -193,6 +193,7 @@ export async function fetchPmaActivity(sheets, automationCommanderSheetId = DEFA
           .eq("source", "PMA")
           .gte("logged_at", thirtyDaysAgo)
           .order("logged_at", { ascending: false })
+          .order("id", { ascending: false })
           .range(from, from + PAGE_SIZE - 1);
         if (targetClientName && targetClientName !== "ALL") {
           query = query.ilike("client_name", escapeIlikeExact(targetClientName));

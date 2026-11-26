@@ -233,6 +233,7 @@ export async function fetchPulseActivity(sheets, automationCommanderSheetId = DE
           .eq("source", "PULSE")
           .gte("logged_at", thirtyDaysAgo)
           .order("logged_at", { ascending: false })
+          .order("id", { ascending: false })
           .range(from, from + PAGE_SIZE - 1);
         if (targetClientName && targetClientName !== "ALL" && targetClientName !== "SYSTEM") {
           query = query.ilike("client_name", escapeIlikeExact(targetClientName));
@@ -409,6 +410,7 @@ export async function fetchSecurityAuditLogs(sheets, automationCommanderSheetId 
           .select("*")
           .or('category.in.("AUTH","SECURITY"),action.ilike.USER_%,action.ilike.%LOGIN%,action.ilike.%AUTH%,action.ilike.%PORTAL%')
           .order("logged_at", { ascending: false })
+          .order("id", { ascending: false })
           .range(from, from + PAGE_SIZE - 1);
         if (error) {
           fetchError = error;

@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "crypto";
 import { waitUntil } from "@vercel/functions";
 import { invalidatePmaClientCache } from "./cacheService.js";
+import { flushImmediateAndScheduleBackgroundClientRecomputes } from "./masterEngineService.js";
 import { extractSheetIdFromUrl, withRetry, getSheetsClient, getSheetId, colIndexToLetter, applySheetFontFormat, sanitizeFormulaInput } from "./sheetsClient.js";
 import {
   buildAlertFingerprint, buildAlertFingerprintLegacy, ensureAlertMemoryTab, readAlertMemory, queryAlertMemoryTargeted,
@@ -10063,7 +10064,6 @@ export async function handleAcceptOption(req, res, sheets, sessionUserArg = null
 
       // Clear RAM cache immediately and prune shared precomputed cache in background via waitUntil
       try {
-        const sessionUser = getSessionUser(req);
         const canRemoveClient = (cName) => req.isSystemAuthorized || !sessionUser || sessionUser.isAdmin || isUserAuthorizedForClient(sessionUser, cName);
         const targetIds = [fp, `${alert.flagType || alert.type}-${alert.sheetName}-${alert.rowNumber}`].filter(Boolean);
         invalidatePrecomputedMemoryCache();
@@ -10222,6 +10222,7 @@ export async function handleAcceptOption(req, res, sheets, sessionUserArg = null
         });
       } catch (rErr) { }
 
+      await flushImmediateAndScheduleBackgroundClientRecomputes(sheets, alert?.clientName || "").catch(() => { });
       await invalidatePmaClientCache(
         alert.clientId,
         alert.masterSheetId || alert.masterId || null,
@@ -10388,6 +10389,7 @@ export async function handleAcceptOption(req, res, sheets, sessionUserArg = null
         });
       } catch (rErr) { }
 
+      await flushImmediateAndScheduleBackgroundClientRecomputes(sheets, alert?.clientName || "").catch(() => { });
       await invalidatePmaClientCache(
         alert.clientId,
         alert.masterSheetId || alert.masterId || null,
@@ -10522,6 +10524,7 @@ export async function handleAcceptOption(req, res, sheets, sessionUserArg = null
       ];
       appendTriageLogBackground_(sheets, automationCommanderSheetId, logRow);
 
+      await flushImmediateAndScheduleBackgroundClientRecomputes(sheets, alert?.clientName || "").catch(() => { });
       await invalidatePmaClientCache(
         alert.clientId,
         alert.masterSheetId || alert.masterId || null,
@@ -10918,6 +10921,7 @@ export async function handleAcceptOption(req, res, sheets, sessionUserArg = null
           label: "handleAcceptOption(isCreateNew)",
         });
       } catch (rErr) { }
+      await flushImmediateAndScheduleBackgroundClientRecomputes(sheets, alert?.clientName || "").catch(() => { });
       await invalidatePmaClientCache(
         alert.clientId,
         alert.masterSheetId || alert.masterId || null,
@@ -11843,6 +11847,7 @@ export async function handleAcceptOption(req, res, sheets, sessionUserArg = null
                 }
               }).catch(e => console.error("PMA log failed:", e));
 
+              await flushImmediateAndScheduleBackgroundClientRecomputes(sheets, alert?.clientName || "").catch(() => { });
               await invalidatePmaClientCache(
                 alert?.clientId || alert?.clientSheetId || null,
                 alert?.masterSheetId || alert?.masterId || null,
@@ -12058,6 +12063,7 @@ export async function handleAcceptOption(req, res, sheets, sessionUserArg = null
                 }
               }).catch(e => console.error("PMA log failed:", e));
 
+              await flushImmediateAndScheduleBackgroundClientRecomputes(sheets, alert?.clientName || "").catch(() => { });
               await invalidatePmaClientCache(
                 clientSheetId || null,
                 alert?.masterSheetId || alert?.masterId || null,

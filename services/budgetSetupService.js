@@ -21,7 +21,10 @@ import { unwrapSheetId } from "./sheetTokenService.js";
 import { parseYear0Date, parseYear0Number } from "./year0SetupService.js";
 import { parseHeaderMonthMeta_ } from "./salariesService.js";
 import { invalidatePmaClientCache } from "./cacheService.js";
-import { flushImmediateAndScheduleBackgroundClientRecomputes } from "./masterEngineService.js";
+import {
+  flushImmediateAndScheduleBackgroundClientRecomputes,
+  resolveClientSheetIdFromMaster,
+} from "./masterEngineService.js";
 import { logPmaActivity } from "./pmaLogger.js";
 import { sanitizeFormulaInput } from "./userPermissions.js";
 import { toSheetDateFormat } from "../utils/helpers.js";
@@ -87,7 +90,11 @@ export async function pullBudgetSetupData({ clientName, masterSheetId }) {
   const directCostsMode = isIncomeMode
     ? "Pass-through"
     : String(mvr[2]?.values?.[0]?.[0] || "Contractors").trim();
-  const cleanClientId = resolveCleanId(mvr[3]?.values?.[0]?.[0] || "");
+  const cleanClientId = await resolveClientSheetIdFromMaster({
+    clientName,
+    masterSheetId: cleanMasterId,
+    rawKeyInfoX28: mvr[3]?.values?.[0]?.[0] || "",
+  });
   if (!cleanClientId) throw new Error("Client workspace sheet ID is not configured.");
   const starterPlChk = mvr[4]?.values?.[0] || [];
 
@@ -380,7 +387,11 @@ export async function saveBudgetSetupData({
       valueRenderOption: "UNFORMATTED_VALUE",
     })
   );
-  const cleanClientId = resolveCleanId(kiResp.data?.values?.[0]?.[0] || "");
+  const cleanClientId = await resolveClientSheetIdFromMaster({
+    clientName,
+    masterSheetId: cleanMasterId,
+    rawKeyInfoX28: kiResp.data?.values?.[0]?.[0] || "",
+  });
   if (!cleanClientId) throw new Error("Client workspace sheet ID is not configured.");
 
   const histSet = new Set(historicalMonthKeys || []);
@@ -530,9 +541,9 @@ export async function saveBudgetSetupData({
   );
 
   if (cleanClientId.startsWith("sb-") || cleanMasterId.startsWith("sb-")) {
-    await flushImmediateAndScheduleBackgroundClientRecomputes(clientName || cleanMasterId).catch(() => {});
+    await flushImmediateAndScheduleBackgroundClientRecomputes(sheets, clientName || cleanMasterId).catch(() => {});
   }
-  await invalidatePmaClientCache(cleanClientId, clientName, ["budget", "performance", "dashboard", "views", "all"]).catch(() => {});
+  await invalidatePmaClientCache(cleanClientId, cleanMasterId, ["budget", "performance", "dashboard", "views", "all"]).catch(() => {});
 
   await logPmaActivity(sheets, {
     clientName: clientName || "",

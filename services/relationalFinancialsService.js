@@ -636,26 +636,34 @@ export async function getPhase5FinancialsOverviewStats() {
 async function loadExpandedPhase5TabRecords_(
   supabase,
   clientName,
-  { valuesOnly = false, preloadedGrids = null, ctx = null } = {}
+  { valuesOnly = false, preloadedGrids = null, ctx = null, requestedTabs = null } = {}
 ) {
   const byTab = {};
   const missingTabs = [];
+  const reqSet = Array.isArray(requestedTabs) && requestedTabs.length > 0 ? new Set(requestedTabs) : null;
 
   for (const t of PHASE5_FINANCIAL_TABS) {
     const pre = preloadedGrids && preloadedGrids[t] ? preloadedGrids[t] : null;
-    if (pre) {
+    const preFormsRaw =
+      pre && Array.isArray(pre.formulas_grid) && pre.formulas_grid.length > 0
+        ? pre.formulas_grid
+        : pre && Array.isArray(pre.formulas) && pre.formulas.length > 0
+          ? pre.formulas
+          : null;
+    const hasRealFormulas = Boolean(preFormsRaw);
+    const canTrustPreloaded =
+      Boolean(pre) &&
+      (!reqSet || reqSet.has(t)) &&
+      !pre._valuesOnlyLoaded &&
+      (valuesOnly || hasRealFormulas) &&
+      pre._notesLoaded !== false;
+    if (canTrustPreloaded) {
       const vals = Array.isArray(pre.values_grid)
         ? pre.values_grid
         : Array.isArray(pre.values)
           ? pre.values
           : [];
-      const forms = valuesOnly
-        ? null
-        : Array.isArray(pre.formulas_grid) && pre.formulas_grid.length > 0
-          ? pre.formulas_grid
-          : Array.isArray(pre.formulas) && pre.formulas.length > 0
-            ? pre.formulas
-            : vals;
+      const forms = valuesOnly ? null : preFormsRaw || vals;
       const notes =
         pre.notes_grid && typeof pre.notes_grid === "object"
           ? { ...pre.notes_grid }
@@ -769,7 +777,8 @@ async function runSingleFinancialsReconcilePass_(ctx, tabNames = null, options =
   const tabRecordsByTab = await loadExpandedPhase5TabRecords_(supabase, ctx.clientName, {
     valuesOnly: false,
     preloadedGrids: options?.preloadedGrids || null,
-    ctx: options?.forceFullUpsert ? null : ctx,
+    ctx: options?.forceFullUpsert && !ctx?.gridStorageRetired && ctx?.clientComputeMode !== "native" ? null : ctx,
+    requestedTabs: targetAll ? null : [...reqSet],
   });
 
   const parsed = parseClientFinancialsFromTabRecords({
@@ -801,7 +810,11 @@ async function runSingleFinancialsReconcilePass_(ctx, tabNames = null, options =
     );
     const staleIds = existing.filter((r) => !keepIdx.has(r.month_index)).map((r) => r.id);
     for (let i = 0; i < staleIds.length; i += 200) {
-      await supabase.from("pulse_job_monthly_rollups").delete().in("id", staleIds.slice(i, i + 200));
+      const { error: delErr } = await supabase
+        .from("pulse_job_monthly_rollups")
+        .delete()
+        .in("id", staleIds.slice(i, i + 200));
+      if (delErr) throw new Error(`pulse_job_monthly_rollups delete failed: ${delErr.message}`);
     }
   }
 
@@ -821,7 +834,11 @@ async function runSingleFinancialsReconcilePass_(ctx, tabNames = null, options =
     );
     const staleIds = existing.filter((r) => !keepIdx.has(r.row_index)).map((r) => r.id);
     for (let i = 0; i < staleIds.length; i += 200) {
-      await supabase.from("pulse_year0_lines").delete().in("id", staleIds.slice(i, i + 200));
+      const { error: delErr } = await supabase
+        .from("pulse_year0_lines")
+        .delete()
+        .in("id", staleIds.slice(i, i + 200));
+      if (delErr) throw new Error(`pulse_year0_lines delete failed: ${delErr.message}`);
     }
   }
 
@@ -858,7 +875,11 @@ async function runSingleFinancialsReconcilePass_(ctx, tabNames = null, options =
       })
       .map((r) => r.id);
     for (let i = 0; i < staleIds.length; i += 200) {
-      await supabase.from("pulse_financial_statements").delete().in("id", staleIds.slice(i, i + 200));
+      const { error: delErr } = await supabase
+        .from("pulse_financial_statements")
+        .delete()
+        .in("id", staleIds.slice(i, i + 200));
+      if (delErr) throw new Error(`pulse_financial_statements delete failed: ${delErr.message}`);
     }
   }
 
@@ -878,7 +899,11 @@ async function runSingleFinancialsReconcilePass_(ctx, tabNames = null, options =
     );
     const staleIds = existing.filter((r) => !keepIdx.has(r.row_index)).map((r) => r.id);
     for (let i = 0; i < staleIds.length; i += 200) {
-      await supabase.from("pulse_vat_schedules").delete().in("id", staleIds.slice(i, i + 200));
+      const { error: delErr } = await supabase
+        .from("pulse_vat_schedules")
+        .delete()
+        .in("id", staleIds.slice(i, i + 200));
+      if (delErr) throw new Error(`pulse_vat_schedules delete failed: ${delErr.message}`);
     }
   }
 
@@ -898,7 +923,11 @@ async function runSingleFinancialsReconcilePass_(ctx, tabNames = null, options =
     );
     const staleIds = existing.filter((r) => !keepIdx.has(r.row_index)).map((r) => r.id);
     for (let i = 0; i < staleIds.length; i += 200) {
-      await supabase.from("pulse_cashflow_lines").delete().in("id", staleIds.slice(i, i + 200));
+      const { error: delErr } = await supabase
+        .from("pulse_cashflow_lines")
+        .delete()
+        .in("id", staleIds.slice(i, i + 200));
+      if (delErr) throw new Error(`pulse_cashflow_lines delete failed: ${delErr.message}`);
     }
   }
 
@@ -914,19 +943,21 @@ async function runSingleFinancialsReconcilePass_(ctx, tabNames = null, options =
   };
 
   if (options.updateBackfillTimestamp) {
-    const { data: cRow } = await supabase
+    const { data: cRow, error: cErr } = await supabase
       .from("clients")
       .select("metadata")
       .eq("id", ctx.clientId)
       .maybeSingle();
-    const nextMeta = {
-      ...(cRow?.metadata || {}),
-      relational_financials_state: {
-        lastBackfilledAt: new Date().toISOString(),
-        ...summary,
-      },
-    };
-    await supabase.from("clients").update({ metadata: nextMeta }).eq("id", ctx.clientId);
+    if (!cErr && cRow) {
+      const nextMeta = {
+        ...(cRow.metadata || {}),
+        relational_financials_state: {
+          lastBackfilledAt: new Date().toISOString(),
+          ...summary,
+        },
+      };
+      await supabase.from("clients").update({ metadata: nextMeta }).eq("id", ctx.clientId);
+    }
   }
 
   return summary;
@@ -1004,6 +1035,17 @@ export async function backfillClientFinancials(clientName) {
   const ctx = await resolveSupabaseSheetContext({ clientName });
   if (!ctx?.clientId) {
     throw new Error(`Client "${clientName}" was not found in Supabase.`);
+  }
+  if (ctx.gridStorageRetired) {
+    return {
+      clientName: ctx.clientName,
+      skippedRetired: true,
+      rollupMonthsCount: 0,
+      year0LinesCount: 0,
+      statementLinesCount: 0,
+      vatRowsCount: 0,
+      cashflowLinesCount: 0,
+    };
   }
   return reconcileClientFinancialsFromGrids(ctx, null, {
     forceFullUpsert: true,
@@ -1182,12 +1224,17 @@ export async function setClientFinancialsMode(clientName, mode) {
   const supabase = getSupabaseAdmin();
   const { data: cl, error: fErr } = await supabase
     .from("clients")
-    .select("id, client_name, metadata")
+    .select("id, client_name, grid_storage_retired, metadata")
     .eq("client_name", clientName)
     .maybeSingle();
   if (fErr || !cl) throw new Error(fErr?.message || `Client "${clientName}" not found.`);
+  if (cl.grid_storage_retired && cleanMode !== "relational") {
+    throw new Error(
+      `Client "${clientName}" has retired grid storage and cannot be downgraded from 'relational' financials_mode.`
+    );
+  }
 
-  if (cleanMode === "relational") {
+  if (cleanMode === "relational" && !cl.grid_storage_retired) {
     await backfillClientFinancials(clientName);
   }
 
@@ -1216,10 +1263,15 @@ export async function setClientFinancialsReadMode(clientName, mode) {
   const supabase = getSupabaseAdmin();
   const { data: cl, error: fErr } = await supabase
     .from("clients")
-    .select("id, client_name, financials_mode, metadata")
+    .select("id, client_name, financials_mode, grid_storage_retired, metadata")
     .eq("client_name", clientName)
     .maybeSingle();
   if (fErr || !cl) throw new Error(fErr?.message || `Client "${clientName}" not found.`);
+  if (cl.grid_storage_retired && cleanMode !== "relational") {
+    throw new Error(
+      `Client "${clientName}" has retired grid storage and cannot be downgraded from 'relational' financials_read_mode.`
+    );
+  }
 
   if (cleanMode === "relational" && cl.financials_mode !== "relational") {
     throw new Error(

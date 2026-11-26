@@ -7,9 +7,9 @@
  * POST: Saves KeyInfo financial parameters to Master Sheet and marks task complete.
  */
 
-import { resolveLiveSessionUser } from "../../../services/authService.js";
+import { resolveLiveSessionUser, checkRateLimit, getTrustedClientIp } from "../../../services/authService.js";
 import { installSheetIdBoundary } from "../../../services/sheetTokenService.js";
-import { isUserAuthorizedForClient, verifyUserAuthorizedForSheet, canAccessPma, isReadOnlySession } from "../../../services/userPermissions.js";
+import { assertSetupClientSheetBinding, canAccessPma, isReadOnlySession } from "../../../services/userPermissions.js";
 import { getSheetsClient } from "../../../services/sheetsClient.js";
 import { getMasterKeyInfoSettings, saveMasterKeyInfoSettings } from "../../../services/setupService.js";
 import { assertTrustedOrigin, sanitizeSpreadsheetTerms } from "../../../utils/helpers.js";
@@ -25,6 +25,11 @@ export default async function handler(req, res) {
     return res.status(403).json({ success: false, error: "Access denied." });
   }
 
+  const rl = await checkRateLimit("setup-keyinfo", sessionUser.email || getTrustedClientIp(req), 120, 60);
+  if (!rl.allowed) {
+    return res.status(429).json({ success: false, error: "Too many requests. Please slow down." });
+  }
+
   const sheets = await getSheetsClient();
 
   if (req.method === "GET") {
@@ -33,11 +38,13 @@ export default async function handler(req, res) {
       return res.status(400).json({ success: false, error: "Missing masterSheetId" });
     }
 
-    if (!sessionUser.isAdmin) {
-      const auth = await verifyUserAuthorizedForSheet(sessionUser, masterSheetId, clientName, sheets);
-      if (!auth.authorized) {
-        return res.status(auth.status || 403).json({ success: false, error: auth.error || "Access denied to this client." });
-      }
+    const bindAuth = await assertSetupClientSheetBinding(sessionUser, {
+      clientName: clientName || "",
+      masterSheetId,
+      sheets,
+    });
+    if (!bindAuth.authorized) {
+      return res.status(bindAuth.status || 403).json({ success: false, error: bindAuth.error || "Access denied to this client." });
     }
 
     try {
@@ -57,6 +64,15 @@ export default async function handler(req, res) {
     const { masterSheetId, clientName, settings } = req.body || {};
     if (!masterSheetId || !settings) {
       return res.status(400).json({ success: false, error: "Missing masterSheetId or settings." });
+    }
+
+    const bindAuth = await assertSetupClientSheetBinding(sessionUser, {
+      clientName: clientName || "",
+      masterSheetId,
+      sheets,
+    });
+    if (!bindAuth.authorized) {
+      return res.status(bindAuth.status || 403).json({ success: false, error: bindAuth.error || "Access denied to this client." });
     }
 
     try {

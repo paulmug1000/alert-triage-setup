@@ -782,7 +782,7 @@ function indexSuiteResultsByClient_(suiteReport) {
 async function fetchAllRowsForHealth_(sb, tableName, selectCols, filterFn = null) {
   const out = [];
   for (let from = 0; ; from += 1000) {
-    let q = sb.from(tableName).select(selectCols).range(from, from + 999);
+    let q = sb.from(tableName).select(selectCols).order("id", { ascending: true }).range(from, from + 999);
     if (typeof filterFn === "function") q = filterFn(q);
     const { data, error } = await q;
     if (error) throw new Error(`${tableName} health query failed: ${error.message}`);

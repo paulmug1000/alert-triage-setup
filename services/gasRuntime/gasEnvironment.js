@@ -830,8 +830,21 @@ class VirtualRange {
   }
 
   clear(options) {
-    if (!options || options.contentsOnly !== false) {
+    if (!options) {
       this.clearContent();
+      this.clearNote();
+      return this;
+    }
+    const hasSpecificFlag =
+      options.contentsOnly !== undefined ||
+      options.formatOnly !== undefined ||
+      options.commentsOnly !== undefined ||
+      options.validationsOnly !== undefined;
+    if (!hasSpecificFlag || options.contentsOnly === true) {
+      this.clearContent();
+    }
+    if (options.commentsOnly === true) {
+      this.clearNote();
     }
     return this;
   }
@@ -1157,6 +1170,33 @@ class VirtualRangeList {
   }
 }
 
+export const GAS_FORMULA_TOKEN_SHIFT_RE_ =
+  /"(?:""|[^"])*"|'(?:''|[^'])*'!|[A-Za-z0-9_]+!|(?<![A-Za-z0-9_])(\$?[A-Za-z]{1,3})(\$?)(\d+)(?![0-9(])/g;
+
+function shiftVirtualFormulaRowsAbove_(formula, minRow1Inclusive, delta) {
+  if (!formula || typeof formula !== "string" || !formula.startsWith("=") || delta === 0) return formula;
+  return formula.replace(GAS_FORMULA_TOKEN_SHIFT_RE_, (match, colPart, dollarRow, rowStr) => {
+    if (!colPart || dollarRow === "$" || /^PL$/i.test(colPart)) return match;
+    const rNum = parseInt(rowStr, 10);
+    if (rNum < minRow1Inclusive) return match;
+    return `${colPart}${Math.max(1, rNum + delta)}`;
+  });
+}
+
+function shiftVirtualFormulasGrid_(formulasGrid, minRow1Inclusive, delta) {
+  if (!Array.isArray(formulasGrid) || delta === 0) return;
+  for (let r = 0; r < formulasGrid.length; r++) {
+    const row = formulasGrid[r];
+    if (!Array.isArray(row)) continue;
+    for (let c = 0; c < row.length; c++) {
+      const f = row[c];
+      if (typeof f === "string" && f.startsWith("=")) {
+        row[c] = shiftVirtualFormulaRowsAbove_(f, minRow1Inclusive, delta);
+      }
+    }
+  }
+}
+
 export class VirtualSheet {
   constructor(spreadsheet, name, valuesGrid = [], formulasGrid = [], notesGrid = {}, sheetId = 0, maxRows = 1000, maxCols = 50, rowGroups = []) {
     this.spreadsheet = spreadsheet;
@@ -1384,6 +1424,7 @@ export class VirtualSheet {
     const blankRows = Array.from({ length: count }, () => []);
     this.valuesGrid.splice(idx0, 0, ...blankRows.map((r) => [...r]));
     this.formulasGrid.splice(idx0, 0, ...blankRows.map((r) => [...r]));
+    shiftVirtualFormulasGrid_(this.formulasGrid, idx0 + 1, count);
     this._remapNotesRows((oldR0) => (oldR0 >= idx0 ? oldR0 + count : oldR0));
     this.maxRows += count;
     this.dirty = true;
@@ -1410,10 +1451,40 @@ export class VirtualSheet {
   }
 
   insertColumnsAfter(afterPosition, howMany = 1) {
+    const idx0 = Math.max(0, Number(afterPosition) || 0);
     const count = Math.max(1, Number(howMany) || 1);
+    const blankCols = new Array(count).fill("");
+    for (let r = 0; r < this.valuesGrid.length; r++) {
+      if (Array.isArray(this.valuesGrid[r]) && this.valuesGrid[r].length > idx0) {
+        this.valuesGrid[r].splice(idx0, 0, ...blankCols);
+      }
+    }
+    for (let r = 0; r < this.formulasGrid.length; r++) {
+      if (Array.isArray(this.formulasGrid[r]) && this.formulasGrid[r].length > idx0) {
+        this.formulasGrid[r].splice(idx0, 0, ...blankCols);
+      }
+    }
+    if (this.notesGrid && typeof this.notesGrid === "object") {
+      const nextNotes = Object.create(null);
+      for (const [k, v] of Object.entries(this.notesGrid)) {
+        if (k === "__proto__" || k === "constructor" || k === "prototype") continue;
+        if (k.startsWith("__")) {
+          nextNotes[k] = v;
+          continue;
+        }
+        const colonIdx = k.indexOf(":");
+        if (colonIdx < 0) continue;
+        const rPart = k.slice(0, colonIdx);
+        const oldC0 = Number(k.slice(colonIdx + 1));
+        if (!Number.isInteger(oldC0)) continue;
+        const newC0 = oldC0 >= idx0 ? oldC0 + count : oldC0;
+        nextNotes[`${rPart}:${newC0}`] = v;
+      }
+      this.notesGrid = nextNotes;
+    }
     this.maxCols += count;
+    this.dirty = true;
     if (this.spreadsheet.isRemoteGoogleSheet) {
-      const idx0 = Math.max(0, Number(afterPosition) || 0);
       this.spreadsheet._onSheetMutated(this.name, {
         type: "structural",
         request: {
@@ -1428,6 +1499,8 @@ export class VirtualSheet {
           },
         },
       });
+    } else {
+      this.spreadsheet._onSheetMutated(this.name, { type: "structural_local" });
     }
     return this;
   }
@@ -1441,6 +1514,7 @@ export class VirtualSheet {
     const count = Math.max(1, Number(howMany) || 1);
     this.valuesGrid.splice(start0, count);
     this.formulasGrid.splice(start0, count);
+    shiftVirtualFormulasGrid_(this.formulasGrid, start0 + count + 1, -count);
     this._remapNotesRows((oldR0) => {
       if (oldR0 >= start0 && oldR0 < start0 + count) return -1;
       if (oldR0 >= start0 + count) return oldR0 - count;
@@ -1981,6 +2055,7 @@ export async function createGasEnvironment({
       }
     } catch (relMasterErr) {
       console.warn(`[gasEnvironment] Phase 4 relational master preload warning (${ctx.clientName}):`, relMasterErr?.message);
+      if (ctx.gridStorageRetired) throw relMasterErr;
     }
   }
 
@@ -2006,6 +2081,7 @@ export async function createGasEnvironment({
       }
     } catch (natMasterErr) {
       console.warn(`[gasEnvironment] Phase 6B native master preload warning (${ctx.clientName}):`, natMasterErr?.message);
+      if (ctx.gridStorageRetired) throw natMasterErr;
     }
   }
 
@@ -2028,7 +2104,7 @@ export async function createGasEnvironment({
               "PLAdds",
               "Data",
               "Template",
-              ...Array.from(rBundle?.periodsByMonthKey?.keys?.() || []),
+              ...Array.from(rBundle?.periodByMonth?.keys?.() || []),
             ]),
           ];
       for (const t of targetReconTabs) {
@@ -2040,6 +2116,7 @@ export async function createGasEnvironment({
       }
     } catch (relReconErr) {
       console.warn(`[gasEnvironment] Phase 4C relational recon preload warning (${ctx.clientName}):`, relReconErr?.message);
+      if (ctx.gridStorageRetired) throw relReconErr;
     }
   }
 
@@ -2047,11 +2124,12 @@ export async function createGasEnvironment({
   // when running in `connector_pull_mode === 'native'`, otherwise from `GasScriptProps` virtual tab.
   if (ctx.connectorPullMode === "native") {
     try {
-      const { data: cfg6c } = await supabase
+      const { data: cfg6c, error: cfg6cErr } = await supabase
         .from("pulse_master_sync_configs")
         .select("crm_google_bridge_grid, crm_excel_bridge_grid, crm_excel_copy_grid, script_properties")
         .eq("client_id", ctx.clientId)
         .maybeSingle();
+      if (cfg6cErr) throw new Error(cfg6cErr.message);
       if (cfg6c) {
         if (Array.isArray(cfg6c.crm_google_bridge_grid) && cfg6c.crm_google_bridge_grid.length > 0) {
           applyRelationalGridToVirtualSS_(masterSS, "CRMGoogleBridge", cfg6c.crm_google_bridge_grid, {});
@@ -2075,6 +2153,7 @@ export async function createGasEnvironment({
       }
     } catch (c6Err) {
       console.warn(`[gasEnvironment] Phase 6C connector state preload warning (${ctx.clientName}):`, c6Err?.message);
+      if (ctx.gridStorageRetired) throw c6Err;
     }
   }
 
@@ -2107,6 +2186,7 @@ export async function createGasEnvironment({
       }
     } catch (c6dErr) {
       console.warn(`[gasEnvironment] Phase 6D state preload warning (${ctx.clientName}):`, c6dErr?.message);
+      if (ctx.gridStorageRetired) throw c6dErr;
     }
   }
 
@@ -2429,6 +2509,8 @@ export async function createGasEnvironment({
     if (isClientSheet) {
       if (existingTabNames.has("Outgoings")) noteRanges.push("Outgoings!A1:AZ230");
       if (existingTabNames.has("Confirmed")) noteRanges.push("Confirmed!A1:CR5000");
+      if (existingTabNames.has("Pipeline")) noteRanges.push("Pipeline!A1:CR3000");
+      if (existingTabNames.has("Cash")) noteRanges.push("Cash!A1:AK80");
     }
 
     const [chunkResults, notesResp] = await Promise.all([
@@ -2671,6 +2753,8 @@ export async function createGasEnvironment({
         "PLFromApp",
         "Year0PLFromApp",
         "DataFromCRM",
+        "DataFromTime",
+        "ProjectsFromTime",
         "CRMGoogleBridge",
         "CRMExcelBridge",
         "CRMExcelCopy",
@@ -2855,7 +2939,7 @@ export async function createGasEnvironment({
               );
           }
           const rawPhase4Tabs6c = nativeConnectorDirtyTabs.filter((t) =>
-            ["InvFromApp", "RevFromApp", "JnlsFromApp", "PLFromApp", "Year0PLFromApp", "DataFromCRM"].includes(t)
+            ["InvFromApp", "RevFromApp", "JnlsFromApp", "PLFromApp", "Year0PLFromApp", "DataFromCRM", "DataFromTime", "ProjectsFromTime"].includes(t)
           );
           if (rawPhase4Tabs6c.length > 0) {
             const gridsOverride = {};
@@ -2866,10 +2950,12 @@ export async function createGasEnvironment({
             if (kiObj?.valuesGrid) gridsOverride.KeyInfo = kiObj.valuesGrid;
             const clObj = masterSS.getSheetByName("CRMList");
             if (clObj?.valuesGrid) gridsOverride.CRMList = clObj.valuesGrid;
+            const tcObj = masterSS.getSheetByName("TimeComp");
+            if (tcObj?.valuesGrid) gridsOverride.TimeComp = tcObj.valuesGrid;
             const { reconcileClientMasterIngestionFromGrids } = await import("../relationalMasterService.js");
             await reconcileClientMasterIngestionFromGrids(ctx, rawPhase4Tabs6c, {
               gridsOverride,
-              skipConfigUpsert: true,
+              skipConfigUpsert: false,
             });
           }
         } catch (c6FlushErr) {
@@ -2888,7 +2974,20 @@ export async function createGasEnvironment({
           const phase4Set = new Set(ALL_PHASE4_MASTER_TABS);
           const phase4Tabs = [...new Set(masterMutatedTabs.filter((t) => phase4Set.has(t)))];
           if (phase4Tabs.length > 0) {
-            await reconcileClientMasterIngestionFromGrids(ctx, phase4Tabs).catch((err) => {
+            const masterOverrides = {};
+            for (const t of phase4Tabs) {
+              const sObj = masterSS.getSheetByName(t);
+              if (sObj?.valuesGrid) masterOverrides[t] = sObj.valuesGrid;
+            }
+            const kiObj = masterSS.getSheetByName("KeyInfo");
+            if (kiObj?.valuesGrid) masterOverrides.KeyInfo = kiObj.valuesGrid;
+            const clObj = masterSS.getSheetByName("CRMList");
+            if (clObj?.valuesGrid) masterOverrides.CRMList = clObj.valuesGrid;
+            const tcObj = masterSS.getSheetByName("TimeComp");
+            if (tcObj?.valuesGrid) masterOverrides.TimeComp = tcObj.valuesGrid;
+            await reconcileClientMasterIngestionFromGrids(ctx, phase4Tabs, {
+              ...(Object.keys(masterOverrides).length > 0 ? { gridsOverride: masterOverrides } : {}),
+            }).catch((err) => {
               console.warn(
                 `[gasEnvironment] Phase 4 relational master sync warning for ${ctx.clientName}:`,
                 err?.message

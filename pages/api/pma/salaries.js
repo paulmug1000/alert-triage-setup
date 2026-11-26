@@ -6,7 +6,7 @@ import {
   saveDividendsData,
 } from "../../../services/salariesService.js";
 import { getClients } from "../../../services/workspaces.js";
-import { verifyUserAuthorizedForSheet, canAccessPma, isReadOnlySession } from "../../../services/userPermissions.js";
+import { assertSetupClientSheetBinding, canAccessPma, isReadOnlySession } from "../../../services/userPermissions.js";
 import { getSheetsClient } from "../../../services/sheetsClient.js";
 import { installSheetIdBoundary } from "../../../services/sheetTokenService.js";
 import { assertTrustedOrigin, sanitizeSpreadsheetTerms } from "../../../utils/helpers.js";
@@ -54,25 +54,17 @@ export default async function handler(req, res) {
       });
     }
 
-    if (!sessionUser.isAdmin) {
-      const sheets = await getSheetsClient();
-      let boundClient = clientName;
-      if (masterSheetId) {
-        const masterAuth = await verifyUserAuthorizedForSheet(sessionUser, masterSheetId, boundClient, sheets);
-        if (!masterAuth.authorized) {
-          return res.status(masterAuth.status || 403).json({ success: false, error: masterAuth.error || "Access denied to this client." });
-        }
-        boundClient = masterAuth.clientName || boundClient;
-      }
-      if (clientSheetId) {
-        const clientAuth = await verifyUserAuthorizedForSheet(sessionUser, clientSheetId, boundClient, sheets);
-        if (!clientAuth.authorized) {
-          return res.status(clientAuth.status || 403).json({ success: false, error: clientAuth.error || "Access denied to this client." });
-        }
-        boundClient = clientAuth.clientName || boundClient;
-      }
-      clientName = boundClient || clientName;
+    const sheets = await getSheetsClient();
+    const bindAuth = await assertSetupClientSheetBinding(sessionUser, {
+      clientName,
+      masterSheetId,
+      clientSheetId,
+      sheets,
+    });
+    if (!bindAuth.authorized) {
+      return res.status(bindAuth.status || 403).json({ success: false, error: bindAuth.error || "Access denied to this client." });
     }
+    clientName = bindAuth.clientName || clientName;
 
     try {
       const data = await getSalariesData({
@@ -108,25 +100,17 @@ export default async function handler(req, res) {
       });
     }
 
-    if (!sessionUser.isAdmin) {
-      const sheets = await getSheetsClient();
-      let boundClient = clientName;
-      if (masterSheetId) {
-        const masterAuth = await verifyUserAuthorizedForSheet(sessionUser, masterSheetId, boundClient, sheets);
-        if (!masterAuth.authorized) {
-          return res.status(masterAuth.status || 403).json({ success: false, error: masterAuth.error || "Access denied to this client." });
-        }
-        boundClient = masterAuth.clientName || boundClient;
-      }
-      if (clientSheetId) {
-        const clientAuth = await verifyUserAuthorizedForSheet(sessionUser, clientSheetId, boundClient, sheets);
-        if (!clientAuth.authorized) {
-          return res.status(clientAuth.status || 403).json({ success: false, error: clientAuth.error || "Access denied to this client." });
-        }
-        boundClient = clientAuth.clientName || boundClient;
-      }
-      clientName = boundClient || clientName;
+    const sheets = await getSheetsClient();
+    const bindAuth = await assertSetupClientSheetBinding(sessionUser, {
+      clientName,
+      masterSheetId,
+      clientSheetId,
+      sheets,
+    });
+    if (!bindAuth.authorized) {
+      return res.status(bindAuth.status || 403).json({ success: false, error: bindAuth.error || "Access denied to this client." });
     }
+    clientName = bindAuth.clientName || clientName;
 
     try {
       if (action === "save_employee") {
@@ -183,7 +167,7 @@ export default async function handler(req, res) {
         error: sessionUser.isAdmin ? (err.message || "Failed to save salaries data") : sanitizeSpreadsheetTerms(err.message || "Failed to save salaries data")
       });
     } finally {
-      await flushImmediateAndScheduleBackgroundClientRecomputes().catch(() => {});
+      await flushImmediateAndScheduleBackgroundClientRecomputes(sheets, clientName || "").catch(() => { });
     }
   }
 

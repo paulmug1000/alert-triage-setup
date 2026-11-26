@@ -28,7 +28,10 @@ import {
   parseYear0Number,
 } from "./year0SetupService.js";
 import { invalidatePmaClientCache } from "./cacheService.js";
-import { flushImmediateAndScheduleBackgroundClientRecomputes } from "./masterEngineService.js";
+import {
+  flushImmediateAndScheduleBackgroundClientRecomputes,
+  resolveClientSheetIdFromMaster,
+} from "./masterEngineService.js";
 import { logPmaActivity } from "./pmaLogger.js";
 import { sanitizeFormulaInput } from "./userPermissions.js";
 import { calculateUkTieredCorpTax } from "../utils/helpers.js";
@@ -754,7 +757,11 @@ export async function loadInitialTaxSetupData({ clientName, masterSheetId }) {
   const taxPaymentMethod = String(b6to10[4]?.[0] || "Standard").trim() || "Standard";
   const rawF6 = parseInt(mvr[3]?.values?.[0]?.[0], 10);
   const f6 = [1, 2, 3].includes(rawF6) ? rawF6 : computeVatCycleIndexF6(startDate, vatQuarters);
-  const cleanClientId = resolveCleanId(mvr[4]?.values?.[0]?.[0] || "");
+  const cleanClientId = await resolveClientSheetIdFromMaster({
+    clientName,
+    masterSheetId: cleanMasterId,
+    rawKeyInfoX28: mvr[4]?.values?.[0]?.[0] || "",
+  });
   if (!cleanClientId) throw new Error("Client workspace sheet ID is not configured.");
   const currencySymbol = String(mvr[5]?.values?.[0]?.[0] || "£").trim() || "£";
   const currency = currencySymbol === "$" ? "USD" : currencySymbol === "€" ? "EUR" : "GBP";
@@ -1066,7 +1073,11 @@ export async function saveInitialTaxSetupData({
   const vatQuarters = String(svr[1]?.values?.[0]?.[0] || "Jan-Mar, Apr-Jun, Jul-Sep, Oct-Dec").trim();
   const rawF6 = parseInt(svr[2]?.values?.[0]?.[0], 10);
   const f6 = [1, 2, 3].includes(rawF6) ? rawF6 : (startDate ? computeVatCycleIndexF6(startDate, vatQuarters) : 1);
-  const cleanClientId = resolveCleanId(svr[3]?.values?.[0]?.[0] || "");
+  const cleanClientId = await resolveClientSheetIdFromMaster({
+    clientName,
+    masterSheetId: cleanMasterId,
+    rawKeyInfoX28: svr[3]?.values?.[0]?.[0] || "",
+  });
   if (!cleanClientId) throw new Error("Client workspace sheet ID is not configured.");
 
   const authoritativeSpecs = startDate ? buildInitialVatSlotSpecs(f6, startDate) : null;
@@ -1132,9 +1143,9 @@ export async function saveInitialTaxSetupData({
   );
 
   if (cleanClientId.startsWith("sb-") || cleanMasterId.startsWith("sb-")) {
-    await flushImmediateAndScheduleBackgroundClientRecomputes(clientName || cleanMasterId).catch(() => {});
+    await flushImmediateAndScheduleBackgroundClientRecomputes(sheets, clientName || cleanMasterId).catch(() => {});
   }
-  await invalidatePmaClientCache(cleanClientId, clientName, ["cash", "views", "dashboard", "all"]).catch(() => {});
+  await invalidatePmaClientCache(cleanClientId, cleanMasterId, ["cash", "views", "dashboard", "all"]).catch(() => {});
 
   await logPmaActivity(sheets, {
     clientName: clientName || "",

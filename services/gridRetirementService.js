@@ -273,26 +273,47 @@ export async function verifyZeroGridReadiness({ clientName = null } = {}) {
   const filterByClient = Boolean(clientName && clientIds.length > 0);
   const cleanClientPattern = clientName ? escapeIlikeExact(String(clientName).trim()) : null;
 
-  let bpQ = supabase.from("pulse_client_tab_blueprints").select("client_id");
-  let finQ = supabase.from("pulse_financial_configs").select("client_id");
-  let syncQ = supabase.from("pulse_master_sync_configs").select(syncSelect);
-  let bridgeQ = supabase
-    .from("master_sheet_grids")
-    .select("client_name")
-    .eq("sheet_role", "master")
-    .eq("tab_name", "SheetBridgeBaseline");
-
-  if (filterByClient) {
-    bpQ = bpQ.in("client_id", clientIds);
-    finQ = finQ.in("client_id", clientIds);
-    syncQ = syncQ.in("client_id", clientIds);
-    if (cleanClientPattern) bridgeQ = bridgeQ.ilike("client_name", cleanClientPattern);
-  }
+  const fetchPagedQuery_ = async (buildQuery, orderCol, label) => {
+    const all = [];
+    for (let from = 0; ; from += 1000) {
+      let q = buildQuery().order(orderCol, { ascending: true }).range(from, from + 999);
+      const { data: page, error: qErr } = await q;
+      if (qErr) throw new Error(`verifyZeroGridReadiness ${label} query failed: ${qErr.message}`);
+      if (!Array.isArray(page) || page.length === 0) break;
+      all.push(...page);
+      if (page.length < 1000) break;
+    }
+    return { data: all, error: null };
+  };
 
   const [bpRes, finRes, syncRes, gridMetaRows, bridgeRes] = await Promise.all([
-    bpQ,
-    finQ,
-    syncQ,
+    fetchPagedQuery_(
+      () => {
+        let q = supabase.from("pulse_client_tab_blueprints").select("client_id");
+        if (filterByClient) q = q.in("client_id", clientIds);
+        return q;
+      },
+      "id",
+      "blueprints"
+    ),
+    fetchPagedQuery_(
+      () => {
+        let q = supabase.from("pulse_financial_configs").select("client_id");
+        if (filterByClient) q = q.in("client_id", clientIds);
+        return q;
+      },
+      "client_id",
+      "financials"
+    ),
+    fetchPagedQuery_(
+      () => {
+        let q = supabase.from("pulse_master_sync_configs").select(syncSelect);
+        if (filterByClient) q = q.in("client_id", clientIds);
+        return q;
+      },
+      "client_id",
+      "sync configs"
+    ),
     (async () => {
       const all = [];
       for (let from = 0; ; from += 1000) {
@@ -300,6 +321,7 @@ export async function verifyZeroGridReadiness({ clientName = null } = {}) {
           .from("master_sheet_grids")
           .select("client_name")
           .order("client_name", { ascending: true })
+          .order("id", { ascending: true })
           .range(from, from + 999);
         if (cleanClientPattern) gq = gq.ilike("client_name", cleanClientPattern);
         const { data: page, error: gErr } = await gq;
@@ -310,7 +332,19 @@ export async function verifyZeroGridReadiness({ clientName = null } = {}) {
       }
       return all;
     })(),
-    bridgeQ,
+    fetchPagedQuery_(
+      () => {
+        let q = supabase
+          .from("master_sheet_grids")
+          .select("client_name")
+          .eq("sheet_role", "master")
+          .eq("tab_name", "SheetBridgeBaseline");
+        if (cleanClientPattern) q = q.ilike("client_name", cleanClientPattern);
+        return q;
+      },
+      "id",
+      "bridge baseline"
+    ),
   ]);
 
   if (bpRes.error) throw new Error(`verifyZeroGridReadiness blueprints query failed: ${bpRes.error.message}`);
@@ -469,14 +503,17 @@ export async function retireClientGridStorage(
   }
 
   const nowIso = new Date().toISOString();
-  const { data: curClient } = await supabase
+  const { data: curClient, error: curErr } = await supabase
     .from("clients")
     .select("metadata")
     .eq("id", target.clientId)
     .maybeSingle();
+  if (curErr || !curClient) {
+    throw new Error(curErr?.message || `Failed reading client metadata for ${target.clientName}.`);
+  }
 
   const nextMeta = {
-    ...(curClient?.metadata || {}),
+    ...(curClient.metadata || {}),
     grid_retirement_state: {
       retiredAt: nowIso,
       purgedGridRows: target.remainingGridRows,

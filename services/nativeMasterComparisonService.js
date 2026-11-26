@@ -150,7 +150,7 @@ export function summarizeMasterComparisonsFromGrids(grids = {}, clientName = "")
   };
 }
 
-function runMasterComparisonEvaluators_(grids, requestedCrmMode = null) {
+function runMasterComparisonEvaluators_(grids, requestedCrmMode = null, clientSheetId = "") {
   if (requestedCrmMode) {
     if (!Array.isArray(grids.CRMComp)) grids.CRMComp = [];
     while (grids.CRMComp.length <= 1) grids.CRMComp.push([]);
@@ -167,7 +167,7 @@ function runMasterComparisonEvaluators_(grids, requestedCrmMode = null) {
   evaluateDirComp(grids);
   evaluateCRMList(grids);
   evaluateCRMComp(grids);
-  evaluateKeyInfoAndPLComp(grids);
+  evaluateKeyInfoAndPLComp(grids, { clientSheetId });
   evaluateTimeComp(grids);
 
   for (const tName of [
@@ -283,7 +283,7 @@ export async function evaluateNativeMasterComparisonsInMemory(
     ...(reconPlAddsVals ? { ReconPLAdds: reconPlAddsVals } : {}),
   };
 
-  runMasterComparisonEvaluators_(grids, requestedCrmMode);
+  runMasterComparisonEvaluators_(grids, requestedCrmMode, ctx?.clientSheetId || "");
   const summary = summarizeMasterComparisonsFromGrids(grids, ctx.clientName);
 
   const dfcGrid = grids.DataFromCRM || [];
@@ -421,23 +421,29 @@ export async function computeAndPersistNativeMasterComparisons(
   const summary = evalRes.summary;
 
   if (requestedCrmMode) {
-    const { data: cfgRow } = await supabase
+    const { data: cfgRow, error: cfgErr } = await supabase
       .from("pulse_master_sync_configs")
       .select("crm_comp_controls")
       .eq("client_id", ctx.clientId)
       .maybeSingle();
+    if (cfgErr) {
+      throw new Error(`Failed reading pulse_master_sync_configs (${ctx.clientName}): ${cfgErr.message}`);
+    }
     const prevCtrl = cfgRow?.crm_comp_controls || {};
     const nextHdrs = Array.isArray(prevCtrl.headerRows) ? clone2D_(prevCtrl.headerRows) : [[], []];
     while (nextHdrs.length <= 1) nextHdrs.push([]);
     while (nextHdrs[1].length <= 1) nextHdrs[1].push("");
     nextHdrs[1][1] = requestedCrmMode;
-    await supabase
+    const { error: cfgUpdErr } = await supabase
       .from("pulse_master_sync_configs")
       .update({
         crm_comp_controls: { ...prevCtrl, headerRows: nextHdrs },
         updated_at: nowIso,
       })
       .eq("client_id", ctx.clientId);
+    if (cfgUpdErr) {
+      throw new Error(`Failed updating crm_comp_controls (${ctx.clientName}): ${cfgUpdErr.message}`);
+    }
   }
 
   const upsertRows = MASTER_COMP_TABS.map((tabName) => {
@@ -494,29 +500,34 @@ export async function computeAndPersistNativeMasterComparisons(
     summary,
   });
 
-  const { data: clRow } = await supabase
+  const { data: clRow, error: clErr } = await supabase
     .from("clients")
     .select("metadata")
     .eq("id", ctx.clientId)
     .maybeSingle();
-  const prevMeta = clRow?.metadata && typeof clRow.metadata === "object" ? clRow.metadata : {};
-  const nextState = {
-    ...(prevMeta.native_master_comp_state || {}),
-    lastComputedAt: nowIso,
-    ...(updateBackfillTimestamp ? { lastBackfilledAt: nowIso } : {}),
-    invDiscrepancyCount: summary.invDiscrepancyCount,
-    dirDiscrepancyCount: summary.dirDiscrepancyCount,
-    crmDiscrepancyCount: summary.crmDiscrepancyCount,
-  };
-  await supabase
-    .from("clients")
-    .update({
-      metadata: {
-        ...prevMeta,
-        native_master_comp_state: nextState,
-      },
-    })
-    .eq("id", ctx.clientId);
+  if (!clErr && clRow) {
+    const prevMeta = clRow.metadata && typeof clRow.metadata === "object" ? clRow.metadata : {};
+    const nextState = {
+      ...(prevMeta.native_master_comp_state || {}),
+      lastComputedAt: nowIso,
+      ...(updateBackfillTimestamp ? { lastBackfilledAt: nowIso } : {}),
+      invDiscrepancyCount: summary.invDiscrepancyCount,
+      dirDiscrepancyCount: summary.dirDiscrepancyCount,
+      crmDiscrepancyCount: summary.crmDiscrepancyCount,
+    };
+    const { error: metaUpdErr } = await supabase
+      .from("clients")
+      .update({
+        metadata: {
+          ...prevMeta,
+          native_master_comp_state: nextState,
+        },
+      })
+      .eq("id", ctx.clientId);
+    if (metaUpdErr) {
+      throw new Error(`clients metadata update failed (${ctx.clientName}): ${metaUpdErr.message}`);
+    }
+  }
 
   return {
     ...evalRes,
@@ -568,8 +579,35 @@ export async function loadPersistedOrEvaluateMasterComparisonTab(
       const t = r.computed_at ? Date.parse(r.computed_at) : 0;
       return t > m ? t : m;
     }, 0);
-    const staleByClientEdit = lastEditMs > 0 && newestMs < lastEditMs;
-    const staleByAge = maxAgeMs > 0 && Date.now() - newestMs > maxAgeMs && lastEditMs > newestMs;
+    const [mSyncRes, rCfgRes, bpRes] = await Promise.all([
+      supabase
+        .from("pulse_master_sync_configs")
+        .select("updated_at")
+        .eq("client_id", ctx.clientId)
+        .maybeSingle(),
+      supabase
+        .from("pulse_recon_configs")
+        .select("updated_at")
+        .eq("client_id", ctx.clientId)
+        .maybeSingle(),
+      supabase
+        .from("pulse_client_tab_blueprints")
+        .select("updated_at")
+        .eq("client_id", ctx.clientId)
+        .in("tab_name", ["Confirmed", "Pipeline", "Outgoings", "OutgNotes"]),
+    ]);
+    let dbMaxUpdatedMs = 0;
+    for (const u of [mSyncRes?.data?.updated_at, rCfgRes?.data?.updated_at]) {
+      const t = u ? Date.parse(u) : 0;
+      if (t > dbMaxUpdatedMs) dbMaxUpdatedMs = t;
+    }
+    for (const row of bpRes?.data || []) {
+      const t = row?.updated_at ? Date.parse(row.updated_at) : 0;
+      if (t > dbMaxUpdatedMs) dbMaxUpdatedMs = t;
+    }
+    const effectiveLastEditMs = Math.max(lastEditMs, dbMaxUpdatedMs);
+    const staleByClientEdit = effectiveLastEditMs > 0 && newestMs < effectiveLastEditMs;
+    const staleByAge = maxAgeMs > 0 && Date.now() - newestMs > maxAgeMs;
     if (!staleByClientEdit && !staleByAge) {
       const byTab = {};
       for (const [t, cType] of Object.entries(MASTER_COMP_TYPE_BY_TAB)) {
@@ -620,6 +658,10 @@ export async function loadMasterContextTabFromConfig(ctxOrClientName, tabName) {
   const grid = Array.isArray(data?.[col]) ? data[col] : [];
   if (grid.length > 0) return clone2D_(grid);
 
+  if (ctx.gridStorageRetired || ctx.masterComputeMode === "native") {
+    return [];
+  }
+
   const fallback = await getOrLoadVirtualTabGrid_(ctx, "master", tabName, null).catch(() => null);
   return clone2D_(fallback?.values_grid || []);
 }
@@ -632,26 +674,30 @@ export async function backfillClientNativeMasterComparisons(clientName) {
   const ctx = await resolveSupabaseSheetContext({ clientName });
   if (!ctx?.clientId) throw new Error(`Client "${clientName}" not found.`);
 
-  const supabase = getSupabaseAdmin();
-  // Ensure client blueprints exist so ConfCalcs & PipeCalcs are present in pulse_client_tab_blueprints
-  if (!ctx.metadata?.native_client_calc_state?.lastBackfilledAt) {
-    await backfillClientNativeCalc(ctx.clientName);
-  }
+  if (!ctx.gridStorageRetired) {
+    const supabase = getSupabaseAdmin();
+    // Ensure client blueprints exist so ConfCalcs & PipeCalcs are present in pulse_client_tab_blueprints
+    if (!ctx.metadata?.native_client_calc_state?.lastBackfilledAt) {
+      await backfillClientNativeCalc(ctx.clientName);
+    }
 
-  const contextTabs = ["KeyInfo", "DataChgAlert", "PLAdds", ...PHASE4_CONFIG_AND_COMP_TABS];
-  const { data: mRows, error: mErr } = await supabase
-    .from("master_sheet_grids")
-    .select("tab_name, values_grid")
-    .eq("client_name", ctx.clientName)
-    .eq("sheet_role", "master")
-    .in("tab_name", contextTabs);
-  if (mErr) throw new Error(`Failed reading Master context grids (${ctx.clientName}): ${mErr.message}`);
+    const contextTabs = ["KeyInfo", "DataChgAlert", "PLAdds", ...PHASE4_CONFIG_AND_COMP_TABS];
+    const { data: mRows, error: mErr } = await supabase
+      .from("master_sheet_grids")
+      .select("tab_name, values_grid")
+      .eq("client_name", ctx.clientName)
+      .eq("sheet_role", "master")
+      .in("tab_name", contextTabs);
+    if (mErr) throw new Error(`Failed reading Master context grids (${ctx.clientName}): ${mErr.message}`);
 
-  const gridMap = {};
-  for (const r of mRows || []) {
-    gridMap[r.tab_name] = compactGrid2D(r.values_grid || []);
+    const gridMap = {};
+    for (const r of mRows || []) {
+      gridMap[r.tab_name] = compactGrid2D(r.values_grid || []);
+    }
+    if (Object.keys(gridMap).length > 0) {
+      await syncMasterContextGridsToConfig(ctx, gridMap);
+    }
   }
-  await syncMasterContextGridsToConfig(ctx, gridMap);
 
   const persisted = await computeAndPersistNativeMasterComparisons(ctx, {
     updateBackfillTimestamp: true,
@@ -709,10 +755,16 @@ export async function setClientMasterComputeMode(clientName, mode) {
   const supabase = getSupabaseAdmin();
   const { data: cl, error: fErr } = await supabase
     .from("clients")
-    .select("id, client_name, master_ingestion_mode, metadata")
+    .select("id, client_name, master_ingestion_mode, grid_storage_retired, metadata")
     .eq("client_name", clientName)
     .maybeSingle();
   if (fErr || !cl) throw new Error(fErr?.message || `Client "${clientName}" not found.`);
+
+  if (cl.grid_storage_retired && cleanMode !== "native") {
+    throw new Error(
+      `Client "${clientName}" has retired grid storage and cannot be downgraded from 'native' master_compute_mode.`
+    );
+  }
 
   if (cleanMode === "native" && cl.master_ingestion_mode !== "relational") {
     throw new Error(
@@ -871,7 +923,7 @@ async function evaluateFreshLegacyMasterComparisons_(supabase, ctx) {
     grids.PLAdds = clone2D_(grids.ReconPLAdds);
   }
 
-  runMasterComparisonEvaluators_(grids);
+  runMasterComparisonEvaluators_(grids, null, ctx?.clientSheetId || "");
   return grids;
 }
 
@@ -1047,14 +1099,14 @@ export async function verifyNativeMasterComparisonMutationMatrix({
       {
         name: "crm_comp_confirmed_mode",
         apply: (g) => {
-          runMasterComparisonEvaluators_(g, "Confirmed");
+          runMasterComparisonEvaluators_(g, "Confirmed", ctx?.clientSheetId || "");
         },
         tabs: ["CRMList", "CRMComp"],
       },
       {
         name: "crm_comp_pipeline_mode",
         apply: (g) => {
-          runMasterComparisonEvaluators_(g, "Pipeline");
+          runMasterComparisonEvaluators_(g, "Pipeline", ctx?.clientSheetId || "");
         },
         tabs: ["CRMList", "CRMComp"],
       },
@@ -1081,7 +1133,7 @@ export async function verifyNativeMasterComparisonMutationMatrix({
           setCol("SubTotal", 1000);
           setCol("TotalTax", 200);
           g.InvFromApp.push(row);
-          runMasterComparisonEvaluators_(g);
+          runMasterComparisonEvaluators_(g, null, ctx?.clientSheetId || "");
         },
         tabs: ["InvAppList", "InvComp"],
       },
@@ -1104,7 +1156,7 @@ export async function verifyNativeMasterComparisonMutationMatrix({
           setCol(["type", "transactiontype"], "ACCPAY");
           setCol(["sourceid", "invoiceid", "externalid"], "ext-synth-dir-999");
           g.JnlsFromApp.push(row);
-          runMasterComparisonEvaluators_(g);
+          runMasterComparisonEvaluators_(g, null, ctx?.clientSheetId || "");
         },
         tabs: ["JnlAppList", "DirComp"],
       },

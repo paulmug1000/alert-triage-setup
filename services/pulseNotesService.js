@@ -471,26 +471,33 @@ export async function getClientNoteSummaries({ clientName, includeRestricted = t
   const sb = getSupabaseAdmin();
   if (!sb) return empty;
 
-  let query = sb
-    .from("pulse_notes")
-    .select(
-      "id, entity_type, entity_key, parent_entity_key, entity_label, context_meta, visibility_scope, body, notify_manager, status, author_name, author_email, client_unread_reply, created_at"
-    )
-    .ilike("client_name", escapeIlikeExact(clientName))
-    .is("deleted_at", null)
-    .order("created_at", { ascending: false })
-    .limit(2000);
+  const rows = [];
+  for (let from = 0; ; from += 1000) {
+    let query = sb
+      .from("pulse_notes")
+      .select(
+        "id, entity_type, entity_key, parent_entity_key, entity_label, context_meta, visibility_scope, body, notify_manager, status, author_name, author_email, client_unread_reply, created_at"
+      )
+      .ilike("client_name", escapeIlikeExact(clientName))
+      .is("deleted_at", null)
+      .order("created_at", { ascending: false })
+      .order("id", { ascending: true })
+      .range(from, from + 999);
 
-  if (!includeRestricted) {
-    query = query.eq("visibility_scope", "standard");
-  }
-
-  const { data: rows, error } = await query;
-  if (error) {
-    if (isMissingTableError(error)) {
-      return { ...empty, migrationRequired: true };
+    if (!includeRestricted) {
+      query = query.eq("visibility_scope", "standard");
     }
-    throw error;
+
+    const { data: pageRows, error } = await query;
+    if (error) {
+      if (isMissingTableError(error)) {
+        return { ...empty, migrationRequired: true };
+      }
+      throw error;
+    }
+    if (!Array.isArray(pageRows) || pageRows.length === 0) break;
+    rows.push(...pageRows);
+    if (pageRows.length < 1000) break;
   }
 
   const byEntityKey = Object.create(null);
@@ -548,15 +555,26 @@ export async function getClientNoteSummaries({ clientName, includeRestricted = t
 async function attachRepliesToNotes(sb, noteRows) {
   if (!Array.isArray(noteRows) || noteRows.length === 0) return [];
   const ids = noteRows.map((r) => r.id).filter(Boolean);
-  const { data: replyRows, error: replyErr } = await sb
-    .from("pulse_note_replies")
-    .select("*")
-    .in("note_id", ids)
-    .order("created_at", { ascending: true });
+  const replyRows = [];
+  for (let i = 0; i < ids.length; i += 200) {
+    const chunk = ids.slice(i, i + 200);
+    for (let from = 0; ; from += 1000) {
+      const { data: pageRows, error: replyErr } = await sb
+        .from("pulse_note_replies")
+        .select("*")
+        .in("note_id", chunk)
+        .order("created_at", { ascending: true })
+        .order("id", { ascending: true })
+        .range(from, from + 999);
 
-  if (replyErr) {
-    console.warn("[pulseNotes] Reply fetch warning:", replyErr.message);
-    return noteRows.map((r) => mapNoteRow(r, []));
+      if (replyErr) {
+        console.warn("[pulseNotes] Reply fetch warning:", replyErr.message);
+        return noteRows.map((r) => mapNoteRow(r, []));
+      }
+      if (!Array.isArray(pageRows) || pageRows.length === 0) break;
+      replyRows.push(...pageRows);
+      if (pageRows.length < 1000) break;
+    }
   }
 
   const repliesByNote = new Map();
@@ -793,28 +811,35 @@ export async function getPmaOpenNotesCount({ sessionUser, clientName = "" }) {
   if (!sb) return 0;
 
   const allowSalaries = canViewSalariesAndDividends(sessionUser);
-  let query = sb
-    .from("pulse_notes")
-    .select("id, client_name, visibility_scope")
-    .is("deleted_at", null)
-    .eq("notify_manager", true)
-    .eq("status", "open")
-    .limit(1000);
+  const rows = [];
+  for (let from = 0; ; from += 1000) {
+    let query = sb
+      .from("pulse_notes")
+      .select("id, client_name, visibility_scope")
+      .is("deleted_at", null)
+      .eq("notify_manager", true)
+      .eq("status", "open")
+      .order("id", { ascending: true })
+      .range(from, from + 999);
 
-  if (clientName) {
-    query = query.ilike("client_name", escapeIlikeExact(clientName));
-  }
-  if (!allowSalaries) {
-    query = query.eq("visibility_scope", "standard");
+    if (clientName) {
+      query = query.ilike("client_name", escapeIlikeExact(clientName));
+    }
+    if (!allowSalaries) {
+      query = query.eq("visibility_scope", "standard");
+    }
+
+    const { data: pageRows, error } = await query;
+    if (error) {
+      if (isMissingTableError(error)) return 0;
+      throw error;
+    }
+    if (!Array.isArray(pageRows) || pageRows.length === 0) break;
+    rows.push(...pageRows);
+    if (pageRows.length < 1000) break;
   }
 
-  const { data: rows, error } = await query;
-  if (error) {
-    if (isMissingTableError(error)) return 0;
-    throw error;
-  }
-
-  return (rows || []).filter((r) => isUserAuthorizedForClient(sessionUser, r.client_name)).length;
+  return rows.filter((r) => isUserAuthorizedForClient(sessionUser, r.client_name)).length;
 }
 
 export async function createPulseNote({
@@ -891,12 +916,19 @@ export async function createPulseNote({
       }
       if (!resolvedJobId) {
         const targetJobKey = cleanType === "job" ? cleanKey : cleanParentKey;
-        const { data: jobCandidates } = await sb
-          .from("pulse_jobs")
-          .select("id, tab_type, sheet_row_num, customer_name, job_name, project_code")
-          .eq("client_id", clientRow.id)
-          .limit(2000);
-        const ordered = [...(jobCandidates || [])].sort((a, b) =>
+        const jobCandidates = [];
+        for (let from = 0; ; from += 1000) {
+          const { data: pageRows, error: jErr } = await sb
+            .from("pulse_jobs")
+            .select("id, tab_type, sheet_row_num, customer_name, job_name, project_code")
+            .eq("client_id", clientRow.id)
+            .order("id", { ascending: true })
+            .range(from, from + 999);
+          if (jErr || !Array.isArray(pageRows) || pageRows.length === 0) break;
+          jobCandidates.push(...pageRows);
+          if (pageRows.length < 1000) break;
+        }
+        const ordered = [...jobCandidates].sort((a, b) =>
           a.tab_type === b.tab_type ? (a.sheet_row_num || 0) - (b.sheet_row_num || 0) : a.tab_type === "confirmed" ? -1 : 1
         );
         for (const jc of ordered) {
@@ -933,12 +965,21 @@ export async function createPulseNote({
           if (vEmp?.id) resolvedEmployeeId = vEmp.id;
         }
         if (!resolvedEmployeeId) {
-          const { data: emps } = await sb.from("pulse_employees").select("id, employee_name").eq("client_id", clientRow.id).limit(500);
-          for (const e of emps || []) {
-            if (e.employee_name && buildEmployeeNoteKey(e.employee_name) === cleanKey) {
-              resolvedEmployeeId = e.id;
-              break;
+          for (let from = 0; !resolvedEmployeeId; from += 1000) {
+            const { data: emps } = await sb
+              .from("pulse_employees")
+              .select("id, employee_name")
+              .eq("client_id", clientRow.id)
+              .order("id", { ascending: true })
+              .range(from, from + 999);
+            if (!Array.isArray(emps) || emps.length === 0) break;
+            for (const e of emps) {
+              if (e.employee_name && buildEmployeeNoteKey(e.employee_name) === cleanKey) {
+                resolvedEmployeeId = e.id;
+                break;
+              }
             }
+            if (emps.length < 1000) break;
           }
         }
       } else if (cleanType === "outgoing" || cleanType === "contractor" || cleanType === "dividend") {
@@ -948,19 +989,28 @@ export async function createPulseNote({
         }
         if (!resolvedOutgoingItemId) {
           const targetOutKey = cleanParentKey || cleanKey;
-          const { data: outs } = await sb.from("pulse_outgoing_items").select("id, section, name").eq("client_id", clientRow.id).limit(1000);
-          for (const o of outs || []) {
-            if (!o.name) continue;
-            const k =
-              o.section === "contractor" || o.section === "making_up_cos"
-                ? buildContractorRowNoteKey(o.name)
-                : o.section === "dividend"
-                  ? buildDividendRowNoteKey(o.name)
-                  : buildOutgoingRowNoteKey(o.name);
-            if (k === targetOutKey || k === cleanKey) {
-              resolvedOutgoingItemId = o.id;
-              break;
+          for (let from = 0; !resolvedOutgoingItemId; from += 1000) {
+            const { data: outs } = await sb
+              .from("pulse_outgoing_items")
+              .select("id, section, name")
+              .eq("client_id", clientRow.id)
+              .order("id", { ascending: true })
+              .range(from, from + 999);
+            if (!Array.isArray(outs) || outs.length === 0) break;
+            for (const o of outs) {
+              if (!o.name) continue;
+              const k =
+                o.section === "contractor" || o.section === "making_up_cos"
+                  ? buildContractorRowNoteKey(o.name)
+                  : o.section === "dividend"
+                    ? buildDividendRowNoteKey(o.name)
+                    : buildOutgoingRowNoteKey(o.name);
+              if (k === targetOutKey || k === cleanKey) {
+                resolvedOutgoingItemId = o.id;
+                break;
+              }
             }
+            if (outs.length < 1000) break;
           }
         }
       } else if (cleanType === "contractor_bill") {
@@ -972,22 +1022,41 @@ export async function createPulseNote({
           }
         }
         if (!resolvedContractorEntryId) {
-          const { data: ces } = await sb.from("pulse_contractor_entries").select("id, outgoing_item_id, external_app_id").eq("client_id", clientRow.id).neq("external_app_id", "").limit(2000);
-          for (const ce of ces || []) {
-            if (ce.external_app_id && buildContractorBillNoteKey("", "", { appId: ce.external_app_id }) === cleanKey) {
-              resolvedContractorEntryId = ce.id;
-              if (ce.outgoing_item_id) resolvedOutgoingItemId = ce.outgoing_item_id;
-              break;
+          for (let from = 0; !resolvedContractorEntryId; from += 1000) {
+            const { data: ces } = await sb
+              .from("pulse_contractor_entries")
+              .select("id, outgoing_item_id, external_app_id")
+              .eq("client_id", clientRow.id)
+              .neq("external_app_id", "")
+              .order("id", { ascending: true })
+              .range(from, from + 999);
+            if (!Array.isArray(ces) || ces.length === 0) break;
+            for (const ce of ces) {
+              if (ce.external_app_id && buildContractorBillNoteKey("", "", { appId: ce.external_app_id }) === cleanKey) {
+                resolvedContractorEntryId = ce.id;
+                if (ce.outgoing_item_id) resolvedOutgoingItemId = ce.outgoing_item_id;
+                break;
+              }
             }
+            if (ces.length < 1000) break;
           }
         }
         if (!resolvedOutgoingItemId && cleanParentKey) {
-          const { data: outs } = await sb.from("pulse_outgoing_items").select("id, section, name").eq("client_id", clientRow.id).limit(1000);
-          for (const o of outs || []) {
-            if (o.name && (o.section === "contractor" || o.section === "making_up_cos") && buildContractorRowNoteKey(o.name) === cleanParentKey) {
-              resolvedOutgoingItemId = o.id;
-              break;
+          for (let from = 0; !resolvedOutgoingItemId; from += 1000) {
+            const { data: outs } = await sb
+              .from("pulse_outgoing_items")
+              .select("id, section, name")
+              .eq("client_id", clientRow.id)
+              .order("id", { ascending: true })
+              .range(from, from + 999);
+            if (!Array.isArray(outs) || outs.length === 0) break;
+            for (const o of outs) {
+              if (o.name && (o.section === "contractor" || o.section === "making_up_cos") && buildContractorRowNoteKey(o.name) === cleanParentKey) {
+                resolvedOutgoingItemId = o.id;
+                break;
+              }
             }
+            if (outs.length < 1000) break;
           }
         }
       }

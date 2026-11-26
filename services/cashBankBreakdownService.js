@@ -136,10 +136,17 @@ export function buildRow36FormulaFromAccounts(accounts = []) {
 export async function getClientCashBankBreakdowns(clientName, options = {}) {
   const cleanName = String(clientName || "").trim();
   const empty = { clientName: cleanName, months: createSafeMap_() };
-  if (!cleanName || !isSupabaseConfigured()) return empty;
+  const throwOnError = Boolean(options?.throwOnError);
+  if (!cleanName || !isSupabaseConfigured()) {
+    if (throwOnError && !isSupabaseConfigured()) throw new Error("Supabase is not configured.");
+    return empty;
+  }
 
   const sb = getSupabaseAdmin();
-  if (!sb) return empty;
+  if (!sb) {
+    if (throwOnError) throw new Error("Supabase admin client unavailable.");
+    return empty;
+  }
 
   const forceSource = options?.forceSource || null; // "system_config" | "relational" | null
   const forceMode = options?._forceInputsReadMode || null; // "grid" | "relational" | null
@@ -161,6 +168,9 @@ export async function getClientCashBankBreakdowns(clientName, options = {}) {
         .select("period_ym, source, basis, total_balance, accounts, updated_at, updated_by")
         .eq("client_id", clRow.id);
 
+      if (relErr && throwOnError) {
+        throw new Error(`pulse_cash_bank_balances read failed: ${relErr.message}`);
+      }
       if (!relErr && Array.isArray(relRows)) {
         const months = createSafeMap_();
         for (const row of relRows) {
@@ -195,7 +205,13 @@ export async function getClientCashBankBreakdowns(clientName, options = {}) {
       .eq("key", configKey)
       .maybeSingle();
 
-    if (error || !data?.value || typeof data.value !== "object") {
+    if (error) {
+      if (throwOnError) {
+        throw new Error(`system_config cash breakdown load failed (${cleanName}): ${error.message}`);
+      }
+      return empty;
+    }
+    if (!data?.value || typeof data.value !== "object") {
       return empty;
     }
 
@@ -225,6 +241,7 @@ export async function getClientCashBankBreakdowns(clientName, options = {}) {
       months,
     };
   } catch (err) {
+    if (throwOnError) throw err;
     console.warn("[cashBankBreakdownService] Read warning:", err.message);
     return empty;
   }

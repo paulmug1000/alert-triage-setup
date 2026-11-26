@@ -57,6 +57,8 @@ const ALLOWED_TENANT_KEY_INFO_FIELDS = [
 // on forward insert and reverse delete during Format v2 snapshot restore.
 export const RELATIONAL_BACKUP_TABLES = Object.freeze([
   // Master domain
+  { table: "sync_schedules", domain: "master" },
+  { table: "client_setup_state", domain: "master" },
   { table: "accounting_invoices", domain: "master" },
   { table: "accounting_direct_costs", domain: "master" },
   { table: "accounting_pl_lines", domain: "master" },
@@ -90,10 +92,55 @@ export const RELATIONAL_BACKUP_TABLES = Object.freeze([
   { table: "pulse_cashflow_lines", domain: "client" },
   { table: "pulse_financial_configs", domain: "client" },
   { table: "pulse_client_tab_blueprints", domain: "client" },
+  { table: "pulse_notes", domain: "client" },
+  { table: "pulse_note_replies", domain: "client", keyedBy: "note_id" },
+  { table: "eom_cycles_and_tasks", domain: "client", keyedBy: "client_name" },
+  { table: "alert_memory", domain: "client", keyedBy: "client_name" },
+  { table: "pma_tasks", domain: "client", keyedBy: "client_name" },
 ]);
+
+const CONFIG_CLIENT_PK_TABLES = new Set([
+  "pulse_master_sync_configs",
+  "pulse_recon_configs",
+  "pulse_financial_configs",
+]);
+
+const CLIENT_NAME_BACKUP_TABLES = ["eom_cycles_and_tasks", "alert_memory", "pma_tasks"];
+
+function sortChronologicalLogs_(table, rows) {
+  if (!Array.isArray(rows) || rows.length <= 1) return rows;
+  const tsField = table === "pulse_automation_logs" ? "logged_at" : "executed_at";
+  return [...rows].sort((a, b) => {
+    const ta = a?.[tsField] ? Date.parse(a[tsField]) : 0;
+    const tb = b?.[tsField] ? Date.parse(b[tsField]) : 0;
+    if (ta !== tb) return ta - tb;
+    const sa = Number(a?.sort_seq ?? 0);
+    const sb = Number(b?.sort_seq ?? 0);
+    if (sa !== sb) return sa - sb;
+    return String(a?.id || "").localeCompare(String(b?.id || ""));
+  });
+}
+
+async function fetchPaginatedEq_(sb, table, col, val, orderCol = "id") {
+  const rows = [];
+  for (let from = 0; ; from += 1000) {
+    const { data, error } = await sb
+      .from(table)
+      .select("*")
+      .eq(col, val)
+      .order(orderCol, { ascending: true })
+      .range(from, from + 999);
+    if (error) throw new Error(`Snapshot read failed on ${table}: ${error.message}`);
+    if (!Array.isArray(data) || data.length === 0) break;
+    rows.push(...data);
+    if (data.length < 1000) break;
+  }
+  return rows;
+}
 
 export async function collectClientRelationalSnapshotData(sb, clientRow) {
   const clientId = clientRow?.id;
+  const clientName = String(clientRow?.client_name || "").trim();
   if (!sb || !clientId) {
     throw new Error("Client ID is required to collect relational snapshot data.");
   }
@@ -102,29 +149,62 @@ export async function collectClientRelationalSnapshotData(sb, clientRow) {
   const tableCounts = Object.create(null);
   let totalRelationalRows = 0;
 
-  // Fetch 5 tables at a time with pagination (handles >1000 rows cleanly without timeouts)
-  for (let i = 0; i < RELATIONAL_BACKUP_TABLES.length; i += 5) {
-    const batch = RELATIONAL_BACKUP_TABLES.slice(i, i + 5);
+  const clientIdTables = RELATIONAL_BACKUP_TABLES.filter((t) => !t.keyedBy || t.keyedBy === "client_id");
+  // Fetch 5 tables at a time with deterministic pagination (handles >1000 rows cleanly without timeouts)
+  for (let i = 0; i < clientIdTables.length; i += 5) {
+    const batch = clientIdTables.slice(i, i + 5);
     const results = await Promise.all(
       batch.map(async ({ table }) => {
-        const rows = [];
-        for (let from = 0; ; from += 1000) {
-          const { data, error } = await sb
-            .from(table)
-            .select("*")
-            .eq("client_id", clientId)
-            .range(from, from + 999);
-          if (error) {
-            throw new Error(`Snapshot read failed on ${table}: ${error.message}`);
-          }
-          if (!Array.isArray(data) || data.length === 0) break;
-          rows.push(...data);
-          if (data.length < 1000) break;
+        const orderCol = CONFIG_CLIENT_PK_TABLES.has(table) ? "client_id" : "id";
+        let rows = await fetchPaginatedEq_(sb, table, "client_id", clientId, orderCol);
+        if (table === "pulse_automation_logs" || table === "pulse_execution_logs") {
+          rows = sortChronologicalLogs_(table, rows);
         }
         return { table, rows };
       })
     );
     for (const { table, rows } of results) {
+      tables[table] = rows;
+      tableCounts[table] = rows.length;
+      totalRelationalRows += rows.length;
+    }
+  }
+
+  // Child table: pulse_note_replies (keyed by note_id)
+  const noteIds = (tables.pulse_notes || []).map((n) => n?.id).filter(Boolean);
+  const replyRows = [];
+  for (let i = 0; i < noteIds.length; i += 200) {
+    const chunk = noteIds.slice(i, i + 200);
+    for (let from = 0; ; from += 1000) {
+      const { data, error } = await sb
+        .from("pulse_note_replies")
+        .select("*")
+        .in("note_id", chunk)
+        .order("id", { ascending: true })
+        .range(from, from + 999);
+      if (error) throw new Error(`Snapshot read failed on pulse_note_replies: ${error.message}`);
+      if (!Array.isArray(data) || data.length === 0) break;
+      replyRows.push(...data);
+      if (data.length < 1000) break;
+    }
+  }
+  tables.pulse_note_replies = replyRows;
+  tableCounts.pulse_note_replies = replyRows.length;
+  totalRelationalRows += replyRows.length;
+
+  // Client-name keyed workflow tables (eom_cycles_and_tasks, alert_memory, pma_tasks)
+  for (const tbl of CLIENT_NAME_BACKUP_TABLES) {
+    tables[tbl] = [];
+    tableCounts[tbl] = 0;
+  }
+  if (clientName) {
+    const extraResults = await Promise.all(
+      CLIENT_NAME_BACKUP_TABLES.map(async (tbl) => ({
+        table: tbl,
+        rows: await fetchPaginatedEq_(sb, tbl, "client_name", clientName, "id"),
+      }))
+    );
+    for (const { table, rows } of extraResults) {
       tables[table] = rows;
       tableCounts[table] = rows.length;
       totalRelationalRows += rows.length;
@@ -748,12 +828,18 @@ export async function restoreClientSnapshot({
 
   const { data: cfgRow } = await sb
     .from("clients")
-    .select("id, client_name")
+    .select("id, client_name, grid_storage_retired, client_sheet_id, master_sheet_id")
     .ilike("client_name", escapeIlikeExact(targetClientName))
     .maybeSingle();
 
   const canonicalClient = cfgRow?.client_name || targetClientName;
   const clientId = cfgRow?.id || payload.clientId || null;
+
+  if (payload.formatVersion !== 2 && cfgRow?.grid_storage_retired) {
+    throw new Error(
+      `Cannot restore legacy Format v1 grid snapshot onto "${canonicalClient}" because grid storage is retired. Restore a Format v2 relational snapshot instead.`
+    );
+  }
 
   if (payload.formatVersion === 2 && payload.tables && typeof payload.tables === "object") {
     if (!clientId) {
@@ -770,7 +856,11 @@ export async function restoreClientSnapshot({
           ? new Set(["master", "recon"])
           : new Set(["master", "recon", "client"]);
 
-    const targetTables = RELATIONAL_BACKUP_TABLES.filter((t) => allowedDomains.has(t.domain));
+    const isCrossClient = Boolean(payload.clientId && payload.clientId !== clientId);
+    const hasNotesInSnapshot = Array.isArray(payload.tables.pulse_notes);
+    const targetTables = RELATIONAL_BACKUP_TABLES.filter(
+      (t) => (!t.keyedBy || t.keyedBy === "client_id") && allowedDomains.has(t.domain)
+    );
 
     let preRestoreSnapshot = null;
     if (createPreRestoreBackup) {
@@ -786,28 +876,114 @@ export async function restoreClientSnapshot({
       }
     }
 
+    // Pre-v2.350 compatibility: snapshot live pulse_notes FKs before parent deletes if snapshot lacks pulse_notes
+    let preservedNotesFks = [];
+    if (allowedDomains.has("client") && !hasNotesInSnapshot) {
+      preservedNotesFks = await fetchPaginatedEq_(sb, "pulse_notes", "client_id", clientId, "id").catch(() => []);
+    }
+
     // 1. Delete existing rows in reverse topological order (child tables before parents)
+    if (allowedDomains.has("client")) {
+      if (hasNotesInSnapshot) {
+        const existingNotes = await fetchPaginatedEq_(sb, "pulse_notes", "client_id", clientId, "id").catch(() => []);
+        const oldNoteIds = existingNotes.map((n) => n?.id).filter(Boolean);
+        for (let i = 0; i < oldNoteIds.length; i += 200) {
+          const { error: repDelErr } = await sb
+            .from("pulse_note_replies")
+            .delete()
+            .in("note_id", oldNoteIds.slice(i, i + 200));
+          if (repDelErr) throw new Error(`Format v2 restore delete failed on pulse_note_replies: ${repDelErr.message}`);
+        }
+      }
+      for (const tbl of CLIENT_NAME_BACKUP_TABLES) {
+        if (!Array.isArray(payload.tables[tbl])) continue;
+        const { error: cnDelErr } = await sb.from(tbl).delete().eq("client_name", canonicalClient);
+        if (cnDelErr) throw new Error(`Format v2 restore delete failed on ${tbl}: ${cnDelErr.message}`);
+      }
+    }
+
     for (const { table } of [...targetTables].reverse()) {
+      if (table === "pulse_notes" && !hasNotesInSnapshot) continue;
       const { error: delErr } = await sb.from(table).delete().eq("client_id", clientId);
       if (delErr) {
         throw new Error(`Format v2 restore delete failed on ${table}: ${delErr.message}`);
       }
     }
 
+    // Cross-client UUID remap table so importing Client A onto Client B never collides on PKs
+    const uuidRemap = new Map();
+    const fkCols = [
+      "retainer_series_id",
+      "job_id",
+      "employee_id",
+      "outgoing_item_id",
+      "contractor_entry_id",
+      "note_id",
+      "accounting_invoice_id",
+      "accounting_direct_cost_id",
+    ];
+    if (isCrossClient) {
+      for (const { table } of targetTables) {
+        for (const row of Array.isArray(payload.tables[table]) ? payload.tables[table] : []) {
+          if (row?.id) uuidRemap.set(row.id, randomUUID());
+        }
+      }
+      for (const tbl of ["pulse_note_replies", ...CLIENT_NAME_BACKUP_TABLES]) {
+        for (const row of Array.isArray(payload.tables[tbl]) ? payload.tables[tbl] : []) {
+          if (row?.id) uuidRemap.set(row.id, randomUUID());
+        }
+      }
+    }
+
+    const sanitizeAndStampRow_ = (row, tableName) => {
+      const clean = Object.create(null);
+      for (const [k, v] of Object.entries(row || {})) {
+        if (k === "__proto__" || k === "constructor" || k === "prototype") continue;
+        clean[k] = v;
+      }
+      if (isCrossClient && clean.id) {
+        clean.id = uuidRemap.get(clean.id) || randomUUID();
+      }
+      if (isCrossClient) {
+        for (const fkCol of fkCols) {
+          if (clean[fkCol]) {
+            clean[fkCol] = uuidRemap.has(clean[fkCol]) ? uuidRemap.get(clean[fkCol]) : null;
+          }
+        }
+      }
+      if ("client_id" in clean || tableName !== "pulse_note_replies") {
+        clean.client_id = clientId;
+      }
+      if (tableName === "pulse_note_replies") {
+        delete clean.client_id;
+      }
+      if ("client_name" in clean) clean.client_name = canonicalClient;
+      if (tableName === "pulse_automation_logs" || tableName === "pulse_execution_logs") {
+        delete clean.sort_seq;
+      }
+      return clean;
+    };
+
     // 2. Insert restored rows in forward topological order (parents before children)
     const nowIsoV2 = new Date().toISOString();
     let restoredRowsCount = 0;
+    const restoredParentIds = {
+      pulse_jobs: new Set(),
+      pulse_employees: new Set(),
+      pulse_outgoing_items: new Set(),
+      pulse_contractor_entries: new Set(),
+    };
+
     for (const { table } of targetTables) {
-      const srcRows = Array.isArray(payload.tables[table]) ? payload.tables[table] : [];
+      if (table === "pulse_notes" && !hasNotesInSnapshot) continue;
+      let srcRows = Array.isArray(payload.tables[table]) ? payload.tables[table] : [];
       if (srcRows.length === 0) continue;
+      if (table === "pulse_automation_logs" || table === "pulse_execution_logs") {
+        srcRows = sortChronologicalLogs_(table, srcRows);
+      }
       const stamped = srcRows.map((row) => {
-        const clean = Object.create(null);
-        for (const [k, v] of Object.entries(row || {})) {
-          if (k === "__proto__" || k === "constructor" || k === "prototype") continue;
-          clean[k] = v;
-        }
-        clean.client_id = clientId;
-        if ("client_name" in clean) clean.client_name = canonicalClient;
+        const clean = sanitizeAndStampRow_(row, table);
+        if (restoredParentIds[table] && clean.id) restoredParentIds[table].add(clean.id);
         return clean;
       });
       for (let i = 0; i < stamped.length; i += 200) {
@@ -818,6 +994,60 @@ export async function restoreClientSnapshot({
         }
       }
       restoredRowsCount += stamped.length;
+    }
+
+    if (allowedDomains.has("client")) {
+      if (hasNotesInSnapshot && Array.isArray(payload.tables.pulse_note_replies) && payload.tables.pulse_note_replies.length > 0) {
+        const stampedReplies = payload.tables.pulse_note_replies.map((r) => sanitizeAndStampRow_(r, "pulse_note_replies"));
+        for (let i = 0; i < stampedReplies.length; i += 200) {
+          const { error: repInsErr } = await sb.from("pulse_note_replies").insert(stampedReplies.slice(i, i + 200));
+          if (repInsErr) throw new Error(`Format v2 restore insert failed on pulse_note_replies: ${repInsErr.message}`);
+        }
+        restoredRowsCount += stampedReplies.length;
+      }
+
+      for (const tbl of CLIENT_NAME_BACKUP_TABLES) {
+        const extraRows = Array.isArray(payload.tables[tbl]) ? payload.tables[tbl] : [];
+        if (extraRows.length === 0) continue;
+        const stampedExtra = extraRows.map((row) => {
+          const clean = sanitizeAndStampRow_(row, tbl);
+          delete clean.client_id;
+          clean.client_name = canonicalClient;
+          return clean;
+        });
+        for (let i = 0; i < stampedExtra.length; i += 200) {
+          const { error: exInsErr } = await sb.from(tbl).insert(stampedExtra.slice(i, i + 200));
+          if (exInsErr) throw new Error(`Format v2 restore insert failed on ${tbl}: ${exInsErr.message}`);
+        }
+        restoredRowsCount += stampedExtra.length;
+      }
+
+      // Restore surviving FK links on pre-v2.350 live notes after parent deletes/inserts
+      if (!hasNotesInSnapshot && preservedNotesFks.length > 0) {
+        for (const note of preservedNotesFks) {
+          const nextJobId = note.job_id && restoredParentIds.pulse_jobs.has(note.job_id) ? note.job_id : null;
+          const nextEmpId = note.employee_id && restoredParentIds.pulse_employees.has(note.employee_id) ? note.employee_id : null;
+          const nextOutId = note.outgoing_item_id && restoredParentIds.pulse_outgoing_items.has(note.outgoing_item_id) ? note.outgoing_item_id : null;
+          const nextConId = note.contractor_entry_id && restoredParentIds.pulse_contractor_entries.has(note.contractor_entry_id) ? note.contractor_entry_id : null;
+          if (
+            nextJobId !== note.job_id ||
+            nextEmpId !== note.employee_id ||
+            nextOutId !== note.outgoing_item_id ||
+            nextConId !== note.contractor_entry_id ||
+            nextJobId || nextEmpId || nextOutId || nextConId
+          ) {
+            await sb
+              .from("pulse_notes")
+              .update({
+                job_id: nextJobId,
+                employee_id: nextEmpId,
+                outgoing_item_id: nextOutId,
+                contractor_entry_id: nextConId,
+              })
+              .eq("id", note.id);
+          }
+        }
+      }
     }
 
     const keyInfoPayloadV2 = payload.config?.keyInfo || (payload.config && !payload.config.master_mode ? payload.config : null);
@@ -833,16 +1063,25 @@ export async function restoreClientSnapshot({
           cleanKi[field] = keyInfoPayloadV2[field];
         }
       }
-      await sb.from("tenant_key_info").upsert([cleanKi], { onConflict: "client_id" }).catch(() => { });
+      const { error: kiErr } = await sb.from("tenant_key_info").upsert([cleanKi], { onConflict: "client_id" });
+      if (kiErr) {
+        console.warn(`[supabaseBackupService] Could not restore tenant_key_info for ${canonicalClient}:`, kiErr.message);
+      }
     }
 
-    invalidateMasterEngineCache(canonicalClient);
-    await import("./relationalMasterService.js")
-      .then(({ invalidateClientRelationalMasterCache }) => invalidateClientRelationalMasterCache(canonicalClient))
-      .catch(() => { });
-    await import("./relationalReconService.js")
-      .then(({ invalidateClientRelationalReconCache }) => invalidateClientRelationalReconCache(canonicalClient))
-      .catch(() => { });
+    invalidateMasterEngineCache(canonicalClient, null, null, { invalidateSheetContext: true });
+    await Promise.all([
+      import("./relationalMasterService.js").then((m) => m.invalidateClientRelationalMasterCache(canonicalClient)).catch(() => { }),
+      import("./relationalReconService.js").then((m) => m.invalidateClientRelationalReconCache(canonicalClient)).catch(() => { }),
+      import("./relationalJobsService.js").then((m) => m.invalidateClientRelationalJobsCache?.(canonicalClient)).catch(() => { }),
+      import("./relationalInputsService.js").then((m) => m.invalidateClientRelationalInputsCache?.(canonicalClient)).catch(() => { }),
+      import("./relationalFinancialsService.js").then((m) => m.invalidateClientRelationalFinancialsCache?.(canonicalClient)).catch(() => { }),
+      import("./nativeClientCalcService.js").then((m) => m.invalidateClientNativeCalcCache?.(canonicalClient)).catch(() => { }),
+      import("./nativeMasterComparisonService.js").then((m) => m.invalidateClientMasterCompCache?.(canonicalClient)).catch(() => { }),
+      cfgRow?.client_sheet_id
+        ? import("./cacheService.js").then((m) => m.invalidatePmaClientCache(cfgRow.client_sheet_id, cfgRow.master_sheet_id || null, ["all"])).catch(() => { })
+        : Promise.resolve(),
+    ]);
 
     return {
       formatVersion: 2,
@@ -851,6 +1090,7 @@ export async function restoreClientSnapshot({
       sourceCreatedAt: payload.createdAt || null,
       scope,
       restoredTablesCount: targetTables.length,
+      restoredTabsCount: restoredRowsCount,
       restoredRowsCount,
       restoredMasterCount: 0,
       restoredReconCount: Array.isArray(payload.tables.bank_recon_periods) ? payload.tables.bank_recon_periods.length : 0,

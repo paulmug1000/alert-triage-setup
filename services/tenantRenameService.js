@@ -22,7 +22,7 @@ import { RELATIONAL_BACKUP_TABLES } from "./supabaseBackupService.js";
 
 const CLIENT_NAME_ONLY_TABLES = [
   "activity_logs",
-  "eom_cycles_and_tasks",
+  "pulse_notes",
   "accounting_invoices",
   "accounting_direct_costs",
   "accounting_pl_lines",
@@ -43,6 +43,7 @@ const SYSTEM_CONFIG_KEYS = [
   "eom_revenue_checks_state",
   "amd_tab_error_notifications",
   "supabase_client_backups_index",
+  "client_parity_monitor_state",
   "assigned_expenses_state",
 ];
 
@@ -377,12 +378,17 @@ async function renameKeyedTenantTables_({
     summary.tablesUpdated.push(table);
   }
 
-  // alert_memory: rename client_name and patch clientName inside data_snapshot JSON
-  const { data: alertRows } = await sb
-    .from("alert_memory")
-    .select("id, data_snapshot")
-    .eq("client_name", oldClientName);
-  if (Array.isArray(alertRows) && alertRows.length > 0) {
+  // alert_memory: paginated rename client_name and patch clientName inside data_snapshot JSON
+  let alertUpdated = 0;
+  for (let from = 0; ; from += 1000) {
+    const { data: alertRows, error: alertReadErr } = await sb
+      .from("alert_memory")
+      .select("id, data_snapshot")
+      .eq("client_name", oldClientName)
+      .order("id", { ascending: true })
+      .range(from, from + 999);
+    if (alertReadErr) throw new Error(`Failed reading alert_memory for rename: ${alertReadErr.message}`);
+    if (!Array.isArray(alertRows) || alertRows.length === 0) break;
     for (const aRow of alertRows) {
       const snapRes = replaceSnapshotClientName_(aRow.data_snapshot, oldClientName, newClientName);
       const patch = { client_name: newClientName };
@@ -390,16 +396,23 @@ async function renameKeyedTenantTables_({
       const { error } = await sb.from("alert_memory").update(patch).eq("id", aRow.id);
       if (error) throw new Error(`Failed to update alert_memory (${aRow.id}): ${error.message}`);
     }
-    summary.alertMemoryRowsUpdated = alertRows.length;
+    alertUpdated += alertRows.length;
+    if (alertRows.length < 1000) break;
   }
+  summary.alertMemoryRowsUpdated = alertUpdated;
   summary.tablesUpdated.push("alert_memory");
 
-  // pma_tasks: rename client_name and patch clientName inside data_snapshot JSONB
-  const { data: taskRows } = await sb
-    .from("pma_tasks")
-    .select("id, data_snapshot")
-    .eq("client_name", oldClientName);
-  if (Array.isArray(taskRows) && taskRows.length > 0) {
+  // pma_tasks: paginated rename client_name and patch clientName inside data_snapshot JSONB
+  let tasksUpdated = 0;
+  for (let from = 0; ; from += 1000) {
+    const { data: taskRows, error: taskReadErr } = await sb
+      .from("pma_tasks")
+      .select("id, data_snapshot")
+      .eq("client_name", oldClientName)
+      .order("id", { ascending: true })
+      .range(from, from + 999);
+    if (taskReadErr) throw new Error(`Failed reading pma_tasks for rename: ${taskReadErr.message}`);
+    if (!Array.isArray(taskRows) || taskRows.length === 0) break;
     for (const tRow of taskRows) {
       const snapRes = replaceSnapshotClientName_(tRow.data_snapshot, oldClientName, newClientName);
       const patch = { client_name: newClientName };
@@ -407,9 +420,37 @@ async function renameKeyedTenantTables_({
       const { error } = await sb.from("pma_tasks").update(patch).eq("id", tRow.id);
       if (error) throw new Error(`Failed to update pma_tasks (${tRow.id}): ${error.message}`);
     }
-    summary.pmaTasksRowsUpdated = taskRows.length;
+    tasksUpdated += taskRows.length;
+    if (taskRows.length < 1000) break;
   }
+  summary.pmaTasksRowsUpdated = tasksUpdated;
   summary.tablesUpdated.push("pma_tasks");
+
+  // eom_cycles_and_tasks: rename client_name and patch JSONB payloads
+  for (let from = 0; ; from += 1000) {
+    const { data: eomRows, error: eomReadErr } = await sb
+      .from("eom_cycles_and_tasks")
+      .select("id, tasks_payload, narrative_payload")
+      .eq("client_name", oldClientName)
+      .order("id", { ascending: true })
+      .range(from, from + 999);
+    if (eomReadErr) {
+      summary.warnings.push(`eom_cycles_and_tasks lookup warning: ${eomReadErr.message}`);
+      break;
+    }
+    if (!Array.isArray(eomRows) || eomRows.length === 0) break;
+    for (const eRow of eomRows) {
+      const patch = { client_name: newClientName };
+      const tRes = renameClientReferencesRecursive_(eRow.tasks_payload, oldClientName, newClientName);
+      if (tRes.changed) patch.tasks_payload = tRes.value;
+      const nRes = renameClientReferencesRecursive_(eRow.narrative_payload, oldClientName, newClientName);
+      if (nRes.changed) patch.narrative_payload = nRes.value;
+      const { error: eUpdErr } = await sb.from("eom_cycles_and_tasks").update(patch).eq("id", eRow.id);
+      if (eUpdErr) summary.warnings.push(`eom_cycles_and_tasks (${eRow.id}) update warning: ${eUpdErr.message}`);
+    }
+    if (eomRows.length < 1000) break;
+  }
+  summary.tablesUpdated.push("eom_cycles_and_tasks");
 
   for (const table of CLIENT_NAME_ONLY_TABLES) {
     const { error } = await sb
@@ -425,7 +466,8 @@ async function renameKeyedTenantTables_({
 
   // Phase 2-6D relational tables keyed by client_id / client_name
   const seenRelTables = new Set(CLIENT_NAME_ONLY_TABLES);
-  for (const { table } of RELATIONAL_BACKUP_TABLES) {
+  for (const { table, keyedBy } of RELATIONAL_BACKUP_TABLES) {
+    if (keyedBy && keyedBy !== "client_id") continue;
     if (seenRelTables.has(table)) continue;
     seenRelTables.add(table);
     try {
@@ -572,9 +614,9 @@ async function updateKeyInfoGridsAndSheets_({
     }
   }
 
-  // Also update embedded KeyInfo grids inside native Phase 5/6 relational configs
+  // Also update embedded KeyInfo grids inside native Phase 4/5/6 relational configs
   try {
-    const [{ data: masterSyncCfg }, { data: finCfg }] = await Promise.all([
+    const [{ data: masterSyncCfg }, { data: finCfg }, { data: reconCfg }] = await Promise.all([
       sb
         .from("pulse_master_sync_configs")
         .select("client_id, master_key_info_grid")
@@ -583,6 +625,11 @@ async function updateKeyInfoGridsAndSheets_({
       sb
         .from("pulse_financial_configs")
         .select("client_id, client_key_info_grid")
+        .eq("client_id", clientRow.id)
+        .maybeSingle(),
+      sb
+        .from("pulse_recon_configs")
+        .select("client_id, key_info_grid")
         .eq("client_id", clientRow.id)
         .maybeSingle(),
     ]);
@@ -604,6 +651,16 @@ async function updateKeyInfoGridsAndSheets_({
           .update({ client_key_info_grid: res.grid })
           .eq("client_id", clientRow.id);
         summary.keyInfoTabsUpdated.push("pulse_financial_configs");
+      }
+    }
+    if (Array.isArray(reconCfg?.key_info_grid) && reconCfg.key_info_grid.length > 0) {
+      const res = patchGridB1Cell_(reconCfg.key_info_grid, newClientName);
+      if (res.changed) {
+        await sb
+          .from("pulse_recon_configs")
+          .update({ key_info_grid: res.grid })
+          .eq("client_id", clientRow.id);
+        summary.keyInfoTabsUpdated.push("pulse_recon_configs");
       }
     }
   } catch (cfgErr) {
@@ -644,11 +701,42 @@ async function rewriteTriageRedisAndBustCaches_({
 }) {
   clearAllClientsMemoryCache();
   clearSsrClientsMemoryCache();
-  invalidateMasterEngineCache();
+  invalidateMasterEngineCache(oldClientName, null, null, { invalidateSheetContext: true });
+  invalidateMasterEngineCache(newClientName, null, null, { invalidateSheetContext: true });
   invalidatePrecomputedMemoryCache();
   await invalidateUsersCache();
   await invalidateIntegrationsCache();
-  await invalidatePmaClientCache(clientRow.client_sheet_id, clientRow.master_sheet_id);
+  await invalidatePmaClientCache(clientRow.client_sheet_id, clientRow.master_sheet_id, ["all"]);
+  await Promise.all([
+    import("./relationalMasterService.js").then((m) => {
+      m.invalidateClientRelationalMasterCache(oldClientName);
+      m.invalidateClientRelationalMasterCache(newClientName);
+    }).catch(() => {}),
+    import("./relationalReconService.js").then((m) => {
+      m.invalidateClientRelationalReconCache(oldClientName);
+      m.invalidateClientRelationalReconCache(newClientName);
+    }).catch(() => {}),
+    import("./relationalJobsService.js").then((m) => {
+      m.invalidateClientRelationalJobsCache?.(oldClientName);
+      m.invalidateClientRelationalJobsCache?.(newClientName);
+    }).catch(() => {}),
+    import("./relationalInputsService.js").then((m) => {
+      m.invalidateClientRelationalInputsCache?.(oldClientName);
+      m.invalidateClientRelationalInputsCache?.(newClientName);
+    }).catch(() => {}),
+    import("./relationalFinancialsService.js").then((m) => {
+      m.invalidateClientRelationalFinancialsCache?.(oldClientName);
+      m.invalidateClientRelationalFinancialsCache?.(newClientName);
+    }).catch(() => {}),
+    import("./nativeClientCalcService.js").then((m) => {
+      m.invalidateClientNativeCalcCache?.(oldClientName);
+      m.invalidateClientNativeCalcCache?.(newClientName);
+    }).catch(() => {}),
+    import("./nativeMasterComparisonService.js").then((m) => {
+      m.invalidateClientMasterCompCache?.(oldClientName);
+      m.invalidateClientMasterCompCache?.(newClientName);
+    }).catch(() => {}),
+  ]);
 
   const canonicalAcId = acId || getCanonicalAcSheetId();
   const redisReady = await ensureRedisConnected().catch(() => false);
@@ -660,6 +748,12 @@ async function rewriteTriageRedisAndBustCaches_({
       `pulse:portal:allClients:${canonicalAcId}`,
       "pulse:integrations:status_all",
     ];
+    if (clientRow.master_sheet_id) {
+      keysToDelete.push(`pulse:client_settings:${clientRow.master_sheet_id}`);
+    }
+    if (clientRow.client_sheet_id) {
+      keysToDelete.push(`pulse:client_settings:${clientRow.client_sheet_id}`);
+    }
     if (process.env.AUTOMATION_COMMANDER_SHEET_ID) {
       keysToDelete.push(
         `pulse:all_clients:${process.env.AUTOMATION_COMMANDER_SHEET_ID}`,

@@ -8,7 +8,7 @@
  * when onboarding a client.
  */
 
-import { resolveLiveSessionUser } from "../../../services/authService.js";
+import { resolveLiveSessionUser, checkRateLimit, getTrustedClientIp } from "../../../services/authService.js";
 import { getDriveClient, withRetry } from "../../../services/sheetsClient.js";
 import { DEFAULT_CLIENTS_FOLDER_ID } from "../../../services/setupService.js";
 
@@ -24,6 +24,11 @@ export default async function handler(req, res) {
 
   if (sessionUser.isReadOnly || (!sessionUser.isAdmin && sessionUser.role !== "Admin")) {
     return res.status(403).json({ success: false, error: "Only administrators can browse client Drive folders." });
+  }
+
+  const rl = await checkRateLimit("setup-drive-folders", sessionUser.email || getTrustedClientIp(req), 60, 60);
+  if (!rl.allowed) {
+    return res.status(429).json({ success: false, error: "Too many requests. Please slow down." });
   }
 
   const rawParentId = String(req.query.parentId || DEFAULT_CLIENTS_FOLDER_ID).trim();

@@ -8,7 +8,7 @@
  * Strictly restricted to Admins.
  */
 
-import { resolveLiveSessionUser } from "../../../services/authService.js";
+import { resolveLiveSessionUser, checkRateLimit, getTrustedClientIp } from "../../../services/authService.js";
 import { getSheetsClient } from "../../../services/sheetsClient.js";
 import {
   getSetupProcessTemplate,
@@ -31,6 +31,11 @@ export default async function handler(req, res) {
   const isUserAdmin = Boolean(!sessionUser.isReadOnly && (sessionUser.isAdmin || sessionUser.role === "Admin"));
   if (!isUserAdmin) {
     return res.status(403).json({ success: false, error: "Access denied: Setup process configuration requires admin privileges." });
+  }
+
+  const rl = await checkRateLimit("setup-process-template", sessionUser.email || getTrustedClientIp(req), 60, 60);
+  if (!rl.allowed) {
+    return res.status(429).json({ success: false, error: "Too many requests. Please slow down." });
   }
 
   const sheets = await getSheetsClient();
@@ -62,6 +67,9 @@ export default async function handler(req, res) {
         const { phases, tasks } = req.body;
         if (!Array.isArray(tasks) || !Array.isArray(phases)) {
           return res.status(400).json({ success: false, error: "Missing phases or tasks array." });
+        }
+        if (phases.length > 50 || tasks.length > 500) {
+          return res.status(400).json({ success: false, error: "Template size exceeds maximum limits (50 phases, 500 tasks)." });
         }
         const updated = await saveSetupProcessTemplate(sheets, { phases, tasks }, sessionUser.email);
         return res.status(200).json({ success: true, ...updated });

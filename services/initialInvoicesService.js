@@ -22,7 +22,10 @@ import { parseYear0Date } from "./year0SetupService.js";
 import { provisionRetainerChildRows_, retFindTrueLastRow } from "./retainers.js";
 import { getToleranceValues } from "./sharedHelpers.js";
 import { invalidatePmaClientCache } from "./cacheService.js";
-import { flushImmediateAndScheduleBackgroundClientRecomputes } from "./masterEngineService.js";
+import {
+  flushImmediateAndScheduleBackgroundClientRecomputes,
+  resolveClientSheetIdFromMaster,
+} from "./masterEngineService.js";
 import { logPmaActivity } from "./pmaLogger.js";
 import { sanitizeFormulaInput } from "./userPermissions.js";
 import {
@@ -1262,7 +1265,11 @@ export async function importAndAnalyseInitialInvoices({ clientName, masterSheetI
     throw new Error("A valid start date is required in company settings before importing invoices.");
   }
   const currency = String(vr[1]?.values?.[0]?.[0] || "GBP").trim() || "GBP";
-  const cleanClientId = resolveCleanId(vr[2]?.values?.[0]?.[0] || "");
+  const cleanClientId = await resolveClientSheetIdFromMaster({
+    clientName,
+    masterSheetId: cleanMasterId,
+    rawKeyInfoX28: vr[2]?.values?.[0]?.[0] || "",
+  });
   if (!cleanClientId) {
     throw new Error("Client workspace sheet ID is not configured in settings.");
   }
@@ -1432,7 +1439,11 @@ export async function createInitialRetainerJobs({
     })
   );
   const startDate = parseYear0Date(keyResp.data?.valueRanges?.[0]?.values?.[0]?.[0]);
-  const cleanClientId = resolveCleanId(keyResp.data?.valueRanges?.[1]?.values?.[0]?.[0] || "");
+  const cleanClientId = await resolveClientSheetIdFromMaster({
+    clientName,
+    masterSheetId: cleanMasterId,
+    rawKeyInfoX28: keyResp.data?.valueRanges?.[1]?.values?.[0]?.[0] || "",
+  });
   if (!cleanClientId) throw new Error("Client workspace sheet ID is not configured.");
   const invFormatRule = resolveInvFormatRule(keyResp.data?.valueRanges?.[2]?.values?.[0]?.[0]);
 
@@ -1545,9 +1556,9 @@ export async function createInitialRetainerJobs({
   }
 
   if (cleanClientId.startsWith("sb-") || cleanMasterId.startsWith("sb-")) {
-    await flushImmediateAndScheduleBackgroundClientRecomputes(clientName || cleanMasterId).catch(() => { });
+    await flushImmediateAndScheduleBackgroundClientRecomputes(sheets, clientName || cleanMasterId).catch(() => { });
   }
-  await invalidatePmaClientCache(cleanClientId, clientName, ["jobs", "invoices", "retainers", "cash", "dashboard"]).catch(() => { });
+  await invalidatePmaClientCache(cleanClientId, cleanMasterId, ["jobs", "invoices", "retainers", "cash", "dashboard"]).catch(() => { });
 
   await logPmaActivity(sheets, {
     clientName: clientName || "",
@@ -1582,7 +1593,11 @@ export async function createInitialProjectJobs({
       valueRenderOption: "UNFORMATTED_VALUE",
     })
   );
-  const cleanClientId = resolveCleanId(keyResp.data?.valueRanges?.[0]?.values?.[0]?.[0] || "");
+  const cleanClientId = await resolveClientSheetIdFromMaster({
+    clientName,
+    masterSheetId: cleanMasterId,
+    rawKeyInfoX28: keyResp.data?.valueRanges?.[0]?.values?.[0]?.[0] || "",
+  });
   if (!cleanClientId) throw new Error("Client workspace sheet ID is not configured.");
   const invFormatRule = resolveInvFormatRule(keyResp.data?.valueRanges?.[1]?.values?.[0]?.[0]);
 
@@ -1661,9 +1676,9 @@ export async function createInitialProjectJobs({
   );
 
   if (cleanClientId.startsWith("sb-") || cleanMasterId.startsWith("sb-")) {
-    await flushImmediateAndScheduleBackgroundClientRecomputes(clientName || cleanMasterId).catch(() => { });
+    await flushImmediateAndScheduleBackgroundClientRecomputes(sheets, clientName || cleanMasterId).catch(() => { });
   }
-  await invalidatePmaClientCache(cleanClientId, clientName, ["jobs", "invoices", "retainers", "cash", "dashboard"]).catch(() => { });
+  await invalidatePmaClientCache(cleanClientId, cleanMasterId, ["jobs", "invoices", "retainers", "cash", "dashboard"]).catch(() => { });
 
   await logPmaActivity(sheets, {
     clientName: clientName || "",

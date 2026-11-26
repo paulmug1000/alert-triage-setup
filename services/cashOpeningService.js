@@ -26,7 +26,10 @@ import { assertValidQBRealmId, fetchQuickBooksBankAccounts } from "./quickbooksS
 import { parseYear0Date, parseYear0Number } from "./year0SetupService.js";
 import { parseHeaderMonthMeta_ } from "./salariesService.js";
 import { invalidatePmaClientCache } from "./cacheService.js";
-import { flushImmediateAndScheduleBackgroundClientRecomputes } from "./masterEngineService.js";
+import {
+  flushImmediateAndScheduleBackgroundClientRecomputes,
+  resolveClientSheetIdFromMaster,
+} from "./masterEngineService.js";
 import { logPmaActivity } from "./pmaLogger.js";
 import { sanitizeFormulaInput } from "./userPermissions.js";
 import { redisClient } from "./redisClient.js";
@@ -139,7 +142,11 @@ export async function detectCashOpeningBalances({ clientName, masterSheetId }) {
   const vr = kiResp.data?.valueRanges || [];
   const startDate = parseYear0Date(vr[0]?.values?.[0]?.[0]);
   const currency = String(vr[1]?.values?.[0]?.[0] || "GBP").trim() || "GBP";
-  const cleanClientId = resolveCleanId(vr[2]?.values?.[0]?.[0] || "");
+  const cleanClientId = await resolveClientSheetIdFromMaster({
+    clientName,
+    masterSheetId: cleanMasterId,
+    rawKeyInfoX28: vr[2]?.values?.[0]?.[0] || "",
+  });
   if (!cleanClientId) throw new Error("Client workspace sheet ID is not configured.");
 
   const cashAcctPairs = (vr[3]?.values || [])
@@ -373,7 +380,11 @@ export async function saveCashOpeningBalances({ clientName, masterSheetId, updat
       valueRenderOption: "UNFORMATTED_VALUE",
     })
   );
-  const cleanClientId = resolveCleanId(kiResp.data?.values?.[0]?.[0] || "");
+  const cleanClientId = await resolveClientSheetIdFromMaster({
+    clientName,
+    masterSheetId: cleanMasterId,
+    rawKeyInfoX28: kiResp.data?.values?.[0]?.[0] || "",
+  });
   if (!cleanClientId) throw new Error("Client workspace sheet ID is not configured.");
 
   // Resolve valid monthly column letters strictly server-side from Client!Cash row 1 headers
@@ -483,9 +494,9 @@ export async function saveCashOpeningBalances({ clientName, masterSheetId, updat
   }
 
   if (cleanClientId.startsWith("sb-") || cleanMasterId.startsWith("sb-")) {
-    await flushImmediateAndScheduleBackgroundClientRecomputes(clientName || cleanMasterId).catch(() => {});
+    await flushImmediateAndScheduleBackgroundClientRecomputes(sheets, clientName || cleanMasterId).catch(() => { });
   }
-  await invalidatePmaClientCache(cleanClientId, clientName, ["cash", "dashboard", "views", "all"]).catch(() => {});
+  await invalidatePmaClientCache(cleanClientId, cleanMasterId, ["cash", "dashboard", "views", "all"]).catch(() => { });
 
   await logPmaActivity(sheets, {
     clientName: clientName || "",
@@ -493,7 +504,7 @@ export async function saveCashOpeningBalances({ clientName, masterSheetId, updat
     action: "CASH_OPENING_SAVED",
     summary: `Updated Cash opening figures (${batchData.map((b) => `${b.range}=${b.values[0][0]}`).join(", ")})`,
     details: { updates: batchData },
-  }).catch(() => {});
+  }).catch(() => { });
 
   return {
     success: true,
@@ -789,11 +800,11 @@ export async function saveSetupBankAccounts({
   );
 
   if (cleanMasterId.startsWith("sb-")) {
-    await flushImmediateAndScheduleBackgroundClientRecomputes(clientName || cleanMasterId).catch(() => {});
+    await flushImmediateAndScheduleBackgroundClientRecomputes(sheets, clientName || cleanMasterId).catch(() => { });
   }
-  await invalidatePmaClientCache(cleanMasterId, clientName, ["setup", "settings", "cash", "all"]).catch(() => {});
+  await invalidatePmaClientCache(null, cleanMasterId, ["setup", "settings", "cash", "all"]).catch(() => { });
   if (redisClient?.isOpen && clientName) {
-    await redisClient.del(getSettingsRedisKey(clientName)).catch(() => {});
+    await redisClient.del(getSettingsRedisKey(clientName)).catch(() => { });
   }
 
   const cashCount = cashAccounts.filter((a) => a?.name).length;
@@ -805,7 +816,7 @@ export async function saveSetupBankAccounts({
     action: "BANK_ACCOUNTS_CONFIGURED",
     summary: `Configured ${cashCount} cash bank account(s) and ${nonCashCount} non-cash bank account(s)`,
     details: { cashAccounts, nonCashAccounts },
-  }).catch(() => {});
+  }).catch(() => { });
 
   return {
     success: true,

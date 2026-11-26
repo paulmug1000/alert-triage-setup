@@ -1767,18 +1767,43 @@ export async function getPhase3RelationalOverviewStats(clientsData = []) {
 // 9. TWO-WAY UUID-PRESERVING RECONCILER & BACKFILL
 // ============================================================================
 
-async function syncPulseNotesInputIdsForClient_(supabase, clientId) {
-  const [{ data: notes }, { data: emps }, { data: outs }, { data: entries }] = await Promise.all([
-    supabase
-      .from("pulse_notes")
-      .select("id, entity_type, entity_key, parent_entity_key, employee_id, outgoing_item_id, contractor_entry_id")
+async function fetchPaginatedInputTable_(supabase, tableName, selectCols, clientId, extraFilter = null) {
+  const out = [];
+  for (let from = 0; ; from += 1000) {
+    let q = supabase
+      .from(tableName)
+      .select(selectCols)
       .eq("client_id", clientId)
-      .is("deleted_at", null)
-      .in("entity_type", ["employee", "outgoing", "contractor", "dividend", "contractor_bill"])
-      .limit(1500),
-    supabase.from("pulse_employees").select("id, employee_name").eq("client_id", clientId).limit(500),
-    supabase.from("pulse_outgoing_items").select("id, section, name, sheet_row_num").eq("client_id", clientId).limit(1000),
-    supabase.from("pulse_contractor_entries").select("id, outgoing_item_id, external_app_id").eq("client_id", clientId).neq("external_app_id", "").limit(2000),
+      .order("id", { ascending: true })
+      .range(from, from + 999);
+    if (typeof extraFilter === "function") q = extraFilter(q);
+    const { data, error } = await q;
+    if (error) throw new Error(`Failed loading ${tableName}: ${error.message}`);
+    if (!Array.isArray(data) || data.length === 0) break;
+    out.push(...data);
+    if (data.length < 1000) break;
+  }
+  return out;
+}
+
+async function syncPulseNotesInputIdsForClient_(supabase, clientId) {
+  const [notes, emps, outs, entries] = await Promise.all([
+    fetchPaginatedInputTable_(
+      supabase,
+      "pulse_notes",
+      "id, entity_type, entity_key, parent_entity_key, employee_id, outgoing_item_id, contractor_entry_id",
+      clientId,
+      (q) => q.is("deleted_at", null).in("entity_type", ["employee", "outgoing", "contractor", "dividend", "contractor_bill"])
+    ),
+    fetchPaginatedInputTable_(supabase, "pulse_employees", "id, employee_name", clientId),
+    fetchPaginatedInputTable_(supabase, "pulse_outgoing_items", "id, section, name, sheet_row_num", clientId),
+    fetchPaginatedInputTable_(
+      supabase,
+      "pulse_contractor_entries",
+      "id, outgoing_item_id, external_app_id",
+      clientId,
+      (q) => q.neq("external_app_id", "")
+    ),
   ]);
   if (!Array.isArray(notes) || notes.length === 0) return;
 
@@ -1919,17 +1944,26 @@ async function runSingleInputReconcilePass_(ctx, targetTabs, options = {}) {
           notes_grid: preloaded[tabName].notes || preloaded[tabName].notes_grid || {},
         };
       } else {
-        loadedGrids[tabName] = await getOrLoadVirtualTabGrid_(ctx, "client", tabName, null, { includeNotes: true }).catch(() => ({
+        const strictNative = Boolean(ctx.gridStorageRetired || ctx.clientComputeMode === "native");
+        let rec = null;
+        try {
+          rec = await getOrLoadVirtualTabGrid_(ctx, "client", tabName, null, { includeNotes: true });
+        } catch (err) {
+          if (strictNative) throw err;
+          rec = null;
+        }
+        loadedGrids[tabName] = rec || {
           values_grid: [],
           formulas_grid: [],
           notes_grid: {},
-        }));
+        };
       }
     })
   );
 
   const clMetaResp = await supabase.from("clients").select("metadata").eq("id", ctx.clientId).maybeSingle();
-  const prevMeta = clMetaResp?.data?.metadata && typeof clMetaResp.data.metadata === "object" ? clMetaResp.data.metadata : {};
+  const hasValidClMeta = !clMetaResp?.error && Boolean(clMetaResp?.data);
+  const prevMeta = hasValidClMeta && clMetaResp.data.metadata && typeof clMetaResp.data.metadata === "object" ? clMetaResp.data.metadata : {};
   const prevState = prevMeta.relational_inputs_state && typeof prevMeta.relational_inputs_state === "object" ? prevMeta.relational_inputs_state : {};
   const prevTabHeaders = prevState.tabHeaders && typeof prevState.tabHeaders === "object" ? prevState.tabHeaders : {};
   const nextTabHeaders = { ...prevTabHeaders };
@@ -2062,12 +2096,12 @@ async function runSingleInputReconcilePass_(ctx, targetTabs, options = {}) {
 
   if (tabSet.has("OutgNotes")) {
     const g = loadedGrids.OutgNotes || {};
-    const [existingEntries, accDirect] = await Promise.all([
+    const [existingEntries, accDirectRows] = await Promise.all([
       fetchAllRowsForClient_(supabase, "pulse_contractor_entries", ctx.clientId),
-      supabase.from("accounting_direct_costs").select("id, external_id").eq("client_id", ctx.clientId),
+      fetchPaginatedInputTable_(supabase, "accounting_direct_costs", "id, external_id", ctx.clientId),
     ]);
     const accCostFkByExtId = new Map();
-    for (const r of accDirect?.data || []) {
+    for (const r of accDirectRows || []) {
       const k = normalizeTextKey_(r.external_id);
       if (k) accCostFkByExtId.set(k, r.id);
     }
@@ -2159,20 +2193,28 @@ async function runSingleInputReconcilePass_(ctx, targetTabs, options = {}) {
   }
 
   if (tabSet.has("NBtoFind") || salRollups || outRollups || budRollups) {
-    const { data: existingNb } = await supabase
+    const { data: existingNb, error: nbErr } = await supabase
       .from("pulse_nb_to_find")
       .select("*")
       .eq("client_id", ctx.clientId)
       .maybeSingle();
+    if (nbErr) {
+      throw new Error(`pulse_nb_to_find load failed (${ctx.clientName}): ${nbErr.message}`);
+    }
 
     let baseNbRecord = existingNb;
     if (tabSet.has("NBtoFind") || !existingNb) {
-      const nbG = loadedGrids.NBtoFind ||
-        await getOrLoadVirtualTabGrid_(ctx, "client", "NBtoFind", null, { includeNotes: true }).catch(() => ({
-          values_grid: [],
-          formulas_grid: [],
-          notes_grid: {},
-        }));
+      let nbG = loadedGrids.NBtoFind;
+      if (!nbG) {
+        const strictNative = Boolean(ctx.gridStorageRetired || ctx.clientComputeMode === "native");
+        try {
+          nbG = await getOrLoadVirtualTabGrid_(ctx, "client", "NBtoFind", null, { includeNotes: true });
+        } catch (err) {
+          if (strictNative) throw err;
+          nbG = null;
+        }
+        nbG = nbG || { values_grid: [], formulas_grid: [], notes_grid: {} };
+      }
       baseNbRecord = parseNbToFindTabToRecord({
         clientId: ctx.clientId,
         clientName: ctx.clientName,
@@ -2271,7 +2313,7 @@ async function runSingleInputReconcilePass_(ctx, targetTabs, options = {}) {
     if (options.includeBankBreakdowns || tabSet.has("Cash")) {
       const [existingBk, breakdownData] = await Promise.all([
         fetchAllRowsForClient_(supabase, "pulse_cash_bank_balances", ctx.clientId),
-        getClientCashBankBreakdowns(ctx.clientName, { forceSource: "system_config" }),
+        getClientCashBankBreakdowns(ctx.clientName, { forceSource: "system_config", throwOnError: true }),
       ]);
       const desiredBk = parseBankBreakdownsToRelational({
         clientId: ctx.clientId,
@@ -2322,15 +2364,17 @@ async function runSingleInputReconcilePass_(ctx, targetTabs, options = {}) {
     deltaStats,
   };
 
-  await supabase
-    .from("clients")
-    .update({
-      metadata: {
-        ...prevMeta,
-        relational_inputs_state: summary,
-      },
-    })
-    .eq("id", ctx.clientId);
+  if (hasValidClMeta) {
+    await supabase
+      .from("clients")
+      .update({
+        metadata: {
+          ...prevMeta,
+          relational_inputs_state: summary,
+        },
+      })
+      .eq("id", ctx.clientId);
+  }
 
   return summary;
 }
@@ -2352,7 +2396,20 @@ export async function reconcileClientOperatingInputsFromGrids(
   const key = String(ctx.clientName || ctx.clientId).trim().toLowerCase();
   const pendingEntry = _pendingInputReconcileByClient.get(key) || { tabs: new Set(), opts: {} };
   for (const t of targetTabs) pendingEntry.tabs.add(t);
-  pendingEntry.opts = { ...pendingEntry.opts, ...options };
+  const prevOpts = pendingEntry.opts || {};
+  const mergedPreloaded =
+    prevOpts.preloadedGrids || options?.preloadedGrids
+      ? { ...(prevOpts.preloadedGrids || {}), ...(options?.preloadedGrids || {}) }
+      : undefined;
+  pendingEntry.opts = {
+    ...prevOpts,
+    ...options,
+    forceFullUpsert: Boolean(prevOpts.forceFullUpsert || options?.forceFullUpsert),
+    updateBackfillTimestamp: Boolean(prevOpts.updateBackfillTimestamp || options?.updateBackfillTimestamp),
+    includeBankBreakdowns: Boolean(prevOpts.includeBankBreakdowns || options?.includeBankBreakdowns),
+    allowClearAllNotes: Boolean(prevOpts.allowClearAllNotes || options?.allowClearAllNotes),
+    ...(mergedPreloaded ? { preloadedGrids: mergedPreloaded } : {}),
+  };
   _pendingInputReconcileByClient.set(key, pendingEntry);
 
   if (_inFlightInputReconcileByClient.has(key)) {
@@ -2389,6 +2446,18 @@ export async function backfillClientOperatingInputs(clientName) {
   const ctx = await resolveSupabaseSheetContext({ clientName });
   if (!ctx?.clientId) {
     throw new Error(`Client "${clientName}" was not found in Supabase.`);
+  }
+  if (ctx.gridStorageRetired) {
+    return {
+      clientName: ctx.clientName,
+      skippedRetired: true,
+      employeesCount: 0,
+      outgoingItemsCount: 0,
+      contractorEntriesCount: 0,
+      budgetItemsCount: 0,
+      cashAdjustmentsCount: 0,
+      cashBankBalancesCount: 0,
+    };
   }
   return reconcileClientOperatingInputsFromGrids(ctx, ALL_INPUT_TABS, {
     forceFullUpsert: true,
@@ -2667,13 +2736,18 @@ export async function setClientInputsMode(clientName, inputsMode) {
   const supabase = getSupabaseAdmin();
   const { data: cl, error: clErr } = await supabase
     .from("clients")
-    .select("id, client_name, metadata, client_sheet_id, master_sheet_id")
+    .select("id, client_name, grid_storage_retired, metadata, client_sheet_id, master_sheet_id")
     .eq("client_name", clientName)
     .maybeSingle();
   if (clErr || !cl) throw new Error(`Client "${clientName}" not found.`);
+  if (cl.grid_storage_retired && inputsMode !== "relational") {
+    throw new Error(
+      `Client "${clientName}" has retired grid storage and cannot be downgraded from 'relational' inputs_mode.`
+    );
+  }
 
   let backfillSummary = null;
-  if (inputsMode === "relational") {
+  if (inputsMode === "relational" && !cl.grid_storage_retired) {
     backfillSummary = await backfillClientOperatingInputs(cl.client_name);
     const parity = await verifyRelationalInputsParity({ clientName: cl.client_name, source: "db" });
     const rec = parity.results?.[0];
@@ -3658,12 +3732,17 @@ export async function setClientInputsReadMode(clientName, inputsReadMode) {
   const supabase = getSupabaseAdmin();
   const { data: cl, error: clErr } = await supabase
     .from("clients")
-    .select("id, client_name, inputs_mode, metadata, client_sheet_id, master_sheet_id")
+    .select("id, client_name, inputs_mode, grid_storage_retired, metadata, client_sheet_id, master_sheet_id")
     .eq("client_name", clientName)
     .maybeSingle();
   if (clErr || !cl) throw new Error(`Client "${clientName}" not found.`);
+  if (cl.grid_storage_retired && inputsReadMode !== "relational") {
+    throw new Error(
+      `Client "${clientName}" has retired grid storage and cannot be downgraded from 'relational' inputs_read_mode.`
+    );
+  }
 
-  if (inputsReadMode === "relational") {
+  if (inputsReadMode === "relational" && !cl.grid_storage_retired) {
     if (String(cl.inputs_mode || cl.metadata?.inputs_mode || "grid").toLowerCase() !== "relational") {
       throw new Error(`Client "${cl.client_name}" must be in relational inputs_mode before enabling direct relational reads.`);
     }

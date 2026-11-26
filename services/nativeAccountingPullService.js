@@ -41,6 +41,7 @@ import {
   valuesAreDifferent_,
   assertValidQBRealmId,
   connectorFetch,
+  fetchQuickBooksWithRetry_,
   fetchXeroWithRetry_,
   applySlotReuseDeltaGrid,
   patchGrid2DCell,
@@ -349,6 +350,7 @@ async function fetchAllClientIdsRows_(supabase, table, selectCols, clientId, ext
       .from(table)
       .select(selectCols)
       .eq("client_id", clientId)
+      .order("id", { ascending: true })
       .range(from, from + pageSize - 1);
     for (const [k, v] of Object.entries(extraEq)) {
       q = q.eq(k, v);
@@ -569,12 +571,14 @@ async function fetchXeroInvoicesRows_({
       allInvoices = allInvoices.concat(pageInvoices);
       const last = pageInvoices[pageInvoices.length - 1];
       const lastInvDate = new Date(last.DateString || last.Date);
-      if (lastInvDate < cutoffDate) keepFetching = false;
+      if (lastInvDate < cutoffDate || pageInvoices.length < 100) keepFetching = false;
       else page++;
     } else {
       keepFetching = false;
     }
-    if (page > 50) keepFetching = false;
+    if (keepFetching && page > 200) {
+      throw new Error("Xero invoice pagination exceeded 200-page safety limit; aborting sync to prevent partial truncation.");
+    }
   }
 
   const invoices = allInvoices.filter((inv) => {
@@ -832,10 +836,11 @@ async function fetchQuickBooksPaymentDates_({ paymentIds, accessToken, realmId, 
     const batch = uniqueIds.slice(i, i + 30);
     const idList = batch.map((id) => `'${String(id).replace(/[^0-9a-zA-Z_-]/g, "")}'`).join(",");
     const query = encodeURIComponent(`SELECT Id, TxnDate FROM Payment WHERE Id IN (${idList})`);
-    const res = await connectorFetch(`${baseUrl}/v3/company/${safeRealmId}/query?query=${query}`, {
-      headers,
-      fetchImpl,
-    });
+    const res = await fetchQuickBooksWithRetry_(
+      `${baseUrl}/v3/company/${safeRealmId}/query?query=${query}`,
+      { headers, fetchImpl, sleepImpl: sleeper },
+      { label: "QB Invoices Query", fetchImpl, sleepImpl: sleeper }
+    );
     if (res.ok) {
       const payments = res.json?.QueryResponse?.Payment || [];
       for (const p of payments) {
@@ -872,10 +877,11 @@ async function fetchQuickBooksInvoicesRows_({
     const query = encodeURIComponent(
       `SELECT * FROM Invoice WHERE TxnDate >= '${dateStr}' STARTPOSITION ${startPosition} MAXRESULTS ${pageSize}`
     );
-    const res = await connectorFetch(`${baseUrl}/v3/company/${safeRealmId}/query?query=${query}`, {
-      headers,
-      fetchImpl,
-    });
+    const res = await fetchQuickBooksWithRetry_(
+      `${baseUrl}/v3/company/${safeRealmId}/query?query=${query}`,
+      { headers, fetchImpl, sleepImpl: sleeper },
+      { label: "QB Invoices Query", fetchImpl, sleepImpl: sleeper }
+    );
     if (!res.ok) {
       throw new Error(`API request failed: ${res.text || res.status}`);
     }
@@ -1259,9 +1265,9 @@ export async function pullNativeAccountingInvoices(ctx, options = {}) {
           (r) => String(r.record_kind || "invoice") === "invoice"
         );
         const savedHeaders =
-          Array.isArray(bundle.masterConfig?.inv_from_app_headers) &&
-            bundle.masterConfig.inv_from_app_headers.length > 0
-            ? bundle.masterConfig.inv_from_app_headers
+          Array.isArray(bundle.config?.inv_headers) &&
+            bundle.config.inv_headers.length > 0
+            ? bundle.config.inv_headers
             : NATIVE_INVOICE_DEFAULT_HEADERS;
         existingGrid = projectAccountingInvoicesToGrid({
           headers: savedHeaders,
@@ -1274,6 +1280,13 @@ export async function pullNativeAccountingInvoices(ctx, options = {}) {
       const rec = await getOrLoadVirtualTabGrid_(ctx, "master", "InvFromApp", null).catch(() => null);
       existingGrid = Array.isArray(rec?.values_grid) ? rec.values_grid : [];
     }
+  }
+
+  const existingInvCount = Math.max(0, (Array.isArray(existingGrid) ? existingGrid.length : 0) - 1);
+  if (existingInvCount >= 10 && finalData.length === 0 && !options.allowEmptyWipe) {
+    throw new Error(
+      `Accounting invoice pull returned 0 invoices against ${existingInvCount} existing rows; aborting to prevent wiping accounting_invoices.`
+    );
   }
 
   const lastMode = scriptProps.INV_LAST_IMPORT_MODE ?? null;
@@ -1344,10 +1357,11 @@ export async function pullNativeAccountingInvoices(ctx, options = {}) {
         .filter((r) => !keepNums.has(Number(r.sheet_row_num)))
         .map((r) => r.id);
       for (let i = 0; i < staleIds.length; i += 200) {
-        await supabase.from("accounting_invoices").delete().in("id", staleIds.slice(i, i + 200));
+        const { error: delErr } = await supabase.from("accounting_invoices").delete().in("id", staleIds.slice(i, i + 200));
+        if (delErr) throw new Error(`accounting_invoices delete failed: ${delErr.message}`);
       }
       await saveConnectorConfigPatch(ctx, {
-        inv_from_app_headers: nextGrid[0] || NATIVE_INVOICE_DEFAULT_HEADERS,
+        inv_headers: nextGrid[0] || NATIVE_INVOICE_DEFAULT_HEADERS,
       });
     }
 
@@ -1875,10 +1889,11 @@ async function fetchQBBillPaymentDates_({ paymentIds, accessToken, realmId, fetc
     const batch = uniqueIds.slice(i, i + 30);
     const idList = batch.map((id) => `'${String(id).replace(/[^0-9a-zA-Z_-]/g, "")}'`).join(",");
     const query = encodeURIComponent(`SELECT Id, TxnDate FROM BillPayment WHERE Id IN (${idList})`);
-    const res = await connectorFetch(`${baseUrl}/v3/company/${safeRealmId}/query?query=${query}`, {
-      headers,
-      fetchImpl,
-    });
+    const res = await fetchQuickBooksWithRetry_(
+      `${baseUrl}/v3/company/${safeRealmId}/query?query=${query}`,
+      { headers, fetchImpl, sleepImpl: sleeper },
+      { label: "QB Invoices Query", fetchImpl, sleepImpl: sleeper }
+    );
     if (res.ok) {
       for (const p of res.json?.QueryResponse?.BillPayment || []) {
         if (p?.Id && p?.TxnDate) dateMap.set(p.Id, p.TxnDate);
@@ -1893,10 +1908,12 @@ async function fetchQBCostTransactions_({
   targetCodes,
   accessToken,
   realmId,
+  cutoffDate = null,
   fetchImpl,
   sleepImpl,
 }) {
   const safeRealmId = assertValidQBRealmId(realmId);
+  const sleeper = typeof sleepImpl === "function" ? sleepImpl : defaultSleepMs;
   const headers = { Authorization: `Bearer ${accessToken}`, Accept: "application/json" };
   const taxCodeRateMap = await fetchQBTaxCodeRateMap_({ accessToken, realmId: safeRealmId, fetchImpl });
   const allRows = [];
@@ -1908,9 +1925,10 @@ async function fetchQBCostTransactions_({
   const itemExpenseAccountMap = new Map();
   try {
     const qItems = "SELECT Id, Name, ExpenseAccountRef FROM Item MAXRESULTS 1000";
-    const rItems = await connectorFetch(
+    const rItems = await fetchQuickBooksWithRetry_(
       `https://quickbooks.api.intuit.com/v3/company/${safeRealmId}/query?query=${encodeURIComponent(qItems)}`,
-      { headers, fetchImpl }
+      { headers, fetchImpl },
+      { label: "QB Items Query", fetchImpl, sleepImpl: sleeper }
     );
     if (rItems.ok) {
       for (const it of rItems.json?.QueryResponse?.Item || []) {
@@ -2081,39 +2099,56 @@ async function fetchQBCostTransactions_({
     }
   };
 
-  const rBill = await connectorFetch(
-    `https://quickbooks.api.intuit.com/v3/company/${safeRealmId}/query?query=${encodeURIComponent("SELECT * FROM Bill MAXRESULTS 1000")}`,
-    { headers, fetchImpl }
-  );
-  if (rBill.ok) {
-    const bills = rBill.json?.QueryResponse?.Bill || [];
-    const paymentIds = getPaymentIdsFromBills(bills);
-    const fetchedMap = await fetchQBBillPaymentDates_({
-      paymentIds,
-      accessToken,
-      realmId: safeRealmId,
-      fetchImpl,
-      sleepImpl,
-    });
-    fetchedMap.forEach((v, k) => paymentDatesMap.set(k, v));
-    processQBLines(bills, "Bill");
-  }
+  const effectiveCutoffDate =
+    cutoffDate instanceof Date && !isNaN(cutoffDate.getTime())
+      ? cutoffDate
+      : new Date(new Date().getFullYear(), new Date().getMonth() - NATIVE_COST_CONFIG.HISTORY_MONTHS, 1);
+  const cutoffYmd = formatDateUtcYmd_(effectiveCutoffDate);
+  const queryPaginatedQbEntity = async (entityName) => {
+    const collected = [];
+    let startPos = 1;
+    const pageSize = 500;
+    const maxPages = 40;
+    for (let page = 1; page <= maxPages; page++) {
+      const q = `SELECT * FROM ${entityName} WHERE TxnDate >= '${cutoffYmd}' STARTPOSITION ${startPos} MAXRESULTS ${pageSize}`;
+      const resp = await fetchQuickBooksWithRetry_(
+        `https://quickbooks.api.intuit.com/v3/company/${safeRealmId}/query?query=${encodeURIComponent(q)}`,
+        { headers, fetchImpl },
+        { label: `QB ${entityName} p${page}`, fetchImpl, sleepImpl: sleeper }
+      );
+      if (!resp.ok) {
+        throw new Error(`QuickBooks ${entityName} query failed (HTTP ${resp.status}): ${resp.text?.slice(0, 200) || ""}`);
+      }
+      const pageItems = resp.json?.QueryResponse?.[entityName];
+      if (!Array.isArray(pageItems) || pageItems.length === 0) break;
+      collected.push(...pageItems);
+      if (pageItems.length < pageSize) break;
+      if (page === maxPages) {
+        throw new Error(`QuickBooks ${entityName} pagination exceeded ${maxPages * pageSize} rows safety cap.`);
+      }
+      startPos += pageItems.length;
+      await sleeper(150);
+    }
+    return collected;
+  };
 
-  const rPurch = await connectorFetch(
-    `https://quickbooks.api.intuit.com/v3/company/${safeRealmId}/query?query=${encodeURIComponent("SELECT * FROM Purchase MAXRESULTS 1000")}`,
-    { headers, fetchImpl }
-  );
-  if (rPurch.ok) {
-    processQBLines(rPurch.json?.QueryResponse?.Purchase || [], "Purchase");
-  }
+  const bills = await queryPaginatedQbEntity("Bill");
+  const paymentIds = getPaymentIdsFromBills(bills);
+  const fetchedMap = await fetchQBBillPaymentDates_({
+    paymentIds,
+    accessToken,
+    realmId: safeRealmId,
+    fetchImpl,
+    sleepImpl: sleeper,
+  });
+  fetchedMap.forEach((v, k) => paymentDatesMap.set(k, v));
+  processQBLines(bills, "Bill");
 
-  const rJnl = await connectorFetch(
-    `https://quickbooks.api.intuit.com/v3/company/${safeRealmId}/query?query=${encodeURIComponent("SELECT * FROM JournalEntry MAXRESULTS 1000")}`,
-    { headers, fetchImpl }
-  );
-  if (rJnl.ok) {
-    processQBLines(rJnl.json?.QueryResponse?.JournalEntry || [], "Journal");
-  }
+  const purchases = await queryPaginatedQbEntity("Purchase");
+  processQBLines(purchases, "Purchase");
+
+  const journals = await queryPaginatedQbEntity("JournalEntry");
+  processQBLines(journals, "Journal");
 
   return makeIdsUnique_(allRows);
 }
@@ -2208,12 +2243,18 @@ export async function pullNativeAccountingDirectCosts(ctx, options = {}) {
     await saveConnectorConfigPatch(ctx, { master_key_info_grid: keyInfoGrid });
   }
 
+  const costCutoffDate = new Date(
+    nowDate.getFullYear(),
+    nowDate.getMonth() - NATIVE_COST_CONFIG.HISTORY_MONTHS,
+    1
+  );
   const allExpenseData =
     tool === "quickbooks"
       ? await fetchQBCostTransactions_({
         targetCodes,
         accessToken: auth.accessToken,
         realmId: auth.tenantOrRealmId,
+        cutoffDate: costCutoffDate,
         fetchImpl,
         sleepImpl,
       })
@@ -2335,7 +2376,8 @@ export async function pullNativeAccountingDirectCosts(ctx, options = {}) {
         .filter((r) => !keepNums.has(Number(r.sheet_row_num)))
         .map((r) => r.id);
       for (let i = 0; i < staleIds.length; i += 200) {
-        await supabase.from("accounting_direct_costs").delete().in("id", staleIds.slice(i, i + 200));
+        const { error: delErr } = await supabase.from("accounting_direct_costs").delete().in("id", staleIds.slice(i, i + 200));
+        if (delErr) throw new Error(`accounting_direct_costs delete failed: ${delErr.message}`);
       }
     }
 
@@ -2484,16 +2526,21 @@ async function fetchMonthlyPLReportData_({
     const fromStr = formatDateLocalYmd_(fromDate);
     const toStr = formatDateLocalYmd_(endDate);
     const monthHeader = fromDate.toLocaleString("default", { month: "long", year: "numeric" });
-    reportData.headers.splice(1, 0, monthHeader);
 
     if (tool === "quickbooks") {
       const safeRealmId = assertValidQBRealmId(tenantOrRealmId);
       const url = `https://quickbooks.api.intuit.com/v3/company/${safeRealmId}/reports/ProfitAndLoss?start_date=${fromStr}&end_date=${toStr}`;
-      const res = await connectorFetch(url, {
-        headers: { Authorization: `Bearer ${accessToken}`, Accept: "application/json" },
-        fetchImpl,
-      });
-      if (!res.ok) continue;
+      const res = await fetchQuickBooksWithRetry_(
+        url,
+        {
+          headers: { Authorization: `Bearer ${accessToken}`, Accept: "application/json" },
+        },
+        { label: `QB P&L (${monthHeader})`, fetchImpl, sleepImpl }
+      );
+      if (!res.ok) {
+        throw new Error(`QuickBooks ProfitAndLoss report failed for ${monthHeader} (HTTP ${res.status}): ${res.text?.slice(0, 200) || ""}`);
+      }
+      reportData.headers.splice(1, 0, monthHeader);
       const monthReport = res.json;
       const monthRowOrder = getQBReportStructure_(monthReport);
       reportData.rowOrder = mergeMonthRowOrder_(reportData.rowOrder, monthRowOrder);
@@ -2528,7 +2575,10 @@ async function fetchMonthlyPLReportData_({
         },
         { label: `Xero P&L (${monthHeader})`, fetchImpl, sleepImpl }
       );
-      if (!res.ok) continue;
+      if (!res.ok) {
+        throw new Error(`Xero ProfitAndLoss report failed for ${monthHeader} (HTTP ${res.status}): ${res.text?.slice(0, 200) || ""}`);
+      }
+      reportData.headers.splice(1, 0, monthHeader);
       const monthReport = res.json?.Reports?.[0];
       const monthRowOrder = getXeroReportStructure_(monthReport);
       reportData.rowOrder = mergeMonthRowOrder_(reportData.rowOrder, monthRowOrder);
@@ -2580,11 +2630,12 @@ async function persistPlGridToRelationalTable_(ctx, sourceTab, nextGrid) {
     .filter((r) => !keepNums.has(Number(r.sheet_row_num)))
     .map((r) => r.id);
   for (let i = 0; i < staleIds.length; i += 200) {
-    await supabase.from("accounting_pl_lines").delete().in("id", staleIds.slice(i, i + 200));
+    const { error: delErr } = await supabase.from("accounting_pl_lines").delete().in("id", staleIds.slice(i, i + 200));
+    if (delErr) throw new Error(`accounting_pl_lines delete failed: ${delErr.message}`);
   }
 
   if (sourceTab === "PLFromApp") {
-    await saveConnectorConfigPatch(ctx, { pl_from_app_headers: nextGrid[0] || [] });
+    await saveConnectorConfigPatch(ctx, { pl_headers: nextGrid[0] || [] });
   }
   if (ctx.connectorPullMode !== "native") {
     await saveVirtualTabGrid_(ctx, "master", sourceTab, nextGrid, nextGrid, {}).catch(() => { });
@@ -2842,11 +2893,17 @@ export async function updateNativeSingleMonthPL(ctx, targetYear, targetMonth, fr
       const plRows = (bundle.accountingPlLines || []).filter(
         (r) => String(r.source_tab || "PLFromApp") === "PLFromApp"
       );
-      const hdrs =
-        Array.isArray(bundle.masterConfig?.pl_from_app_headers) &&
-          bundle.masterConfig.pl_from_app_headers.length > 0
-          ? bundle.masterConfig.pl_from_app_headers
-          : ["Description"];
+      let hdrs =
+        Array.isArray(bundle.config?.pl_headers) && bundle.config.pl_headers.length > 0
+          ? bundle.config.pl_headers
+          : [];
+      if (hdrs.length === 0 && plRows.length > 0) {
+        const sampleAmounts = plRows.find((r) => r?.monthly_amounts && typeof r.monthly_amounts === "object")?.monthly_amounts || {};
+        const monthKeys = Object.keys(sampleAmounts);
+        hdrs = monthKeys.length > 0 ? ["Description", ...monthKeys] : ["Description"];
+      } else if (hdrs.length === 0) {
+        hdrs = ["Description"];
+      }
       existingGrid = projectPLLinesToGrid({ headers: hdrs, records: plRows, sourceTab: "PLFromApp" });
     }
   }

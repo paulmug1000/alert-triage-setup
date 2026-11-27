@@ -2191,6 +2191,7 @@ export async function deleteAlertMemoryEntryByHash(sheets, automationCommanderSh
   if (!cleanHash) throw new Error("fingerprintHash is required");
 
   let deletedClientName = "";
+  let deletedStatus = "";
 
   // 1. Delete from Supabase
   if (isSupabaseConfigured()) {
@@ -2199,14 +2200,19 @@ export async function deleteAlertMemoryEntryByHash(sheets, automationCommanderSh
       if (sb) {
         const { data: existing } = await sb
           .from("alert_memory")
-          .select("client_name")
+          .select("client_name, status")
           .eq("fingerprint_hash", cleanHash)
           .maybeSingle();
         if (existing?.client_name) {
           deletedClientName = existing.client_name;
         }
-        await sb.from("alert_memory").delete().eq("fingerprint_hash", cleanHash);
-        await sb.from("pma_tasks").delete().eq("fingerprint_hash", cleanHash);
+        if (existing?.status) {
+          deletedStatus = String(existing.status).trim().toLowerCase();
+        }
+        await Promise.all([
+          sb.from("alert_memory").delete().eq("fingerprint_hash", cleanHash),
+          sb.from("pma_tasks").delete().eq("fingerprint_hash", cleanHash),
+        ]);
       }
     } catch (sbErr) {
       console.warn("⚠️ Supabase deleteAlertMemoryEntryByHash warning:", sbErr.message);
@@ -2251,6 +2257,7 @@ export async function deleteAlertMemoryEntryByHash(sheets, automationCommanderSh
     success: true,
     fingerprintHash: cleanHash,
     clientName: deletedClientName,
+    deletedStatus,
     deletedSheetRows,
   };
 }

@@ -1,6 +1,12 @@
 import { resolveLiveSessionUser, checkRateLimit, getTrustedClientIp } from "../../../services/authService.js";
 import { getSheetsClient, extractSheetIdFromUrl } from "../../../services/sheetsClient.js";
-import { getSupabaseAdmin, isSupabaseConfigured, setControlPlaneSource } from "../../../services/supabaseClient.js";
+import {
+  getSupabaseAdmin,
+  isSupabaseConfigured,
+  isSupabaseControlPlaneActive,
+  setControlPlaneSource,
+  shouldDualWriteLegacyControlPlaneSheets,
+} from "../../../services/supabaseClient.js";
 import { redisClient } from "../../../services/redisClient.js";
 import { getControlPlaneStatus, syncControlPlaneToSupabase } from "../../../services/controlPlaneMigrationService.js";
 import { logPmaActivity } from "../../../services/pmaLogger.js";
@@ -10,7 +16,11 @@ import { clearSsrClientsMemoryCache } from "../../../services/ssrSession.js";
 import { memoryCache } from "../../../services/cacheService.js";
 import { invalidateTasksCache } from "../../../services/tasksController.js";
 import { flushAllAlertMemoryCaches, searchAlertMemoryEntries, deleteAlertMemoryEntryByHash, archiveClientAlertMemory } from "../../../services/alertMemory.js";
-import { invalidatePrecomputedMemoryCache, handleStorePrecomputed } from "../../../services/triageEngine.js";
+import {
+  invalidatePrecomputedMemoryCache,
+  handleStorePrecomputed,
+  removeAlertFingerprintFromPrecomputed,
+} from "../../../services/triageEngine.js";
 import { syncProvisioningTemplateSnapshots, getProvisioningTemplateSnapshotsMeta } from "../../../services/masterEngineService.js";
 import { renameTenantClient } from "../../../services/tenantRenameService.js";
 import { assertTrustedOrigin } from "../../../utils/helpers.js";
@@ -468,20 +478,26 @@ export default async function handler(req, res) {
         return res.status(400).json({ success: false, error: "fingerprintHash is required." });
       }
       const acId = automationCommanderSheetId || getCanonicalAcSheetId();
-      const sheets = await getSheetsClient();
+      const supabaseActive = await isSupabaseControlPlaneActive();
+      const needsSheets = !supabaseActive || shouldDualWriteLegacyControlPlaneSheets();
+      const sheets = needsSheets ? await getSheetsClient() : null;
       const result = await deleteAlertMemoryEntryByHash(sheets, acId, fingerprintHash);
-      await refreshPrecomputedAlerts_(sheets, acId);
-      await logPmaActivity(sheets, {
-        automationCommanderSheetId: acId,
-        clientName: result.clientName || "System",
-        category: "TRIAGE",
-        action: "ALERT_MEMORY_ENTRY_DELETED",
-        summary: `Deleted AlertMemory entry ${fingerprintHash} across Supabase, Google Sheet, and Redis cache`,
-        details: result,
-        userEmail: sessionUser.email || "Admin",
-      });
-      const status = await getControlPlaneStatus();
-      return res.status(200).json({ ...result, status });
+      await Promise.all([
+        removeAlertFingerprintFromPrecomputed(result.fingerprintHash),
+        result.deletedStatus === "task" || result.deletedStatus === "task_resolved" || !result.deletedStatus
+          ? invalidateTasksCache().catch(() => { })
+          : Promise.resolve(),
+        logPmaActivity(sheets, {
+          automationCommanderSheetId: acId,
+          clientName: result.clientName || "System",
+          category: "TRIAGE",
+          action: "ALERT_MEMORY_ENTRY_DELETED",
+          summary: `Deleted AlertMemory entry ${result.fingerprintHash} across Supabase, Google Sheet, and Redis cache`,
+          details: result,
+          userEmail: sessionUser.email || "Admin",
+        }),
+      ]);
+      return res.status(200).json(result);
     }
 
     if (action === "flush_alert_memory_cache") {

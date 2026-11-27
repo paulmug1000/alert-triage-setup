@@ -2716,12 +2716,14 @@ function doesClientRangeNeedFormulaFlush_(parsed, clientName = "") {
       );
     }
     // In Outgoings, Rows 12..110 (direct costs), Rows 118..121 (Dividends in lieu of salary),
-    // and Rows 126..224 (Expenses) only depend on Outgoings and KeyInfo,
-    // which are already evaluated in Step 1.
+    // and Rows 126..224 (Expenses) only depend on Outgoings, KeyInfo, and values-only Dashboard,
+    // which are evaluated immediately in Step 1 (including Row 111 Making up CoS when only Outgoings changed).
     // Rows 225..228 (Recharged expenses rows & Overheads subtotals) depend on Confirmed, KeyInfo & Performance.
-    // Rows 6..9 (Salaries/Performance), Row 111 (Making up CoS from Dashboard),
-    // and Rows 233+ (Bonus & Grand Total Overheads) depend on other tabs.
-    const touchesRow111 = sR <= 110 && eR >= 110;
+    // Rows 6..9 (Salaries/Performance) and Rows 233+ (Bonus & Grand Total Overheads) depend on other tabs.
+    const hasNonOutgoingsSource =
+      !sourceTabs ||
+      [...sourceTabs].some((t) => t !== "Outgoings" && t !== "OutgNotes");
+    const touchesRow111 = sR <= 110 && eR >= 110 && hasNonOutgoingsSource;
     const touchesBottomSummaries = eR >= 232 || sR >= 232;
     const touchesStaffSummaries = sR <= 8 && eR >= 5 && Boolean(sourceTabs && (sourceTabs.has("Salaries") || sourceTabs.has("KeyInfo")));
     const touchesRechargedDeps =
@@ -3141,6 +3143,22 @@ async function runSingleImmediateClientTabsPass_(
       formulas: Array.isArray(keyInfoRec.formulas_grid) ? keyInfoRec.formulas_grid : [],
       notes: keyInfoRec.notes_grid || {},
     };
+  }
+
+  // If Outgoings is updated, include values-only Dashboard so Row 111 ("Making up CoS") evaluates immediately
+  if (allImmediateTabs.includes("Outgoings") && !allImmediateTabs.includes("Dashboard")) {
+    const dashEntry = _gridMemoryCache.get(`${clientKey}::client::Dashboard`);
+    let dashRec = dashEntry && dashEntry.expiresAt > Date.now() ? dashEntry.record : null;
+    if (!dashRec) {
+      dashRec = await getOrLoadVirtualTabGrid_(ctx, "client", "Dashboard", rawSheetsApi, { valuesOnly: true }).catch(() => null);
+    }
+    if (dashRec) {
+      localGrids.Dashboard = {
+        values: Array.isArray(dashRec.values_grid) ? dashRec.values_grid : [],
+        formulas: [],
+        notes: {},
+      };
+    }
   }
 
   // If OutgNotes is updated, include cached Outgoings (with notes) so notes sync accurately

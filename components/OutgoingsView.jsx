@@ -855,17 +855,129 @@ export default function OutgoingsView({
       if (!res.ok || !data?.success) {
         throw new Error(data?.error || `Failed to update cell (HTTP ${res.status})`);
       }
+      if (data.updatedCosCell) {
+        setOutgoingsData(prev => {
+          if (!prev?.makingUpCos) return prev;
+          return {
+            ...prev,
+            makingUpCos: {
+              ...prev.makingUpCos,
+              cells: {
+                ...prev.makingUpCos.cells,
+                [colLetter]: {
+                  ...(prev.makingUpCos.cells?.[colLetter] || {}),
+                  amount: data.updatedCosCell.amount,
+                  formatted: data.updatedCosCell.formatted,
+                },
+              },
+            },
+          };
+        });
+      }
       if (outgoingsClient?.masterSheetId) {
         outgoingsPullPendingRef.current = { clientSheetId: outgoingsClient.clientSheetId, masterSheetId: outgoingsClient.masterSheetId };
       }
+      return true;
     } catch (e) {
       console.error("updateCell error:", e);
       if (prevContractors) {
         setOutgoingsData(prev => prev ? { ...prev, contractors: prevContractors } : prev);
       }
       alert(e.message || "Failed to update cell");
+      return false;
     } finally {
       setSavingContractorCellKey(prev => (prev === cellKey ? null : prev));
+    }
+  };
+
+  const updateCellsBatch = async (contractor, cellUpdates = []) => {
+    if (!contractor || !Array.isArray(cellUpdates) || cellUpdates.length === 0) return true;
+    const prevContractors = outgoingsData?.contractors;
+    const normalized = cellUpdates.map(u => {
+      const existingTopNote = contractor.cells?.[u.colLetter]?.topNote || "";
+      return {
+        colLetter: u.colLetter,
+        blocks: u.blocks,
+        topNote: u.topNote !== undefined ? u.topNote : existingTopNote,
+      };
+    });
+    setOutgoingsData(prev => {
+      if (!prev) return prev;
+      return {
+        ...prev,
+        contractors: prev.contractors.map(c => {
+          if (c.sheetRow !== contractor.sheetRow) return c;
+          const nextCells = { ...c.cells };
+          normalized.forEach(u => {
+            nextCells[u.colLetter] = {
+              ...(nextCells[u.colLetter] || {}),
+              blocks: u.blocks,
+              topNote: u.topNote,
+            };
+          });
+          return { ...c, cells: nextCells };
+        }),
+      };
+    });
+    const firstKey = `${contractor.sheetRow}-${normalized[0].colLetter}`;
+    setSavingContractorCellKey(firstKey);
+    try {
+      const res = await fetch("/api/triage", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "update_outgoing_notes_batch",
+          sessionId,
+          automationCommanderSheetId,
+          clientSheetId: outgoingsClient?.clientSheetId,
+          clientName: outgoingsClient?.clientName || outgoingsClient?.name || "",
+          masterSheetId: outgoingsClient?.masterSheetId || "",
+          updates: normalized.map(u => ({
+            sheetRow: contractor.sheetRow,
+            colLetter: u.colLetter,
+            contractorName: contractor?.name || "",
+            blocks: u.blocks,
+            topNote: u.topNote,
+          })),
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data?.success) {
+        throw new Error(data?.error || `Failed to update contractor cells (HTTP ${res.status})`);
+      }
+      if (data.updatedCosCells && Object.keys(data.updatedCosCells).length > 0) {
+        setOutgoingsData(prev => {
+          if (!prev?.makingUpCos) return prev;
+          const nextCells = { ...prev.makingUpCos.cells };
+          Object.entries(data.updatedCosCells).forEach(([col, cosInfo]) => {
+            nextCells[col] = {
+              ...(nextCells[col] || {}),
+              amount: cosInfo.amount,
+              formatted: cosInfo.formatted,
+            };
+          });
+          return {
+            ...prev,
+            makingUpCos: {
+              ...prev.makingUpCos,
+              cells: nextCells,
+            },
+          };
+        });
+      }
+      if (outgoingsClient?.masterSheetId) {
+        outgoingsPullPendingRef.current = { clientSheetId: outgoingsClient.clientSheetId, masterSheetId: outgoingsClient.masterSheetId };
+      }
+      return true;
+    } catch (e) {
+      console.error("updateCellsBatch error:", e);
+      if (prevContractors) {
+        setOutgoingsData(prev => prev ? { ...prev, contractors: prevContractors } : prev);
+      }
+      alert(e.message || "Failed to update contractor cells");
+      return false;
+    } finally {
+      setSavingContractorCellKey(prev => (prev === firstKey ? null : prev));
     }
   };
 
@@ -1915,6 +2027,7 @@ export default function OutgoingsView({
           editCellData={outgoingsEditCell}
           outgoingsData={outgoingsData}
           updateCell={updateCell}
+          updateCellsBatch={updateCellsBatch}
           onReturnToInbox={(exp) => {
             setOutgoingsInbox(prev => {
               if (prev.some(e => e.appId === exp.appId)) return prev;

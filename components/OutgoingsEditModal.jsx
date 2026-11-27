@@ -4,12 +4,12 @@ import { isPlaceholderExpense, toSheetDateFormat, toInputDateFormat, isValidCale
 import PlaceholderPill, { isAutoPlaceholder } from "./PlaceholderPill";
 
 const STATUS_COLOURS = {
-  "Paid":                 { bg: "#e8f5e9", border: "#4caf50", text: "#2e7d32" },
-  "Received":             { bg: "#e3f2fd", border: "#2196f3", text: "#1565c0" },
-  "Part-paid (paid)":    { bg: "#fef3c7", border: "#f59e0b", text: "#92400e" },
+  "Paid": { bg: "#e8f5e9", border: "#4caf50", text: "#2e7d32" },
+  "Received": { bg: "#e3f2fd", border: "#2196f3", text: "#1565c0" },
+  "Part-paid (paid)": { bg: "#fef3c7", border: "#f59e0b", text: "#92400e" },
   "Part-paid (balance)": { bg: "#fef3c7", border: "#f59e0b", text: "#92400e" },
-  "Draft":                { bg: "#fff8e1", border: "#ffc107", text: "#e65100" },
-  "":                     { bg: "#f5f5f5", border: "#bdbdbd", text: "#616161" },
+  "Draft": { bg: "#fff8e1", border: "#ffc107", text: "#e65100" },
+  "": { bg: "#f5f5f5", border: "#bdbdbd", text: "#616161" },
 };
 const getStatusColour = (s) => {
   if (!s) return STATUS_COLOURS[""];
@@ -189,7 +189,7 @@ function CalendarDatePicker({ value, onChange, placeholder = "Select date" }) {
   );
 }
 
-export default function OutgoingsEditModal({ editCellData, outgoingsData, updateCell, onReturnToInbox, onClose }) {
+export default function OutgoingsEditModal({ editCellData, outgoingsData, updateCell, updateCellsBatch, onReturnToInbox, onClose }) {
   const { contractor, colLetter, monthLabel } = editCellData;
   const [blocks, setBlocks] = useState(
     (contractor.cells?.[colLetter]?.blocks || []).filter(b => !b.appId.startsWith("UNRECON-GAP"))
@@ -213,7 +213,7 @@ export default function OutgoingsEditModal({ editCellData, outgoingsData, update
   const [newPayDate, setNewPayDate] = useState(defaultPayDate);
   const [showAddForm, setShowAddForm] = useState(false);
   const [addError, setAddError] = useState("");
-  
+
   // Track whether blocks or note have been modified since last write
   const dirtyRef = useRef(false);
   const blocksRef = useRef(blocks);
@@ -305,12 +305,22 @@ export default function OutgoingsEditModal({ editCellData, outgoingsData, update
       blocksRef.current = newBlocks;
       dirtyRef.current = false;
       setBlocks(newBlocks);
-      await updateCell(contractor, colLetter, newBlocks, topNote);
       const tb = [...(contractor.cells?.[targetCol]?.blocks || []).filter(bl => !bl.appId.startsWith("UNRECON-GAP"))];
       tb.push({ ...b, amount: splitAmt });
-      await updateCell(contractor, targetCol, tb);
-      setSplitAmts(prev => ({ ...prev, [`${blockIdx}_${targetCol}`]: "" }));
-      setSavedMsg("Split saved ✓");
+      let ok = true;
+      if (typeof updateCellsBatch === "function") {
+        ok = await updateCellsBatch(contractor, [
+          { colLetter, blocks: newBlocks, topNote },
+          { colLetter: targetCol, blocks: tb },
+        ]);
+      } else {
+        await updateCell(contractor, colLetter, newBlocks, topNote);
+        await updateCell(contractor, targetCol, tb);
+      }
+      if (ok !== false) {
+        setSplitAmts(prev => ({ ...prev, [`${blockIdx}_${targetCol}`]: "" }));
+        setSavedMsg("Split saved ✓");
+      }
     } finally {
       setSaving(false);
     }
@@ -323,21 +333,29 @@ export default function OutgoingsEditModal({ editCellData, outgoingsData, update
 
     setSaving(true);
     try {
-      // 1. Remove from source month and update source cell immediately in sheet
       const newBlocks = blocks.filter((_, idx) => idx !== blockIdx);
       blocksRef.current = newBlocks;
       dirtyRef.current = false;
       setBlocks(newBlocks);
-      await updateCell(contractor, colLetter, newBlocks, topNote);
-
-      // 2. Add to target month and write to target cell immediately in sheet
       const targetBlocks = [
         ...(contractor.cells?.[targetCol]?.blocks || []).filter(bl => !bl.appId.startsWith("UNRECON-GAP"))
       ];
       targetBlocks.push({ ...b });
-      await updateCell(contractor, targetCol, targetBlocks);
 
-      setSavedMsg("Moved ✓");
+      let ok = true;
+      if (typeof updateCellsBatch === "function") {
+        ok = await updateCellsBatch(contractor, [
+          { colLetter, blocks: newBlocks, topNote },
+          { colLetter: targetCol, blocks: targetBlocks },
+        ]);
+      } else {
+        await updateCell(contractor, colLetter, newBlocks, topNote);
+        await updateCell(contractor, targetCol, targetBlocks);
+      }
+
+      if (ok !== false) {
+        setSavedMsg("Moved ✓");
+      }
     } finally {
       setSaving(false);
     }

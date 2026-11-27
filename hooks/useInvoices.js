@@ -54,12 +54,12 @@ export function useInvoices(assignedAppIds, initialClient = null) {
   });
   const [invoicesPlacing, setInvoicesPlacingState] = useState(null);
   const invoicesPlacingRef = useRef(null);
-  
-  const setInvoicesPlacing = (val) => { 
-    invoicesPlacingRef.current = val; 
-    setInvoicesPlacingState(val); 
+
+  const setInvoicesPlacing = (val) => {
+    invoicesPlacingRef.current = val;
+    setInvoicesPlacingState(val);
   };
-  
+
   const [invoicesJobs, setInvoicesJobs] = useState(() => {
     if (initialClient?.clientSheetId) {
       const cleanId = cleanSheetId ? cleanSheetId(initialClient.clientSheetId) : initialClient.clientSheetId;
@@ -122,7 +122,7 @@ export function useInvoices(assignedAppIds, initialClient = null) {
             setInvoicesInboxLoading(false);
             if (!backgroundRefresh) return;
           }
-        } catch {}
+        } catch { }
       }
     }
 
@@ -138,10 +138,10 @@ export function useInvoices(assignedAppIds, initialClient = null) {
         const pruned = (data.inbox || []).filter(inv => !isInvoiceAssigned(inv.invoiceNo, client));
         setInvoicesInbox(pruned);
       }
-    } catch(e) { 
-      console.error("loadInvoicesInbox error:", e); 
-    } finally { 
-      if (!silent) setInvoicesInboxLoading(false); 
+    } catch (e) {
+      console.error("loadInvoicesInbox error:", e);
+    } finally {
+      if (!silent) setInvoicesInboxLoading(false);
     }
   }, [isInvoiceAssigned, cleanSheetId, getCachedClientData, setCachedClientData, getInFlightPrefetch]);
 
@@ -179,7 +179,7 @@ export function useInvoices(assignedAppIds, initialClient = null) {
             setInvoicesJobsLoading(false);
             return;
           }
-        } catch {}
+        } catch { }
       }
     }
 
@@ -198,10 +198,10 @@ export function useInvoices(assignedAppIds, initialClient = null) {
           setHasAccountingIntegration(Boolean(client.hasAccountingIntegration));
         }
       }
-    } catch(e) { 
-      console.error("loadInvoicesJobs error:", e); 
-    } finally { 
-      if (!silent) setInvoicesJobsLoading(false); 
+    } catch (e) {
+      console.error("loadInvoicesJobs error:", e);
+    } finally {
+      if (!silent) setInvoicesJobsLoading(false);
     }
   }, [cleanSheetId, getCachedClientData, setCachedClientData, getInFlightPrefetch]);
 

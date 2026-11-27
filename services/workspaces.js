@@ -41,7 +41,7 @@ import { getSessionUser } from "./authService.js";
 import { getSettingsRedisKey } from "./clientSettingsService.js";
 import { redisClient, scanRedisKeys } from "./redisClient.js";
 import { getSupabaseAdmin, isSupabaseControlPlaneActive } from "./supabaseClient.js";
-import { resolveSupabaseSheetContext, isVirtualSupabaseSheetId, flushPendingClientRecomputes, flushImmediateAndScheduleBackgroundClientRecomputes, invalidateMasterEngineCache } from "./masterEngineService.js";
+import { resolveSupabaseSheetContext, isVirtualSupabaseSheetId, flushImmediateAndScheduleBackgroundClientRecomputes, invalidateMasterEngineCache } from "./masterEngineService.js";
 import {
   getClientRelationalJobsLookup,
   resolveAuthoritativeJobAnchor,
@@ -9810,35 +9810,44 @@ export async function resolveMasterIdForOutgoings_(sheets, sheetIdClean, tenantC
 }
 
 export async function syncOutgNotesAndTriggerRefresh_(sheets, { sheetIdClean, targetMasterId, tenantClient, outgNotesData }) {
-  const outgNotesUpdates = [
-    sheets.spreadsheets.values.batchUpdate({
-      spreadsheetId: sheetIdClean,
+  const supaCtxPromise = targetMasterId
+    ? resolveSupabaseSheetContext({ clientName: tenantClient, spreadsheetId: targetMasterId }).catch(() => null)
+    : Promise.resolve(null);
+
+  const clientOutgNotesWrite = sheets.spreadsheets.values.batchUpdate({
+    spreadsheetId: sheetIdClean,
+    _skipFormulaRecompute: true,
+    _deferBackgroundRecompute: true,
+    requestBody: {
+      valueInputOption: "RAW",
+      data: outgNotesData,
+    },
+  }).catch(() => { });
+
+  const [supaCtx] = await Promise.all([supaCtxPromise, clientOutgNotesWrite]);
+  const isNativeMaster = Boolean(
+    supaCtx &&
+    supaCtx.masterMode === "supabase" &&
+    supaCtx.masterComputeMode === "native"
+  );
+
+  // In native master mode, OutgNotes is read directly from relational Contractor/Outgoings tables
+  // and DirComp is refreshed at the end of the background client formula cascade, so writing a legacy
+  // Master OutgNotes grid or kicking off a duplicate full 11-tab comparison run is redundant.
+  if (targetMasterId && !isNativeMaster) {
+    await sheets.spreadsheets.values.batchUpdate({
+      spreadsheetId: targetMasterId,
       requestBody: {
         valueInputOption: "RAW",
         data: outgNotesData,
       },
-    }).catch(() => { })
-  ];
+    }).catch((e) => console.warn("Failed to write to Master OutgNotes:", e.message));
 
-  if (targetMasterId) {
-    outgNotesUpdates.push(
-      sheets.spreadsheets.values.batchUpdate({
-        spreadsheetId: targetMasterId,
-        requestBody: {
-          valueInputOption: "RAW",
-          data: outgNotesData,
-        },
-      }).catch(e => console.warn("Failed to write to Master OutgNotes:", e.message))
-    );
-  }
-  await Promise.allSettled(outgNotesUpdates);
-
-  if (targetMasterId) {
-    const refreshPromise = resolveSupabaseSheetContext({ clientName: tenantClient, spreadsheetId: targetMasterId })
-      .then((supaCtx) => {
-        if (supaCtx && supaCtx.masterMode === "supabase") {
-          return recomputeClientComparisonsInSupabase(sheets, supaCtx.clientName || tenantClient);
-        }
+    const refreshPromise = (supaCtx && supaCtx.masterMode === "supabase")
+      ? recomputeClientComparisonsInSupabase(sheets, supaCtx.clientName || tenantClient).catch((e) =>
+        console.warn("Background refreshOutgoings call failed:", e.message)
+      )
+      : (() => {
         const cronSecret = process.env.CRON_SECRET || process.env.AGENT_TRIGGER_SECRET || "";
         const acWebAppUrl = (
           process.env.AUTOMATION_COMMANDER_WEBAPP_URL ||
@@ -9850,10 +9859,10 @@ export async function syncOutgNotesAndTriggerRefresh_(sheets, { sheetIdClean, ta
             clientSheetId: sheetIdClean,
             masterSheetId: targetMasterId,
             secret: cronSecret,
-          });
+          }).catch((e) => console.warn("Background refreshOutgoings call failed:", e.message));
         }
-      })
-      .catch((e) => console.warn("Background refreshOutgoings call failed:", e.message));
+        return Promise.resolve();
+      })();
     try {
       waitUntil(refreshPromise);
     } catch (_) { }
@@ -9983,6 +9992,7 @@ export async function handleUpdateOutgoingNote(req, res, sheets) {
             spreadsheetId: sheetIdClean,
             range: `Outgoings!${colLetter}112`,
             valueInputOption: "USER_ENTERED",
+            _deferBackgroundRecompute: true,
             requestBody: { values: [["ZERO"]] },
           });
         }
@@ -9991,11 +10001,9 @@ export async function handleUpdateOutgoingNote(req, res, sheets) {
           spreadsheetId: sheetIdClean,
           range: cellRef,
           valueInputOption: "USER_ENTERED",
+          _deferBackgroundRecompute: true,
           requestBody: { values: [[cellTotal || ""]] },
         });
-      }
-      if (sheetRow >= 12 && sheetRow <= 110 && tenantClient) {
-        await flushPendingClientRecomputes(sheets, tenantClient).catch(() => { });
       }
     }
 
@@ -10004,6 +10012,7 @@ export async function handleUpdateOutgoingNote(req, res, sheets) {
     const outgoingsGid = await getSheetGid(sheets, sheetIdClean, "Outgoings");
 
     let newCosNote = null;
+    let updatedCosCell = null;
     if (sheetRow >= 12 && sheetRow <= 110) {
       try {
         const cosCellResp = await withRetry(() =>
@@ -10020,6 +10029,15 @@ export async function handleUpdateOutgoingNote(req, res, sheets) {
         const cosInvTiming = cosTimingsRow[0]?.formattedValue || "Curr";
         const cosPayTiming = cosTimingsRow[1]?.formattedValue || "Curr";
         const cosCell = gridArr[2]?.rowData?.[0]?.values?.[0];
+        if (cosCell) {
+          const cosVal = typeof cosCell.effectiveValue?.numberValue === "number"
+            ? cosCell.effectiveValue.numberValue
+            : parseFloat(String(cosCell.formattedValue || "").replace(/[^0-9.-]/g, "")) || 0;
+          updatedCosCell = {
+            amount: cosVal,
+            formatted: cosCell.formattedValue || (cosVal ? `£${cosVal.toLocaleString("en-GB")}` : "£0"),
+          };
+        }
         newCosNote = buildUpdatedCosNote_(cosCell, hCellStr, cosInvTiming, cosPayTiming, colLetter);
       } catch (cosErr) {
         console.warn("Could not inspect Row 111 Making up CoS:", cosErr.message);
@@ -10132,6 +10150,7 @@ export async function handleUpdateOutgoingNote(req, res, sheets) {
       ...(sessionUser?.isAdmin ? { cellRef } : {}),
       blockCount: (blocks || []).length,
       cellTotal,
+      ...(updatedCosCell ? { updatedCosCell } : {}),
     });
   } catch (err) {
     console.error("❌ update_outgoing_note error:", err);
@@ -10298,15 +10317,13 @@ export async function handleUpdateOutgoingNotesBatch(req, res, sheets) {
     await withRetry(() =>
       sheets.spreadsheets.values.batchUpdate({
         spreadsheetId: sheetIdClean,
+        _deferBackgroundRecompute: true,
         requestBody: {
           valueInputOption: "USER_ENTERED",
           data: valuesBatchData,
         },
       })
     );
-    if (touchedCosCols.size > 0 && tenantClient) {
-      await flushPendingClientRecomputes(sheets, tenantClient).catch(() => { });
-    }
 
     // 2. Inspect Row 111 Making up CoS for each affected column in a single batch read
     const updatedCosCells = {};
@@ -10445,15 +10462,13 @@ export async function handleSetMakingUpCosZero(req, res, sheets) {
         spreadsheetId: sheetIdClean,
         range: cellRange,
         valueInputOption: "USER_ENTERED",
+        _deferBackgroundRecompute: true,
         requestBody: { values: [[writeValue]] },
       })
     );
     const flushClientZero = clientName || (await resolveClientNameBySheetId(sheets, sheetIdClean, automationCommanderSheetId));
-    if (flushClientZero) {
-      await flushPendingClientRecomputes(sheets, flushClientZero).catch(() => { });
-    }
 
-    // Read back row 111 in that column to get recalculated value
+    // Read back row 111 in that column to get recalculated value (evaluated immediately in Step 1)
     let recalculatedAmount = 0;
     let recalculatedFormatted = "£0";
     try {
@@ -10474,6 +10489,9 @@ export async function handleSetMakingUpCosZero(req, res, sheets) {
       }
     } catch (e) {
       console.warn("Could not read back recalculated row 111:", e.message);
+    }
+    if (flushClientZero) {
+      await flushImmediateAndScheduleBackgroundClientRecomputes(sheets, flushClientZero).catch(() => { });
     }
 
     // Invalidate caches
@@ -10536,13 +10554,11 @@ export async function handleSetMakingUpCosTarget(req, res, sheets) {
         spreadsheetId: sheetIdClean,
         range: "Outgoings!A112",
         valueInputOption: "USER_ENTERED",
+        _deferBackgroundRecompute: true,
         requestBody: { values: [[formattedPct]] },
       })
     );
     const flushClientTarget = clientName || (await resolveClientNameBySheetId(sheets, sheetIdClean, automationCommanderSheetId));
-    if (flushClientTarget) {
-      await flushPendingClientRecomputes(sheets, flushClientTarget).catch(() => { });
-    }
 
     // 2. Invalidate Client Settings cache in Redis so Client Settings immediately reflects the change
     if (redisClient?.isOpen) {
@@ -10566,6 +10582,9 @@ export async function handleSetMakingUpCosTarget(req, res, sheets) {
         fields: "sheets.data.rowData.values(formattedValue,effectiveValue,note)",
       })
     );
+    if (flushClientTarget) {
+      await flushImmediateAndScheduleBackgroundClientRecomputes(sheets, flushClientTarget).catch(() => { });
+    }
 
     const sheetGrids = gridResp.data.sheets?.[0]?.data || [];
     const headerCells = sheetGrids[0]?.rowData?.[0]?.values || [];

@@ -804,6 +804,244 @@ export function invalidatePrecomputedMemoryCache() {
 }
 
 /**
+ * Surgically removes a single deleted fingerprintHash from the Redis `triage_precomputed`
+ * payload and updates affected per-client counts/flags/noActionAnalysisResults in place,
+ * avoiding a full AlertMemory table scan and compaction.
+ */
+export async function removeAlertFingerprintFromPrecomputed(fingerprintHash) {
+  const cleanHash = String(fingerprintHash || "").trim();
+  if (!cleanHash) {
+    return { updated: false, removedAlerts: 0, removedNoAction: 0, removedProactive: 0 };
+  }
+
+  invalidatePrecomputedMemoryCache();
+
+  try {
+    await ensureRedisConnected(2000).catch(() => false);
+    if (!redisClient?.isOpen) {
+      return { updated: false, removedAlerts: 0, removedNoAction: 0, removedProactive: 0 };
+    }
+
+    const raw = await redisClient.get(PRECOMPUTED_KEY);
+    if (!raw) {
+      return { updated: false, removedAlerts: 0, removedNoAction: 0, removedProactive: 0 };
+    }
+
+    const pre = JSON.parse(raw);
+
+    const origAlerts = Array.isArray(pre.alerts) ? pre.alerts : [];
+    const nextAlerts = origAlerts.filter((a) => {
+      const fp = a?.fingerprintHash || buildAlertFingerprint(a);
+      return fp !== cleanHash;
+    });
+
+    const origNoAction = Array.isArray(pre.noActionAlerts) ? pre.noActionAlerts : [];
+    const removedNoActionItems = [];
+    const nextNoAction = origNoAction.filter((na) => {
+      const isMatch =
+        na?.fingerprintHash === cleanHash ||
+        na?.legacyFingerprint === cleanHash ||
+        na?.id === cleanHash;
+      if (isMatch) {
+        removedNoActionItems.push(na);
+        return false;
+      }
+      return true;
+    });
+
+    const origProactive = Array.isArray(pre.proactiveAlerts) ? pre.proactiveAlerts : [];
+    const nextProactive = origProactive.filter((pa) => pa?.fingerprintHash !== cleanHash);
+
+    const analysisResults =
+      pre.noActionAnalysisResults && typeof pre.noActionAnalysisResults === "object"
+        ? pre.noActionAnalysisResults
+        : null;
+    const matchingAnalysisKeys = analysisResults
+      ? Object.keys(analysisResults).filter((k) => k.endsWith(`___${cleanHash}`))
+      : [];
+
+    const removedAlerts = origAlerts.length - nextAlerts.length;
+    const removedNoAction = origNoAction.length - nextNoAction.length;
+    const removedProactive = origProactive.length - nextProactive.length;
+
+    if (
+      removedAlerts === 0 &&
+      removedNoAction === 0 &&
+      removedProactive === 0 &&
+      matchingAnalysisKeys.length === 0
+    ) {
+      return { updated: false, removedAlerts: 0, removedNoAction: 0, removedProactive: 0 };
+    }
+
+    pre.alerts = nextAlerts;
+    pre.noActionAlerts = nextNoAction;
+    pre.proactiveAlerts = nextProactive;
+    pre.totalAlerts = nextAlerts.length;
+    pre.noActionCount = nextNoAction.length;
+
+    const storeCountsByClient = Object.create(null);
+    const storeCrmSubTypesByClient = Object.create(null);
+    const storeExpIdsByClient = Object.create(null);
+    const storeContrIdsByClient = Object.create(null);
+    const storePassIdsByClient = Object.create(null);
+    const storeInvIdsByClient = Object.create(null);
+    const clientsWithAnyRemaining = new Set();
+
+    const isSafeKey = (k) => Boolean(k) && k !== "__proto__" && k !== "constructor" && k !== "prototype";
+
+    for (const a of nextAlerts) {
+      const k = a?.clientName;
+      if (!isSafeKey(k)) continue;
+      clientsWithAnyRemaining.add(k);
+      const fKey = a.flagType || a.alertType || a.type;
+      if (isSafeKey(fKey)) {
+        if (!storeCountsByClient[k]) storeCountsByClient[k] = Object.create(null);
+        storeCountsByClient[k][fKey] = (storeCountsByClient[k][fKey] || 0) + 1;
+        if (
+          fKey === "crmPipeAppDiscr" ||
+          fKey === "crmConfAppDiscr" ||
+          fKey === "crmPipeDashDiscr" ||
+          fKey === "crmConfDashDiscr"
+        ) {
+          if (!storeCrmSubTypesByClient[k]) storeCrmSubTypesByClient[k] = Object.create(null);
+          if (!storeCrmSubTypesByClient[k][fKey]) {
+            storeCrmSubTypesByClient[k][fKey] = { notFound: 0, fieldMismatch: 0 };
+          }
+          if (a.subType === "field_mismatch") storeCrmSubTypesByClient[k][fKey].fieldMismatch += 1;
+          else storeCrmSubTypesByClient[k][fKey].notFound += 1;
+        }
+        if (
+          fKey === "contractorsDashboardDiscr" ||
+          fKey === "passThroughDashboardDiscr" ||
+          fKey === "expenseDashboardDiscr"
+        ) {
+          const txId = a.summary?.transactionId || a.summary?.appId || a.summary?.reference || a.summary?.id;
+          if (txId !== undefined && txId !== null && txId !== "") {
+            const s = String(txId).trim();
+            const clean = s.replace(/^#/, "");
+            if (!storeExpIdsByClient[k]) storeExpIdsByClient[k] = [];
+            storeExpIdsByClient[k].push(s);
+            if (clean !== s) storeExpIdsByClient[k].push(clean);
+            if (fKey === "passThroughDashboardDiscr") {
+              if (!storePassIdsByClient[k]) storePassIdsByClient[k] = [];
+              storePassIdsByClient[k].push(s);
+              if (clean !== s) storePassIdsByClient[k].push(clean);
+            } else {
+              if (!storeContrIdsByClient[k]) storeContrIdsByClient[k] = [];
+              storeContrIdsByClient[k].push(s);
+              if (clean !== s) storeContrIdsByClient[k].push(clean);
+            }
+          }
+        }
+        if (fKey === "invoiceDashboardDiscr") {
+          const isMissing =
+            a.data?.flags?.[0] === "1" ||
+            (a.flagColumns?.[0] === "Missing invoice?" && a.data?.flags?.[0] === "1");
+          if (isMissing) {
+            const invNo = a.summary?.invoiceNo || a.summary?.reference || a.summary?.id || a.data?.accounting?.[5];
+            if (invNo !== undefined && invNo !== null && invNo !== "") {
+              const s = String(invNo).trim();
+              const clean = s.replace(/^#/, "");
+              if (!storeInvIdsByClient[k]) storeInvIdsByClient[k] = [];
+              storeInvIdsByClient[k].push(s);
+              if (clean !== s) storeInvIdsByClient[k].push(clean);
+            }
+          }
+        }
+      }
+    }
+
+    for (const na of nextNoAction) {
+      const k = na?.clientName;
+      if (!isSafeKey(k)) continue;
+      clientsWithAnyRemaining.add(k);
+      const fKey = na.flagType;
+      if (isSafeKey(fKey)) {
+        if (!storeCountsByClient[k]) storeCountsByClient[k] = Object.create(null);
+        storeCountsByClient[k][fKey] = (storeCountsByClient[k][fKey] || 0) + 1;
+      }
+    }
+
+    for (const pa of nextProactive) {
+      const k = pa?.clientName;
+      if (isSafeKey(k)) clientsWithAnyRemaining.add(k);
+    }
+
+    if (Array.isArray(pre.clientsWithFlags)) {
+      pre.clientsWithFlags = pre.clientsWithFlags
+        .filter((c) => c?.clientName && clientsWithAnyRemaining.has(c.clientName))
+        .map((c) => {
+          const counts = storeCountsByClient[c.clientName] ? { ...storeCountsByClient[c.clientName] } : {};
+          const updatedFlags = { ...(c.flags || {}) };
+          for (const flagKey of Object.keys(counts)) {
+            if (counts[flagKey] > 0) updatedFlags[flagKey] = true;
+          }
+          for (const flagKey of Object.keys(updatedFlags)) {
+            if (!counts[flagKey] || counts[flagKey] <= 0) {
+              updatedFlags[flagKey] = false;
+            }
+          }
+          return {
+            ...c,
+            flags: updatedFlags,
+            alertCounts: counts,
+            crmAlertSubTypes: storeCrmSubTypesByClient[c.clientName]
+              ? { ...storeCrmSubTypesByClient[c.clientName] }
+              : {},
+            activeExpenseIds: storeExpIdsByClient[c.clientName] || [],
+            activeContractorExpenseIds: storeContrIdsByClient[c.clientName] || [],
+            activePassThroughExpenseIds: storePassIdsByClient[c.clientName] || [],
+            activeInvoiceIds: storeInvIdsByClient[c.clientName] || [],
+          };
+        });
+    }
+
+    if (analysisResults) {
+      for (const k of matchingAnalysisKeys) {
+        delete analysisResults[k];
+      }
+      const affectedPairs = new Set();
+      for (const na of removedNoActionItems) {
+        if (na?.clientName && na?.flagType) {
+          affectedPairs.add(`${na.clientName}___${na.flagType}`);
+        }
+      }
+      for (const pairKey of affectedPairs) {
+        if (!isSafeKey(pairKey)) continue;
+        const sepIdx = pairKey.indexOf("___");
+        const cName = pairKey.slice(0, sepIdx);
+        const fType = pairKey.slice(sepIdx + 3);
+        const matchingRemaining = nextNoAction.filter(
+          (na) => na?.clientName === cName && na?.flagType === fType && na.analysisResult && na.analysisResult.results
+        );
+        if (matchingRemaining.length === 0) {
+          delete analysisResults[pairKey];
+        } else {
+          const rebuilt = { success: true, flagType: fType, results: [], overallOk: true };
+          for (const na of matchingRemaining) {
+            rebuilt.results.push(...na.analysisResult.results);
+            if (na.analysisResult.overallOk === false) {
+              rebuilt.overallOk = false;
+            }
+          }
+          analysisResults[pairKey] = rebuilt;
+        }
+      }
+    }
+
+    const serialized = JSON.stringify(pre);
+    await redisClient.set(PRECOMPUTED_KEY, serialized, { EX: 86400 * 7 });
+    _precomputedMemoryCache = serialized;
+    _precomputedCachedAt = Date.now();
+
+    return { updated: true, removedAlerts, removedNoAction, removedProactive };
+  } catch (err) {
+    console.warn("⚠️ removeAlertFingerprintFromPrecomputed warning:", err.message);
+    return { updated: false, removedAlerts: 0, removedNoAction: 0, removedProactive: 0 };
+  }
+}
+
+/**
  * Returns a lowercase Set of client names whose effective status is inactive, archived, or suspended.
  * Avoids caching an empty set if the Supabase query errors.
  */

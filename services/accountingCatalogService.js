@@ -11,7 +11,7 @@ import {
   lookupInvFromAppMeta,
 } from "./sharedHelpers.js";
 import { unwrapSheetId, sanitizeFormulaInput } from "./userPermissions.js";
-import { resolveSupabaseSheetContext, flushImmediateAndScheduleBackgroundClientRecomputes, flushPendingClientRecomputes } from "./masterEngineService.js";
+import { resolveSupabaseSheetContext, flushImmediateAndScheduleBackgroundClientRecomputes } from "./masterEngineService.js";
 import { resolveAuthoritativeJobAnchor } from "./relationalJobsService.js";
 import { runNativeMasterAmdAction } from "./masterSyncEngine.js";
 import {
@@ -2417,23 +2417,17 @@ export async function moveAccountingItemToJob({
       }
     }
 
-    // Update Outgoings cell values FIRST so Google Sheets / virtual engine recomputes Row 111 ("Making up CoS") before we read it
+    // Update Outgoings cell values FIRST (deferred downstream cascade; Row 111 evaluates in immediate pass)
     await withRetry(() =>
       sheets.spreadsheets.values.batchUpdate({
         spreadsheetId: cleanClientSheetId,
+        _deferBackgroundRecompute: true,
         requestBody: {
           valueInputOption: "USER_ENTERED",
           data: outgoingsValueWrites,
         },
       })
     );
-
-    const resolvedMoveClient =
-      resolvedClientName ||
-      (await resolveClientNameBySheetId(sheets, cleanClientSheetId, automationCommanderSheetId));
-    if (resolvedMoveClient) {
-      await flushPendingClientRecomputes(sheets, resolvedMoveClient).catch(() => { });
-    }
 
     const uniqueColLetters = [...new Set(Array.from(cellMap.values()).map((c) => c.colLetter))];
     try {

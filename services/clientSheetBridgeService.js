@@ -69,6 +69,43 @@ const READ_CHECK_THROTTLE_MS = 15000;
 const RECENT_LOG_LIMIT = 15;
 const TEXT_ONLY_SLOT_COLS = new Set([42, 49, 56, 81, 88, 95]); // AQ, AX, BE, CD, CK, CR
 const PROTOTYPE_KEYS = new Set(["__proto__", "constructor", "prototype"]);
+let _baselinesTableCache = { checkedAt: 0, ready: null };
+const _clearedLegacyBaselineClients = new Set();
+
+function isMissingRelationErr_(err) {
+  const msg = String(err?.message || err || "");
+  const code = String(err?.code || "");
+  return (
+    code === "42P01" ||
+    code === "PGRST205" ||
+    /does not exist|schema cache|could not find the table/i.test(msg)
+  );
+}
+
+export function resetSheetBridgeBaselinesTableCache() {
+  _baselinesTableCache = { checkedAt: 0, ready: null };
+}
+
+async function isSheetBridgeBaselinesTableReady_(supabase) {
+  if (!supabase) return false;
+  const now = Date.now();
+  const ttl = _baselinesTableCache.ready ? 300000 : 30000;
+  if (_baselinesTableCache.ready !== null && now - _baselinesTableCache.checkedAt < ttl) {
+    return _baselinesTableCache.ready;
+  }
+  try {
+    const { error } = await supabase
+      .from("pulse_sheet_bridge_baselines")
+      .select("client_id")
+      .limit(1);
+    const ready = !error;
+    _baselinesTableCache = { checkedAt: now, ready };
+    return ready;
+  } catch {
+    _baselinesTableCache = { checkedAt: now, ready: false };
+    return false;
+  }
+}
 let _coreClientTabSet = null;
 function getCoreClientTabSet_() {
   if (!_coreClientTabSet) {
@@ -1179,8 +1216,30 @@ async function loadBaselineRecord_(supabase, ctx) {
 
   let baselinePayload = null;
   let updatedAt = null;
+  const dedicatedReady = ctx.clientId ? await isSheetBridgeBaselinesTableReady_(supabase) : false;
 
-  if (ctx.clientId) {
+  if (ctx.clientId && dedicatedReady) {
+    try {
+      const { data: dedData, error: dedErr } = await supabase
+        .from("pulse_sheet_bridge_baselines")
+        .select("drive_version, note_bounds_version, tabs, updated_at")
+        .eq("client_id", ctx.clientId)
+        .maybeSingle();
+      if (!dedErr && dedData && typeof dedData.tabs === "object" && dedData.tabs !== null) {
+        baselinePayload = {
+          driveVersion: dedData.drive_version || "",
+          noteBoundsVersion: dedData.note_bounds_version || CURRENT_NOTE_BOUNDS_VERSION,
+          tabs: dedData.tabs,
+          updatedAt: dedData.updated_at || null,
+        };
+        updatedAt = dedData.updated_at || null;
+      } else if (dedErr && isMissingRelationErr_(dedErr)) {
+        _baselinesTableCache = { checkedAt: Date.now(), ready: false };
+      }
+    } catch (_) { }
+  }
+
+  if (!baselinePayload && ctx.clientId) {
     try {
       const { data: cfgData, error: cfgErr } = await supabase
         .from("pulse_master_sync_configs")
@@ -1242,6 +1301,45 @@ async function saveBaselineRecord_(
     compacted.noteBoundsVersion = Number(tObj.noteBoundsVersion || noteBoundsVersion || CURRENT_NOTE_BOUNDS_VERSION);
     compactedTabs[tName] = compacted;
   }
+
+  const nowIso = new Date().toISOString();
+  const cleanDriveVer = String(driveVersion || "");
+  const cleanBoundsVer = Number(noteBoundsVersion || CURRENT_NOTE_BOUNDS_VERSION);
+
+  if (ctx.clientId && (await isSheetBridgeBaselinesTableReady_(supabase))) {
+    const { error: dedErr } = await supabase
+      .from("pulse_sheet_bridge_baselines")
+      .upsert(
+        {
+          client_id: ctx.clientId,
+          client_name: ctx.clientName,
+          drive_version: cleanDriveVer,
+          note_bounds_version: cleanBoundsVer,
+          tabs: compactedTabs,
+          updated_at: nowIso,
+        },
+        { onConflict: "client_id" }
+      );
+    if (!dedErr) {
+      // Opportunistically clear legacy pulse_master_sync_configs JSONB blob once per client
+      if (!_clearedLegacyBaselineClients.has(ctx.clientId)) {
+        _clearedLegacyBaselineClients.add(ctx.clientId);
+        try {
+          await supabase
+            .from("pulse_master_sync_configs")
+            .update({ sheet_bridge_baseline: null })
+            .eq("client_id", ctx.clientId)
+            .not("sheet_bridge_baseline", "is", null);
+        } catch (_) { }
+      }
+      return;
+    }
+    if (!isMissingRelationErr_(dedErr)) {
+      throw new Error(`pulse_sheet_bridge_baselines upsert failed: ${dedErr.message}`);
+    }
+    _baselinesTableCache = { checkedAt: Date.now(), ready: false };
+  }
+
   let prevMasterUpdatedAt = null;
   if (ctx.clientId) {
     const { data: curSyncMeta } = await supabase
@@ -1261,10 +1359,10 @@ async function saveBaselineRecord_(
   }
 
   const payload = {
-    driveVersion: String(driveVersion || ""),
-    updatedAt: new Date().toISOString(),
+    driveVersion: cleanDriveVer,
+    updatedAt: nowIso,
     ...(prevMasterUpdatedAt ? { prevMasterUpdatedAt } : {}),
-    noteBoundsVersion: Number(noteBoundsVersion || CURRENT_NOTE_BOUNDS_VERSION),
+    noteBoundsVersion: cleanBoundsVer,
     tabs: compactedTabs,
   };
 

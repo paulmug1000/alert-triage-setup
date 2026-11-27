@@ -1796,7 +1796,10 @@ export async function pullNativeCrmDeals(ctx, options = {}) {
   let existingGrid = Array.isArray(existingGridOverride) ? existingGridOverride : null;
   let crmListGrid = [];
   if (!existingGrid || ctx?.connectorPullMode === "native") {
-    const bundle = await preloadClientRelationalMasterBundle(ctx, { source: "db" }).catch(() => null);
+    const bundle = await preloadClientRelationalMasterBundle(ctx, {
+      source: "db",
+      tables: ["crmDeals"],
+    }).catch(() => null);
     if (bundle) {
       const reconCrmList = await reconstructRelationalMasterTabFromBundle(bundle, "CRMList", ctx).catch(() => null);
       if (Array.isArray(reconCrmList)) {
@@ -1805,7 +1808,7 @@ export async function pullNativeCrmDeals(ctx, options = {}) {
       if (!existingGrid) {
         const hdrs =
           Array.isArray(bundle.config?.crm_raw_headers) &&
-          bundle.config.crm_raw_headers.length > 0
+            bundle.config.crm_raw_headers.length > 0
             ? bundle.config.crm_raw_headers
             : connectorOut.headers;
         existingGrid = projectCrmDealsToDataFromCrmGrid({
@@ -1928,7 +1931,7 @@ export async function pullNativeCrmDeals(ctx, options = {}) {
 
     invalidateClientRelationalMasterCache(ctx.clientName);
     if (ctx.masterComputeMode === "native" || ctx.masterComputeMode === "shadow") {
-      await computeAndPersistNativeMasterComparisons(ctx).catch(() => { });
+      await computeAndPersistNativeMasterComparisons(ctx, { domains: ["crm"] }).catch(() => { });
     }
   }
 

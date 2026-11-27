@@ -537,6 +537,7 @@ export async function recomputeCrmComparisonInSupabase(sheets, clientName, reque
     const natRes = await computeAndPersistNativeMasterComparisons(ctx, {
       requestedCrmMode: requestedMode || null,
       source: "db",
+      domains: ["crm"],
     });
     markMasterComparisonsFresh(ctx.clientName);
     return {

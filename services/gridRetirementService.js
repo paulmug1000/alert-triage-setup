@@ -18,6 +18,8 @@ if (typeof window !== "undefined") {
 
 let _cachedMigration0020Sql = null;
 let _schema6eCache = { checkedAt: 0, status: null };
+let _cachedMigration0022Sql = null;
+let _schema6fCache = { checkedAt: 0, status: null };
 
 export function readMigration0020Sql() {
   if (_cachedMigration0020Sql !== null) return _cachedMigration0020Sql;
@@ -28,6 +30,38 @@ export function readMigration0020Sql() {
     _cachedMigration0020Sql = "";
   }
   return _cachedMigration0020Sql;
+}
+
+export function readMigration0022Sql() {
+  if (_cachedMigration0022Sql !== null) return _cachedMigration0022Sql;
+  try {
+    const p = path.resolve(process.cwd(), "supabase/migrations/0022_phase6f_sheet_bridge_baselines.sql");
+    _cachedMigration0022Sql = fs.existsSync(p) ? fs.readFileSync(p, "utf8") : "";
+  } catch {
+    _cachedMigration0022Sql = "";
+  }
+  return _cachedMigration0022Sql;
+}
+
+export async function checkPhase6fBaselineTableSchemaStatus({ forceRefresh = false } = {}) {
+  const now = Date.now();
+  const ttl = _schema6fCache.status?.schemaReady ? 300000 : 30000;
+  if (!forceRefresh && _schema6fCache.status && now - _schema6fCache.checkedAt < ttl) {
+    return _schema6fCache.status;
+  }
+  const supabase = getSupabaseAdmin();
+  const migrationSql = readMigration0022Sql();
+  if (!supabase) {
+    return { schemaReady: false, migrationSql, error: "Supabase admin client not configured." };
+  }
+  const { error } = await supabase.from("pulse_sheet_bridge_baselines").select("client_id").limit(1);
+  const status = {
+    schemaReady: !error,
+    migrationSql,
+    error: error?.message || null,
+  };
+  _schema6fCache = { checkedAt: now, status };
+  return status;
 }
 
 export async function checkPhase6eRetirementSchemaStatus({ forceRefresh = false } = {}) {
@@ -95,13 +129,23 @@ export async function getPhase6eRetirementOverviewStats() {
     };
   }
 
-  const [retiredResp, baselineResp, remainingGridRows] = await Promise.all([
+  const [retiredResp, baselineResp, dedicatedBaselineResp, remainingGridRows] = await Promise.all([
     supabase.from("clients").select("id", { count: "exact", head: true }).eq("grid_storage_retired", true),
     supabase
       .from("pulse_master_sync_configs")
-      .select("client_id", { count: "exact", head: true })
+      .select("client_id")
       .not("sheet_bridge_baseline", "is", null),
+    checkPhase6fBaselineTableSchemaStatus().then(async (s6f) => {
+      if (!s6f.schemaReady) return { data: [] };
+      const res = await supabase.from("pulse_sheet_bridge_baselines").select("client_id");
+      return res.error ? { data: [] } : res;
+    }),
     gridCountPromise,
+  ]);
+
+  const migratedClientIds = new Set([
+    ...(baselineResp.data || []).map((r) => r.client_id).filter(Boolean),
+    ...(dedicatedBaselineResp.data || []).map((r) => r.client_id).filter(Boolean),
   ]);
 
   return {
@@ -109,7 +153,7 @@ export async function getPhase6eRetirementOverviewStats() {
     migrationSql: schema.migrationSql,
     retiredClientsCount: retiredResp.count ?? 0,
     remainingGridRows,
-    migratedBaselinesCount: baselineResp.count ?? 0,
+    migratedBaselinesCount: migratedClientIds.size,
   };
 }
 
@@ -285,7 +329,7 @@ export async function verifyZeroGridReadiness({ clientName = null } = {}) {
     return { data: all, error: null };
   };
 
-  const [bpRes, finRes, syncRes, gridMetaRows, bridgeRes, relBaselineRes] = await Promise.all([
+  const [bpRes, finRes, syncRes, gridMetaRows, bridgeRes, relBaselineRes, dedicatedBaselineRes] = await Promise.all([
     fetchPagedQuery_(
       () => {
         let q = supabase.from("pulse_client_tab_blueprints").select("client_id");
@@ -358,6 +402,19 @@ export async function verifyZeroGridReadiness({ clientName = null } = {}) {
           "relational bridge baseline"
         )
       : Promise.resolve({ data: [], error: null }),
+    checkPhase6fBaselineTableSchemaStatus().then((s6f) =>
+      s6f.schemaReady
+        ? fetchPagedQuery_(
+            () => {
+              let q = supabase.from("pulse_sheet_bridge_baselines").select("client_id");
+              if (filterByClient) q = q.in("client_id", clientIds);
+              return q;
+            },
+            "client_id",
+            "dedicated bridge baseline"
+          ).catch(() => ({ data: [], error: null }))
+        : Promise.resolve({ data: [], error: null })
+    ),
   ]);
 
   if (bpRes.error) throw new Error(`verifyZeroGridReadiness blueprints query failed: ${bpRes.error.message}`);
@@ -370,7 +427,10 @@ export async function verifyZeroGridReadiness({ clientName = null } = {}) {
   const finRows = finRes.data;
   const syncRows = syncRes.data;
   const bridgeRows = bridgeRes.data;
-  const relBaselineSet = new Set((relBaselineRes.data || []).map((r) => r.client_id).filter(Boolean));
+  const relBaselineSet = new Set([
+    ...(relBaselineRes.data || []).map((r) => r.client_id).filter(Boolean),
+    ...(dedicatedBaselineRes.data || []).map((r) => r.client_id).filter(Boolean),
+  ]);
 
   const bpCountByClient = new Map();
   for (const r of bpRows || []) {
@@ -614,6 +674,68 @@ export async function retireAllClientsGridStorage({
       (sum, r) => sum + (Number(r.purgedGridRows ?? r.wouldPurgeGridRows) || 0),
       0
     ),
+    results,
+  };
+}
+
+export async function migrateSheetBridgeBaselinesToDedicatedTable({
+  clientName = null,
+  dryRun = true,
+} = {}) {
+  const supabase = getSupabaseAdmin();
+  if (!supabase) throw new Error("Supabase admin client not configured.");
+  const isDryRun = dryRun !== false;
+  const s6f = await checkPhase6fBaselineTableSchemaStatus({ forceRefresh: !isDryRun });
+  if (!isDryRun && !s6f.schemaReady) {
+    throw new Error("Migration 0022 must be applied in Supabase SQL Editor first.");
+  }
+
+  let q = supabase
+    .from("pulse_master_sync_configs")
+    .select("client_id, client_name, sheet_bridge_baseline, updated_at")
+    .not("sheet_bridge_baseline", "is", null)
+    .order("client_name", { ascending: true });
+  if (clientName) {
+    q = q.ilike("client_name", escapeIlikeExact(String(clientName).trim()));
+  }
+  const { data: cfgRows, error } = await q;
+  if (error) throw new Error(`Failed reading legacy sync config baselines: ${error.message}`);
+
+  const results = [];
+  let migratedCount = 0;
+  for (const row of cfgRows || []) {
+    const baseline = row.sheet_bridge_baseline && typeof row.sheet_bridge_baseline === "object" ? row.sheet_bridge_baseline : {};
+    const tabs = baseline.tabs && typeof baseline.tabs === "object" ? baseline.tabs : {};
+    const tabCount = Object.keys(tabs).length;
+    if (isDryRun) {
+      results.push({ clientName: row.client_name, status: "would_migrate", tabCount });
+      continue;
+    }
+    const { error: upErr } = await supabase.from("pulse_sheet_bridge_baselines").upsert(
+      {
+        client_id: row.client_id,
+        client_name: row.client_name,
+        drive_version: String(baseline.driveVersion || ""),
+        note_bounds_version: Number(baseline.noteBoundsVersion || 2),
+        tabs,
+        updated_at: baseline.updatedAt || row.updated_at || new Date().toISOString(),
+      },
+      { onConflict: "client_id" }
+    );
+    if (upErr) throw new Error(`Dedicated baseline upsert failed (${row.client_name}): ${upErr.message}`);
+    const { error: clrErr } = await supabase
+      .from("pulse_master_sync_configs")
+      .update({ sheet_bridge_baseline: null })
+      .eq("client_id", row.client_id);
+    if (clrErr) throw new Error(`Legacy baseline clear failed (${row.client_name}): ${clrErr.message}`);
+    migratedCount++;
+    results.push({ clientName: row.client_name, status: "migrated", tabCount });
+  }
+  return {
+    dryRun: isDryRun,
+    schemaReady: s6f.schemaReady,
+    baselinesFound: (cfgRows || []).length,
+    migratedCount,
     results,
   };
 }

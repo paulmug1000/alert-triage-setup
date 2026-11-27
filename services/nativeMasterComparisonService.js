@@ -83,9 +83,69 @@ const MASTER_TAB_BY_COMP_TYPE = Object.fromEntries(
   Object.entries(MASTER_COMP_TYPE_BY_TAB).map(([tab, compType]) => [compType, tab])
 );
 
+export const VALID_MASTER_COMP_DOMAINS = Object.freeze(["inv", "dir", "crm", "pl", "time"]);
+const MASTER_COMP_DOMAIN_SPEC = Object.freeze({
+  inv: {
+    tabs: ["InvAppList", "InvDashList", "InvComp"],
+    rawTabs: ["InvFromApp"],
+    masterTables: ["invoices"],
+    clientCalcTabs: ["ConfCalcs"],
+    needInputs: false,
+    needRecon: false,
+  },
+  dir: {
+    tabs: ["Outgoings", "JnlAppList", "DirDashList", "DirComp"],
+    rawTabs: ["JnlsFromApp"],
+    masterTables: ["directCosts"],
+    clientCalcTabs: ["ConfCalcs"],
+    needInputs: true,
+    needRecon: false,
+  },
+  crm: {
+    tabs: ["CRMList", "CRMComp"],
+    rawTabs: ["DataFromCRM"],
+    masterTables: ["crmDeals"],
+    clientCalcTabs: ["ConfCalcs", "PipeCalcs"],
+    needInputs: false,
+    needRecon: false,
+  },
+  pl: {
+    tabs: ["PLComp"],
+    rawTabs: ["PLFromApp", "Year0PLFromApp"],
+    masterTables: ["plLines"],
+    clientCalcTabs: [],
+    needInputs: false,
+    needRecon: true,
+  },
+  time: {
+    tabs: ["TimeComp"],
+    rawTabs: [],
+    masterTables: ["timeEntries"],
+    clientCalcTabs: [],
+    needInputs: false,
+    needRecon: false,
+  },
+});
+
+export function normalizeMasterComparisonDomains(domains) {
+  if (!Array.isArray(domains) || domains.length === 0) return null;
+  const normalized = [
+    ...new Set(
+      domains
+        .map((d) => String(d || "").trim().toLowerCase())
+        .filter((d) => VALID_MASTER_COMP_DOMAINS.includes(d))
+    ),
+  ].sort();
+  if (normalized.length === 0 || normalized.length === VALID_MASTER_COMP_DOMAINS.length) {
+    return null;
+  }
+  return normalized;
+}
+
 const _masterCompCache = new Map();
 const MASTER_COMP_TTL_MS = 15000;
 const _inFlightMasterCompCompute = new Map();
+const _clientCompQueueMap = new Map();
 const _inFlightMasterCompLoad = new Map();
 
 export function invalidateClientNativeMasterCompCache(clientName) {
@@ -155,39 +215,47 @@ export function summarizeMasterComparisonsFromGrids(grids = {}, clientName = "")
   };
 }
 
-function runMasterComparisonEvaluators_(grids, requestedCrmMode = null, clientSheetId = "") {
-  if (requestedCrmMode) {
+function runMasterComparisonEvaluators_(grids, requestedCrmMode = null, clientSheetId = "", domainSet = null) {
+  const runAll = !(domainSet instanceof Set) || domainSet.size === 0;
+  if (requestedCrmMode && (runAll || domainSet.has("crm"))) {
     if (!Array.isArray(grids.CRMComp)) grids.CRMComp = [];
     while (grids.CRMComp.length <= 1) grids.CRMComp.push([]);
     while (grids.CRMComp[1].length <= 1) grids.CRMComp[1].push("");
     grids.CRMComp[1][1] = requestedCrmMode;
   }
 
-  evaluateOutgoingsMasterTab(grids);
-  evaluateInvAppList(grids);
-  evaluateInvDashList(grids);
-  evaluateInvComp(grids);
-  evaluateJnlAppList(grids);
-  evaluateDirDashList(grids);
-  evaluateDirComp(grids);
-  evaluateCRMList(grids);
-  evaluateCRMComp(grids);
-  evaluateKeyInfoAndPLComp(grids, { clientSheetId });
-  evaluateTimeComp(grids);
+  const tabsToCompact = [];
+  if (runAll || domainSet.has("dir")) {
+    evaluateOutgoingsMasterTab(grids);
+    tabsToCompact.push("Outgoings");
+  }
+  if (runAll || domainSet.has("inv")) {
+    evaluateInvAppList(grids);
+    evaluateInvDashList(grids);
+    evaluateInvComp(grids);
+    tabsToCompact.push("InvAppList", "InvDashList", "InvComp");
+  }
+  if (runAll || domainSet.has("dir")) {
+    evaluateJnlAppList(grids);
+    evaluateDirDashList(grids);
+    evaluateDirComp(grids);
+    tabsToCompact.push("JnlAppList", "DirDashList", "DirComp");
+  }
+  if (runAll || domainSet.has("crm")) {
+    evaluateCRMList(grids);
+    evaluateCRMComp(grids);
+    tabsToCompact.push("CRMList", "CRMComp");
+  }
+  if (runAll || domainSet.has("pl")) {
+    evaluateKeyInfoAndPLComp(grids, { clientSheetId });
+    tabsToCompact.push("PLComp");
+  }
+  if (runAll || domainSet.has("time")) {
+    evaluateTimeComp(grids);
+    tabsToCompact.push("TimeComp");
+  }
 
-  for (const tName of [
-    "InvAppList",
-    "InvDashList",
-    "InvComp",
-    "JnlAppList",
-    "DirDashList",
-    "DirComp",
-    "CRMList",
-    "CRMComp",
-    "PLComp",
-    "TimeComp",
-    "Outgoings",
-  ]) {
+  for (const tName of tabsToCompact) {
     if (Array.isArray(grids[tName])) {
       grids[tName] = compactGrid2D(grids[tName]);
     }
@@ -202,6 +270,7 @@ export async function evaluateNativeMasterComparisonsInMemory(
     requestedCrmMode = null,
     masterBundleOverride = null,
     contextGridsOverride = null,
+    domains = null,
   } = {}
 ) {
   const ctx =
@@ -210,66 +279,113 @@ export async function evaluateNativeMasterComparisonsInMemory(
       : await resolveSupabaseSheetContext({ clientName: String(ctxOrClientName || "") });
   if (!ctx?.clientId) throw new Error("Valid client context is required.");
 
+  const normalizedDomains = normalizeMasterComparisonDomains(domains);
+  const domainSet = normalizedDomains ? new Set(normalizedDomains) : null;
+
+  let neededMasterTables = null;
+  let neededRawTabs = null;
+  let neededClientCalcTabs = ["ConfCalcs", "PipeCalcs"];
+  let needInputsBundle = true;
+  let needReconBundle = true;
+
+  if (domainSet) {
+    const mTables = new Set();
+    const rTabs = new Set();
+    const cTabs = new Set();
+    needInputsBundle = false;
+    needReconBundle = false;
+    for (const d of domainSet) {
+      const spec = MASTER_COMP_DOMAIN_SPEC[d];
+      if (!spec) continue;
+      for (const t of spec.masterTables) mTables.add(t);
+      for (const rt of spec.rawTabs) rTabs.add(rt);
+      for (const ct of spec.clientCalcTabs) cTabs.add(ct);
+      if (spec.needInputs) needInputsBundle = true;
+      if (spec.needRecon) needReconBundle = true;
+    }
+    neededMasterTables = [...mTables];
+    neededRawTabs = rTabs;
+    neededClientCalcTabs = [...cTabs];
+  }
+
   const schema = await checkPhase6NativeComputeSchemaStatus();
   const useDb =
     source === "db" ||
     (source === "auto" && schema.schemaReady);
 
   const [masterBundle, clientCalcsMap, inputsBundle, reconBundle] = await Promise.all([
-    masterBundleOverride || preloadClientRelationalMasterBundle(ctx, { source: useDb ? "db" : "in_memory" }),
-    loadNativeClientTabRecordsBatch(ctx, ["ConfCalcs", "PipeCalcs"], {
-      source: useDb ? "db" : "in_memory",
-      valuesOnly: true,
-      includeNotes: false,
-    }),
-    preloadClientRelationalInputsBundle(ctx, {
-      includeSalaries: false,
-      includeOutgoings: true,
-      includeOutgNotes: true,
-      includeNbToFind: false,
-      includeBudget: false,
-      includeCash: false,
-    }),
-    preloadClientRelationalReconBundle(ctx, { source: useDb ? "db" : "in_memory" }).catch(() => null),
+    masterBundleOverride ||
+      preloadClientRelationalMasterBundle(ctx, {
+        source: useDb ? "db" : "in_memory",
+        ...(neededMasterTables ? { tables: neededMasterTables } : {}),
+      }),
+    neededClientCalcTabs.length > 0
+      ? loadNativeClientTabRecordsBatch(ctx, neededClientCalcTabs, {
+          source: useDb ? "db" : "in_memory",
+          valuesOnly: true,
+          includeNotes: false,
+        })
+      : Promise.resolve({}),
+    needInputsBundle
+      ? preloadClientRelationalInputsBundle(ctx, {
+          includeSalaries: false,
+          includeOutgoings: true,
+          includeOutgNotes: true,
+          includeNbToFind: false,
+          includeBudget: false,
+          includeCash: false,
+        })
+      : Promise.resolve(null),
+    needReconBundle
+      ? preloadClientRelationalReconBundle(ctx, { source: useDb ? "db" : "in_memory" }).catch(() => null)
+      : Promise.resolve(null),
   ]);
 
-  const rawMasterTabs = buildBaseRawMasterTabsFromBundle(masterBundle);
+  const rawMasterTabs = buildBaseRawMasterTabsFromBundle(masterBundle, neededRawTabs);
   const seedCompTabs = buildMasterComparisonSeedGridsFromBundle(masterBundle);
 
   const cfg = masterBundle?.config || {};
   let masterKeyInfo = clone2D_(contextGridsOverride?.KeyInfo || cfg.master_key_info_grid || []);
-  let dataChgAlert = clone2D_(contextGridsOverride?.DataChgAlert || cfg.data_chg_alert_grid || []);
-  let masterPlAdds = clone2D_(contextGridsOverride?.PLAdds || cfg.master_pl_adds_grid || []);
+  let dataChgAlert = clone2D_(
+    contextGridsOverride?.DataChgAlert || (!domainSet || domainSet.has("crm") ? cfg.data_chg_alert_grid : []) || []
+  );
+  let masterPlAdds = clone2D_(
+    contextGridsOverride?.PLAdds || (!domainSet || domainSet.has("pl") ? cfg.master_pl_adds_grid : []) || []
+  );
 
   if (masterKeyInfo.length === 0 && !useDb) {
     const rec = await getOrLoadVirtualTabGrid_(ctx, "master", "KeyInfo", null, { valuesOnly: true }).catch(() => null);
     masterKeyInfo = clone2D_(rec?.values_grid || []);
   }
-  if (dataChgAlert.length === 0 && !useDb) {
+  if ((!domainSet || domainSet.has("crm")) && dataChgAlert.length === 0 && !useDb) {
     const rec = await getOrLoadVirtualTabGrid_(ctx, "master", "DataChgAlert", null, { valuesOnly: true }).catch(() => null);
     dataChgAlert = clone2D_(rec?.values_grid || []);
   }
-  if (masterPlAdds.length === 0 && !useDb) {
+  if ((!domainSet || domainSet.has("pl")) && masterPlAdds.length === 0 && !useDb) {
     const rec = await getOrLoadVirtualTabGrid_(ctx, "master", "PLAdds", null, { valuesOnly: true }).catch(() => null);
     masterPlAdds = clone2D_(rec?.values_grid || []);
   }
 
-  const outRecon = reconstructRelationalTabFromBundle(inputsBundle, "Outgoings");
-  const outNotesRecon = reconstructRelationalTabFromBundle(inputsBundle, "OutgNotes");
+  const outRecon = inputsBundle ? reconstructRelationalTabFromBundle(inputsBundle, "Outgoings") : null;
+  const outNotesRecon = inputsBundle ? reconstructRelationalTabFromBundle(inputsBundle, "OutgNotes") : null;
   const reconPlAddsRec = reconBundle ? reconstructRelationalReconTabFromBundle(reconBundle, "PLAdds") : null;
 
-  const clientConfCalcs = trimMasterCalcsGrid_(
-    (clientCalcsMap.ConfCalcs?.values_grid || []).slice(0, 5001).map((r) => (r || []).slice(0, 267))
-  );
-  const clientPipeCalcs = trimMasterCalcsGrid_(
-    (clientCalcsMap.PipeCalcs?.values_grid || []).slice(0, 1000).map((r) => (r || []).slice(0, 267))
-  );
-  const clientOutgoings = compactGrid2D(
-    (outRecon.valuesGrid || []).slice(0, 295).map((r) => (r || []).slice(0, 50))
-  );
-  const clientOutgNotes = compactGrid2D(
-    (outNotesRecon.valuesGrid || []).slice(0, 112).map((r) => (r || []).slice(0, 48))
-  );
+  const clientConfCalcs = clientCalcsMap.ConfCalcs
+    ? trimMasterCalcsGrid_(
+        (clientCalcsMap.ConfCalcs.values_grid || []).slice(0, 5001).map((r) => (r || []).slice(0, 267))
+      )
+    : [];
+  const clientPipeCalcs = clientCalcsMap.PipeCalcs
+    ? trimMasterCalcsGrid_(
+        (clientCalcsMap.PipeCalcs.values_grid || []).slice(0, 1000).map((r) => (r || []).slice(0, 267))
+      )
+    : [];
+  const clientOutgoings = outRecon
+    ? compactGrid2D((outRecon.valuesGrid || []).slice(0, 295).map((r) => (r || []).slice(0, 50)))
+    : [];
+  const clientOutgNotes = outNotesRecon
+    ? compactGrid2D((outNotesRecon.valuesGrid || []).slice(0, 112).map((r) => (r || []).slice(0, 48)))
+    : [];
   const reconPlAddsVals =
     Array.isArray(reconPlAddsRec?.values_grid) && reconPlAddsRec.values_grid.length > 0
       ? compactGrid2D(reconPlAddsRec.values_grid)
@@ -288,13 +404,14 @@ export async function evaluateNativeMasterComparisonsInMemory(
     ...(reconPlAddsVals ? { ReconPLAdds: reconPlAddsVals } : {}),
   };
 
-  runMasterComparisonEvaluators_(grids, requestedCrmMode, ctx?.clientSheetId || "");
+  runMasterComparisonEvaluators_(grids, requestedCrmMode, ctx?.clientSheetId || "", domainSet);
   const summary = summarizeMasterComparisonsFromGrids(grids, ctx.clientName);
 
   const dfcGrid = grids.DataFromCRM || [];
   const crmCompGrid = grids.CRMComp || [];
   return {
     source: useDb ? "db" : "in_memory",
+    domains: normalizedDomains || [...VALID_MASTER_COMP_DOMAINS],
     grids,
     summary,
     crmMode: String(crmCompGrid[1]?.[1] || requestedCrmMode || "Pipeline").trim(),
@@ -403,7 +520,7 @@ export async function syncMasterContextGridsToConfig(ctxOrClientName, partialGri
 
 export async function computeAndPersistNativeMasterComparisons(
   ctxOrClientName,
-  { requestedCrmMode = null, updateBackfillTimestamp = false, source = "auto" } = {}
+  { requestedCrmMode = null, updateBackfillTimestamp = false, source = "auto", domains = null } = {}
 ) {
   const ctx =
     ctxOrClientName && typeof ctxOrClientName === "object" && ctxOrClientName.clientId
@@ -411,10 +528,12 @@ export async function computeAndPersistNativeMasterComparisons(
       : await resolveSupabaseSheetContext({ clientName: String(ctxOrClientName || "") });
   if (!ctx?.clientId) throw new Error("Valid client context is required.");
 
+  const initialDomains = normalizeMasterComparisonDomains(domains);
   const clientKey = String(ctx.clientName || "").trim().toLowerCase();
+  const dedupKey = `${clientKey}::${initialDomains ? initialDomains.join(",") : "all"}`;
   const canDedup = !requestedCrmMode && !updateBackfillTimestamp;
-  if (canDedup && _inFlightMasterCompCompute.has(clientKey)) {
-    return _inFlightMasterCompCompute.get(clientKey);
+  if (canDedup && _inFlightMasterCompCompute.has(dedupKey)) {
+    return _inFlightMasterCompCompute.get(dedupKey);
   }
 
   const runCompute = async () => {
@@ -423,14 +542,61 @@ export async function computeAndPersistNativeMasterComparisons(
       throw new Error("Migration 0017 must be applied in Supabase SQL Editor first.");
     }
 
+    const supabase = getSupabaseAdmin();
+    let effectiveDomains = initialDomains;
+    let existingByType = new Map();
+
+    if (effectiveDomains) {
+      const { data: exRows, error: exErr } = await supabase
+        .from("pulse_master_comparisons")
+        .select("comparison_type, discrepancy_count, secondary_discrepancy_count, scanned_count")
+        .eq("client_id", ctx.clientId);
+      if (!exErr && Array.isArray(exRows) && exRows.length >= MASTER_COMP_TABS.length) {
+        existingByType = new Map(exRows.map((r) => [r.comparison_type, r]));
+      } else {
+        // Bootstrap all 11 comparison rows when the client does not yet have a full persisted set
+        effectiveDomains = null;
+      }
+    }
+
     const evalRes = await evaluateNativeMasterComparisonsInMemory(ctx, {
       source,
       requestedCrmMode,
+      domains: effectiveDomains,
     });
 
-    const supabase = getSupabaseAdmin();
     const nowIso = new Date().toISOString();
-    const summary = evalRes.summary;
+    const rawSummary = evalRes.summary;
+    const ranDomain = (d) => !effectiveDomains || effectiveDomains.includes(d);
+
+    const prevInv = existingByType.get("inv_comp");
+    const prevDir = existingByType.get("dir_comp");
+    const prevCrm = existingByType.get("crm_comp");
+
+    const summary = {
+      ...rawSummary,
+      confirmedInvoicesScanned: ranDomain("inv")
+        ? rawSummary.confirmedInvoicesScanned
+        : Number(prevInv?.scanned_count || 0),
+      confirmedDirectCostsScanned: ranDomain("dir")
+        ? rawSummary.confirmedDirectCostsScanned
+        : Number(prevDir?.scanned_count || 0),
+      invDiscrepancyCount: ranDomain("inv")
+        ? rawSummary.invDiscrepancyCount
+        : Number(prevInv?.discrepancy_count || 0),
+      dirDiscrepancyCount: ranDomain("dir")
+        ? rawSummary.dirDiscrepancyCount
+        : Number(prevDir?.discrepancy_count || 0),
+      crmDashDiscrepancyCount: ranDomain("crm")
+        ? rawSummary.crmDashDiscrepancyCount
+        : Number(prevCrm?.discrepancy_count || 0),
+      crmAppDiscrepancyCount: ranDomain("crm")
+        ? rawSummary.crmAppDiscrepancyCount
+        : Number(prevCrm?.secondary_discrepancy_count || 0),
+      crmDiscrepancyCount: ranDomain("crm")
+        ? rawSummary.crmDiscrepancyCount
+        : Number(prevCrm?.discrepancy_count || 0) + Number(prevCrm?.secondary_discrepancy_count || 0),
+    };
 
     if (requestedCrmMode) {
       const { data: cfgRow, error: cfgErr } = await supabase
@@ -458,7 +624,11 @@ export async function computeAndPersistNativeMasterComparisons(
       }
     }
 
-    const upsertRows = MASTER_COMP_TABS.map((tabName) => {
+    const targetTabs = effectiveDomains
+      ? [...new Set(effectiveDomains.flatMap((d) => MASTER_COMP_DOMAIN_SPEC[d]?.tabs || []))]
+      : MASTER_COMP_TABS;
+
+    const upsertRows = targetTabs.map((tabName) => {
       const compType = MASTER_COMP_TYPE_BY_TAB[tabName];
       const grid = compactGrid2D(evalRes.grids[tabName] || []);
       let discrepancyCount = 0;
@@ -494,6 +664,11 @@ export async function computeAndPersistNativeMasterComparisons(
       };
     });
 
+    const targetTabSet = new Set(targetTabs);
+    const untouchedCompTypes = MASTER_COMP_TABS
+      .filter((t) => !targetTabSet.has(t))
+      .map((t) => MASTER_COMP_TYPE_BY_TAB[t]);
+
     const { error: uErr } = await supabase
       .from("pulse_master_comparisons")
       .upsert(upsertRows, { onConflict: "client_id,comparison_type" });
@@ -501,16 +676,45 @@ export async function computeAndPersistNativeMasterComparisons(
       throw new Error(`pulse_master_comparisons upsert failed (${ctx.clientName}): ${uErr.message}`);
     }
 
-    const byTab = {};
-    for (const tabName of MASTER_COMP_TABS) {
-      byTab[tabName] = evalRes.grids[tabName] || [];
+    if (untouchedCompTypes.length > 0) {
+      const { error: touchErr } = await supabase
+        .from("pulse_master_comparisons")
+        .update({ computed_at: nowIso })
+        .eq("client_id", ctx.clientId)
+        .in("comparison_type", untouchedCompTypes);
+      if (touchErr) {
+        throw new Error(`pulse_master_comparisons timestamp touch failed (${ctx.clientName}): ${touchErr.message}`);
+      }
     }
-    _masterCompCache.set(clientKey, {
-      expiresAt: Date.now() + MASTER_COMP_TTL_MS,
-      computedAtMs: Date.now(),
-      byTab,
-      summary,
-    });
+
+    if (!effectiveDomains) {
+      const byTab = {};
+      for (const tabName of MASTER_COMP_TABS) {
+        byTab[tabName] = evalRes.grids[tabName] || [];
+      }
+      _masterCompCache.set(clientKey, {
+        expiresAt: Date.now() + MASTER_COMP_TTL_MS,
+        computedAtMs: Date.now(),
+        byTab,
+        summary,
+      });
+    } else {
+      const prevCache = _masterCompCache.get(clientKey);
+      if (prevCache && prevCache.byTab && Object.keys(prevCache.byTab).length >= MASTER_COMP_TABS.length) {
+        const mergedByTab = { ...prevCache.byTab };
+        for (const tabName of targetTabs) {
+          mergedByTab[tabName] = evalRes.grids[tabName] || [];
+        }
+        _masterCompCache.set(clientKey, {
+          expiresAt: Date.now() + MASTER_COMP_TTL_MS,
+          computedAtMs: Date.now(),
+          byTab: mergedByTab,
+          summary,
+        });
+      } else {
+        _masterCompCache.delete(clientKey);
+      }
+    }
 
     const { data: clRow, error: clErr } = await supabase
       .from("clients")
@@ -543,22 +747,27 @@ export async function computeAndPersistNativeMasterComparisons(
 
     return {
       ...evalRes,
+      summary,
       persistedRowsCount: upsertRows.length,
       computedAt: nowIso,
     };
   };
 
-  if (!canDedup) {
-    return runCompute();
+  // Serialize writes per client so overlapping scoped recomputes cannot race on summary metadata
+  const prevQueue = _clientCompQueueMap.get(clientKey) || Promise.resolve();
+  const queuedPromise = prevQueue.catch(() => { }).then(runCompute);
+  _clientCompQueueMap.set(clientKey, queuedPromise);
+  if (canDedup) {
+    _inFlightMasterCompCompute.set(dedupKey, queuedPromise);
   }
-
-  const computePromise = runCompute();
-  _inFlightMasterCompCompute.set(clientKey, computePromise);
   try {
-    return await computePromise;
+    return await queuedPromise;
   } finally {
-    if (_inFlightMasterCompCompute.get(clientKey) === computePromise) {
-      _inFlightMasterCompCompute.delete(clientKey);
+    if (canDedup && _inFlightMasterCompCompute.get(dedupKey) === queuedPromise) {
+      _inFlightMasterCompCompute.delete(dedupKey);
+    }
+    if (_clientCompQueueMap.get(clientKey) === queuedPromise) {
+      _clientCompQueueMap.delete(clientKey);
     }
   }
 }

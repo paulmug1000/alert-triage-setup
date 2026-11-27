@@ -63,6 +63,7 @@ export const RELATIONAL_BACKUP_TABLES = Object.freeze([
   { table: "accounting_direct_costs", domain: "master" },
   { table: "accounting_pl_lines", domain: "master" },
   { table: "pulse_master_sync_configs", domain: "master" },
+  { table: "pulse_sheet_bridge_baselines", domain: "master", optionalTable: true },
   { table: "pulse_master_comparisons", domain: "master" },
   { table: "pulse_automation_logs", domain: "master" },
   { table: "pulse_execution_logs", domain: "master" },
@@ -102,9 +103,20 @@ export const RELATIONAL_BACKUP_TABLES = Object.freeze([
 
 const CONFIG_CLIENT_PK_TABLES = new Set([
   "pulse_master_sync_configs",
+  "pulse_sheet_bridge_baselines",
   "pulse_recon_configs",
   "pulse_financial_configs",
 ]);
+
+function isMissingBackupTableErr_(err) {
+  const msg = String(err?.message || err || "");
+  const code = String(err?.code || "");
+  return (
+    code === "42P01" ||
+    code === "PGRST205" ||
+    /does not exist|schema cache|could not find the table/i.test(msg)
+  );
+}
 
 const CLIENT_NAME_BACKUP_TABLES = ["eom_cycles_and_tasks", "alert_memory", "pma_tasks"];
 
@@ -155,13 +167,20 @@ export async function collectClientRelationalSnapshotData(sb, clientRow) {
   for (let i = 0; i < clientIdTables.length; i += 5) {
     const batch = clientIdTables.slice(i, i + 5);
     const results = await Promise.all(
-      batch.map(async ({ table }) => {
+      batch.map(async ({ table, optionalTable }) => {
         const orderCol = CONFIG_CLIENT_PK_TABLES.has(table) ? "client_id" : "id";
-        let rows = await fetchPaginatedEq_(sb, table, "client_id", clientId, orderCol);
-        if (table === "pulse_automation_logs" || table === "pulse_execution_logs") {
-          rows = sortChronologicalLogs_(table, rows);
+        try {
+          let rows = await fetchPaginatedEq_(sb, table, "client_id", clientId, orderCol);
+          if (table === "pulse_automation_logs" || table === "pulse_execution_logs") {
+            rows = sortChronologicalLogs_(table, rows);
+          }
+          return { table, rows };
+        } catch (readErr) {
+          if (optionalTable && isMissingBackupTableErr_(readErr)) {
+            return { table, rows: [], skippedOptional: true };
+          }
+          throw readErr;
         }
-        return { table, rows };
       })
     );
     for (const { table, rows } of results) {
@@ -944,10 +963,11 @@ export async function restoreClientSnapshot({
       }
     }
 
-    for (const { table } of [...targetTables].reverse()) {
+    for (const { table, optionalTable } of [...targetTables].reverse()) {
       if (table === "pulse_notes" && !hasNotesInSnapshot) continue;
       const { error: delErr } = await sb.from(table).delete().eq("client_id", clientId);
       if (delErr) {
+        if (optionalTable && isMissingBackupTableErr_(delErr)) continue;
         throw new Error(`Format v2 restore delete failed on ${table}: ${delErr.message}`);
       }
     }
@@ -1081,7 +1101,7 @@ export async function restoreClientSnapshot({
       accounting_direct_costs: new Set(),
     };
 
-    for (const { table } of targetTables) {
+    for (const { table, optionalTable } of targetTables) {
       if (table === "pulse_notes" && !hasNotesInSnapshot) continue;
       let srcRows = Array.isArray(payload.tables[table]) ? payload.tables[table] : [];
       if (srcRows.length === 0) continue;
@@ -1097,6 +1117,7 @@ export async function restoreClientSnapshot({
         const chunk = stamped.slice(i, i + 200);
         const { error: insErr } = await sb.from(table).insert(chunk);
         if (insErr) {
+          if (optionalTable && isMissingBackupTableErr_(insErr)) break;
           throw new Error(`Format v2 restore insert failed on ${table}: ${insErr.message}`);
         }
       }

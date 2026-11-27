@@ -494,7 +494,12 @@ async function renameKeyedTenantTables_({
         .from(table)
         .update({ client_name: newClientName })
         .eq("client_id", clientRow.id);
-      if (relErr && !/42703|does not exist|schema cache/i.test(String(relErr.message || ""))) {
+      if (
+        relErr &&
+        !/42703|42P01|PGRST205|does not exist|schema cache|could not find the table/i.test(
+          String(relErr.message || "")
+        )
+      ) {
         summary.warnings.push(`Relational table ${table} update warning: ${relErr.message}`);
       } else if (!relErr) {
         summary.tablesUpdated.push(table);

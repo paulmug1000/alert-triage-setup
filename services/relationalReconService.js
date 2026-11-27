@@ -979,7 +979,7 @@ async function runSingleReconReconcilePass_(ctx, tabNames = null, options = {}) 
         } = await import("./nativeMasterComparisonService.js");
         await syncMasterContextGridsToConfig(ctx, { PLAdds: rebuiltPlAddsGrid });
         invalidateClientNativeMasterCompCache(ctx.clientName);
-        await computeAndPersistNativeMasterComparisons(ctx, { source: "db" });
+        await computeAndPersistNativeMasterComparisons(ctx, { source: "db", domains: ["pl"] });
       } catch (compErr) {
         console.warn(`[relationalReconService] Native comparison refresh warning (${ctx.clientName}):`, compErr?.message);
       }

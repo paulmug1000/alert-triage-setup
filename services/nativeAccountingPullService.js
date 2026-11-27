@@ -1259,7 +1259,10 @@ export async function pullNativeAccountingInvoices(ctx, options = {}) {
   let existingGrid = Array.isArray(existingGridOverride) ? existingGridOverride : null;
   if (!existingGrid) {
     if (ctx?.connectorPullMode === "native") {
-      const bundle = await preloadClientRelationalMasterBundle(ctx, { source: "db" }).catch(() => null);
+      const bundle = await preloadClientRelationalMasterBundle(ctx, {
+        source: "db",
+        tables: ["invoices"],
+      }).catch(() => null);
       if (bundle) {
         const invRows = (bundle.accountingInvoices || []).filter(
           (r) => String(r.record_kind || "invoice") === "invoice"
@@ -1381,7 +1384,7 @@ export async function pullNativeAccountingInvoices(ctx, options = {}) {
     }
     invalidateClientRelationalMasterCache(ctx.clientName);
     if (ctx.masterComputeMode === "native" || ctx.masterComputeMode === "shadow") {
-      await computeAndPersistNativeMasterComparisons(ctx).catch(() => { });
+      await computeAndPersistNativeMasterComparisons(ctx, { domains: ["inv"] }).catch(() => { });
     }
   }
 
@@ -2301,7 +2304,10 @@ export async function pullNativeAccountingDirectCosts(ctx, options = {}) {
   let existingGrid = Array.isArray(existingGridOverride) ? existingGridOverride : null;
   if (!existingGrid) {
     if (ctx?.connectorPullMode === "native") {
-      const bundle = await preloadClientRelationalMasterBundle(ctx, { source: "db" }).catch(() => null);
+      const bundle = await preloadClientRelationalMasterBundle(ctx, {
+        source: "db",
+        tables: ["directCosts"],
+      }).catch(() => null);
       if (bundle) {
         existingGrid = projectDirectCostsToGrid({
           headers: NATIVE_COST_CONFIG.HEADERS,
@@ -2395,7 +2401,7 @@ export async function pullNativeAccountingDirectCosts(ctx, options = {}) {
     }
     invalidateClientRelationalMasterCache(ctx.clientName);
     if (ctx.masterComputeMode === "native" || ctx.masterComputeMode === "shadow") {
-      await computeAndPersistNativeMasterComparisons(ctx).catch(() => { });
+      await computeAndPersistNativeMasterComparisons(ctx, { domains: ["dir"] }).catch(() => { });
     }
   }
 
@@ -2708,7 +2714,7 @@ export async function pullNativeProfitAndLoss(ctx, options = {}) {
     await persistPlGridToRelationalTable_(ctx, "PLFromApp", nextGrid);
     await stampMasterCompTimestamp(ctx, "PLComp", "C1", nowDate);
     if (ctx.masterComputeMode === "native" || ctx.masterComputeMode === "shadow") {
-      await computeAndPersistNativeMasterComparisons(ctx).catch(() => { });
+      await computeAndPersistNativeMasterComparisons(ctx, { domains: ["pl"] }).catch(() => { });
     }
   }
 
@@ -2799,7 +2805,7 @@ export async function pullNativeYear0ProfitAndLoss(ctx, options = {}) {
   if (persistToDb) {
     await persistPlGridToRelationalTable_(ctx, "Year0PLFromApp", nextGrid);
     if (ctx.masterComputeMode === "native" || ctx.masterComputeMode === "shadow") {
-      await computeAndPersistNativeMasterComparisons(ctx).catch(() => { });
+      await computeAndPersistNativeMasterComparisons(ctx, { domains: ["pl"] }).catch(() => { });
     }
   }
 
@@ -2888,7 +2894,10 @@ export async function updateNativeSingleMonthPL(ctx, targetYear, targetMonth, fr
 
   let existingGrid = null;
   if (ctx?.connectorPullMode === "native") {
-    const bundle = await preloadClientRelationalMasterBundle(ctx, { source: "db" }).catch(() => null);
+    const bundle = await preloadClientRelationalMasterBundle(ctx, {
+      source: "db",
+      tables: ["plLines"],
+    }).catch(() => null);
     if (bundle) {
       const plRows = (bundle.accountingPlLines || []).filter(
         (r) => String(r.source_tab || "PLFromApp") === "PLFromApp"
@@ -2961,7 +2970,7 @@ export async function updateNativeSingleMonthPL(ctx, targetYear, targetMonth, fr
   if (options.persistToDb !== false) {
     await persistPlGridToRelationalTable_(ctx, "PLFromApp", nextGrid);
     if (ctx.masterComputeMode === "native" || ctx.masterComputeMode === "shadow") {
-      await computeAndPersistNativeMasterComparisons(ctx).catch(() => { });
+      await computeAndPersistNativeMasterComparisons(ctx, { domains: ["pl"] }).catch(() => { });
     }
   }
 

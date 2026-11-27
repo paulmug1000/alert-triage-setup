@@ -1141,7 +1141,10 @@ export async function getOrLoadVirtualTabGrid_(ctx, sheetRole, tabName, rawSheet
             preloadClientRelationalMasterBundle,
             reconstructRelationalMasterTabFromBundle,
           } = await import("./relationalMasterService.js");
-          const bundle = await preloadClientRelationalMasterBundle(ctx, { source: "db" });
+          const bundle = await preloadClientRelationalMasterBundle(ctx, {
+            source: "db",
+            tabs: [tabName],
+          });
           const rGrid = await reconstructRelationalMasterTabFromBundle(bundle, tabName, ctx);
           if (Array.isArray(rGrid)) {
             const compacted = compactGrid2D(rGrid);
@@ -1879,7 +1882,25 @@ export async function saveVirtualTabGrid_(
         tabName === "PLAdds" ||
         Object.prototype.hasOwnProperty.call(MASTER_COMP_TYPE_BY_TAB, tabName)
       ) {
-        await computeAndPersistNativeMasterComparisons(ctx, { source: "db" }).catch((e) =>
+        const masterTabDomainMap = {
+          InvAppList: ["inv"],
+          InvDashList: ["inv"],
+          InvComp: ["inv"],
+          JnlAppList: ["dir"],
+          DirDashList: ["dir"],
+          DirComp: ["dir"],
+          Outgoings: ["dir"],
+          CRMList: ["crm"],
+          CRMComp: ["crm"],
+          PLAdds: ["pl"],
+          PLComp: ["pl"],
+          TimeComp: ["time"],
+        };
+        const targetDomains = tabName === "KeyInfo" ? null : masterTabDomainMap[tabName] || null;
+        await computeAndPersistNativeMasterComparisons(ctx, {
+          source: "db",
+          domains: targetDomains,
+        }).catch((e) =>
           console.warn(`[masterEngineService] Native comparison refresh warning (${ctx.clientName}/${tabName}):`, e?.message)
         );
       }
@@ -3293,6 +3314,8 @@ async function recomputeClientFormulasAfterVirtualWrite_(ctx, updatedTabNames, r
 
   const runPassPromise = (async () => {
     let needsMasterCompRefresh = false;
+    let recomputeAllDomains = false;
+    const affectedMasterDomains = new Set();
     while (true) {
       const pendingSet = _pendingClientTabsByClient.get(clientKey);
       if (!pendingSet || pendingSet.size === 0) break;
@@ -3301,6 +3324,11 @@ async function recomputeClientFormulasAfterVirtualWrite_(ctx, updatedTabNames, r
       const passRes = await executeClientFormulaRecomputePass_(ctx, clientKey, allUpdatedTabs, rawSheetsApi);
       if (passRes?.affectsMasterComparisons) {
         needsMasterCompRefresh = true;
+        if (passRes.masterCompDomains === null) {
+          recomputeAllDomains = true;
+        } else if (Array.isArray(passRes.masterCompDomains)) {
+          for (const d of passRes.masterCompDomains) affectedMasterDomains.add(d);
+        }
       }
     }
     if (
@@ -3313,7 +3341,10 @@ async function recomputeClientFormulasAfterVirtualWrite_(ctx, updatedTabNames, r
           computeAndPersistNativeMasterComparisons,
         } = await import("./nativeMasterComparisonService.js");
         invalidateClientNativeMasterCompCache(ctx.clientName);
-        await computeAndPersistNativeMasterComparisons(ctx, { source: "db" });
+        await computeAndPersistNativeMasterComparisons(ctx, {
+          source: "db",
+          domains: recomputeAllDomains || affectedMasterDomains.size === 0 ? null : [...affectedMasterDomains],
+        });
         if (ctx.masterComputeMode === "native") {
           const [{ markMasterComparisonsFresh }, { invalidatePmaClientCache }] = await Promise.all([
             import("./masterSyncEngine.js"),
@@ -3406,11 +3437,28 @@ const MASTER_COMP_AFFECTING_CLIENT_TABS = new Set([
   "KeyInfo",
 ]);
 
+function mapClientTabsToMasterCompDomains_(tabs = []) {
+  const domainSet = new Set();
+  for (const t of tabs) {
+    if (t === "KeyInfo") return null;
+    if (t === "Confirmed" || t === "ConfCalcs") {
+      domainSet.add("inv");
+      domainSet.add("dir");
+      domainSet.add("crm");
+    } else if (t === "Pipeline" || t === "PipeCalcs") {
+      domainSet.add("crm");
+    } else if (t === "Outgoings" || t === "OutgNotes") {
+      domainSet.add("dir");
+    }
+  }
+  return [...domainSet];
+}
+
 async function executeClientFormulaRecomputePass_(ctx, clientKey, allUpdatedTabs, rawSheetsApi) {
   const nonFormulaTabs = new Set(["Sessions", "AppLog", "Welcome"]);
   const hasCalcRelevantChange = allUpdatedTabs.some((t) => !nonFormulaTabs.has(t));
   if (!hasCalcRelevantChange) {
-    return { affectsMasterComparisons: false };
+    return { affectsMasterComparisons: false, masterCompDomains: [] };
   }
 
   const changedSet = new Set(allUpdatedTabs);
@@ -3883,8 +3931,10 @@ async function executeClientFormulaRecomputePass_(ctx, clientKey, allUpdatedTabs
         .catch(() => { });
     }
   }
+  const masterCompTabs = phaseSyncTabs.filter((t) => MASTER_COMP_AFFECTING_CLIENT_TABS.has(t));
   return {
-    affectsMasterComparisons: phaseSyncTabs.some((t) => MASTER_COMP_AFFECTING_CLIENT_TABS.has(t)),
+    affectsMasterComparisons: masterCompTabs.length > 0,
+    masterCompDomains: masterCompTabs.length > 0 ? mapClientTabsToMasterCompDomains_(masterCompTabs) : [],
   };
 }
 
@@ -3968,7 +4018,10 @@ export async function handleVirtualSheetsCall({
           preloadClientRelationalMasterBundle,
           reconstructRelationalMasterTabFromBundle,
         } = await import("./relationalMasterService.js");
-        const bundle = await preloadClientRelationalMasterBundle(ctx, { source: "db" });
+        const bundle = await preloadClientRelationalMasterBundle(ctx, {
+          source: "db",
+          tabs: [parsed.tabName],
+        });
         const reconGrid = await reconstructRelationalMasterTabFromBundle(bundle, parsed.tabName, ctx);
         rec = {
           values_grid: reconGrid,
@@ -4297,7 +4350,10 @@ export async function handleVirtualSheetsCall({
             preloadClientRelationalMasterBundle,
             reconstructRelationalMasterTabFromBundle,
           } = await import("./relationalMasterService.js");
-          const bundle = await preloadClientRelationalMasterBundle(ctx, { source: "db" });
+          const bundle = await preloadClientRelationalMasterBundle(ctx, {
+            source: "db",
+            tabs: relationalPhase4Tabs,
+          });
           await Promise.all(
             relationalPhase4Tabs.map(async (t) => {
               const reconGrid = await reconstructRelationalMasterTabFromBundle(bundle, t, ctx);
@@ -8828,7 +8884,10 @@ export async function getVirtualTabForInspector({
             preloadClientRelationalMasterBundle,
             reconstructRelationalMasterTabFromBundle,
           } = await import("./relationalMasterService.js");
-          const bundle = await preloadClientRelationalMasterBundle(ctx, { source: "db" });
+          const bundle = await preloadClientRelationalMasterBundle(ctx, {
+            source: "db",
+            tabs: [tabName],
+          });
           const reconGrid = await reconstructRelationalMasterTabFromBundle(bundle, tabName, ctx);
           if (Array.isArray(reconGrid)) {
             const maxColsRecon = reconGrid.reduce((m, row) => Math.max(m, Array.isArray(row) ? row.length : 0), 0);

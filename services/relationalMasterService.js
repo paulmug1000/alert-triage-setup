@@ -68,6 +68,40 @@ let _schemaReadyCache = { ready: null, checkedAt: 0 };
 const _masterBundleCache = new Map();
 const _inFlightMasterBundle = new Map();
 const MASTER_BUNDLE_TTL_MS = 15000;
+const ALL_MASTER_BUNDLE_TABLES = Object.freeze([
+  "invoices",
+  "directCosts",
+  "plLines",
+  "crmDeals",
+  "timeEntries",
+]);
+const MASTER_BUNDLE_TABLES_BY_TAB = Object.freeze({
+  InvFromApp: ["invoices"],
+  RevFromApp: ["invoices"],
+  InvAppList: ["invoices"],
+  InvDashList: ["invoices"],
+  InvComp: ["invoices"],
+  JnlsFromApp: ["directCosts"],
+  JnlAppList: ["directCosts"],
+  DirDashList: ["directCosts"],
+  DirComp: ["directCosts"],
+  PLFromApp: ["plLines"],
+  Year0PLFromApp: ["plLines"],
+  PLComp: ["plLines"],
+  DataFromCRM: ["crmDeals"],
+  CRMList: ["crmDeals"],
+  CRMComp: ["crmDeals"],
+  DataFromTime: ["timeEntries"],
+  ProjectsFromTime: ["timeEntries"],
+  TimeComp: ["timeEntries"],
+});
+const RAW_TABS_BY_BUNDLE_TABLE = Object.freeze({
+  invoices: ["InvFromApp", "RevFromApp"],
+  directCosts: ["JnlsFromApp"],
+  plLines: ["PLFromApp", "Year0PLFromApp"],
+  crmDeals: ["DataFromCRM"],
+  timeEntries: ["DataFromTime", "ProjectsFromTime", "TimeComp"],
+});
 const RELATIONAL_MASTER_SYNC_CFG_COLS = [
   "client_id",
   "client_name",
@@ -1778,12 +1812,55 @@ async function loadInMemoryBundleForClient_(ctx, gridsOverride = null) {
     accountingPlLines: [...plMain.rows, ...plYear0.rows],
     crmDeals: crmParsed.rows,
     timeEntries: timeParsed.rows,
+    loadedTables: new Set(ALL_MASTER_BUNDLE_TABLES),
     evaluatedTabsCache: new Map(),
     rawGridsOverride: gridsMap,
   };
 }
 
-export async function preloadClientRelationalMasterBundle(ctxOrClientName, { source = "db", gridsOverride = null } = {}) {
+function resolveRequestedMasterBundleTables_({ tables = null, tabs = null } = {}) {
+  if (tables === null && tabs === null) {
+    return [...ALL_MASTER_BUNDLE_TABLES];
+  }
+  const out = new Set();
+  if (Array.isArray(tables)) {
+    for (const t of tables) {
+      if (ALL_MASTER_BUNDLE_TABLES.includes(t)) out.add(t);
+    }
+  }
+  if (Array.isArray(tabs)) {
+    for (const tabName of tabs) {
+      const mapped = MASTER_BUNDLE_TABLES_BY_TAB[tabName];
+      if (!mapped) {
+        return [...ALL_MASTER_BUNDLE_TABLES];
+      }
+      for (const t of mapped) out.add(t);
+    }
+  }
+  return [...out];
+}
+
+async function fetchMasterBundleTable_(supabase, clientId, tableKey) {
+  switch (tableKey) {
+    case "invoices":
+      return fetchAllRowsByClientId_(supabase, "accounting_invoices", clientId, "sheet_row_num");
+    case "directCosts":
+      return fetchAllRowsByClientId_(supabase, "accounting_direct_costs", clientId, "sheet_row_num");
+    case "plLines":
+      return fetchAllRowsByClientId_(supabase, "accounting_pl_lines", clientId, "sheet_row_num");
+    case "crmDeals":
+      return fetchAllRowsByClientId_(supabase, "crm_deals_raw", clientId, "sheet_row_num");
+    case "timeEntries":
+      return fetchAllRowsByClientId_(supabase, "time_entries_raw", clientId, "sheet_row_num");
+    default:
+      return [];
+  }
+}
+
+export async function preloadClientRelationalMasterBundle(
+  ctxOrClientName,
+  { source = "db", gridsOverride = null, tables = null, tabs = null } = {}
+) {
   const ctx =
     ctxOrClientName && typeof ctxOrClientName === "object" && ctxOrClientName.clientId
       ? ctxOrClientName
@@ -1794,44 +1871,81 @@ export async function preloadClientRelationalMasterBundle(ctxOrClientName, { sou
     return loadInMemoryBundleForClient_(ctx, gridsOverride);
   }
 
+  const requestedTables = resolveRequestedMasterBundleTables_({ tables, tabs });
   const cacheKey = String(ctx.clientName || ctx.clientId).trim().toLowerCase();
-  const cached = _masterBundleCache.get(cacheKey);
-  if (cached && cached.expiresAt > Date.now()) {
-    return cached.bundle;
+
+  while (_inFlightMasterBundle.has(cacheKey)) {
+    await _inFlightMasterBundle.get(cacheKey).catch(() => null);
   }
 
-  if (_inFlightMasterBundle.has(cacheKey)) {
-    return await _inFlightMasterBundle.get(cacheKey);
+  const cached = _masterBundleCache.get(cacheKey);
+  if (cached && cached.expiresAt > Date.now()) {
+    const loadedSet =
+      cached.bundle.loadedTables instanceof Set
+        ? cached.bundle.loadedTables
+        : new Set(ALL_MASTER_BUNDLE_TABLES);
+    const missingTables = requestedTables.filter((t) => !loadedSet.has(t));
+    if (missingTables.length === 0) {
+      return cached.bundle;
+    }
+
+    const upgradePromise = (async () => {
+      const supabase = getSupabaseAdmin();
+      const fetched = await Promise.all(
+        missingTables.map(async (tKey) => [tKey, await fetchMasterBundleTable_(supabase, ctx.clientId, tKey)])
+      );
+      for (const [tKey, rows] of fetched) {
+        if (tKey === "invoices") cached.bundle.accountingInvoices = rows;
+        else if (tKey === "directCosts") cached.bundle.accountingDirectCosts = rows;
+        else if (tKey === "plLines") cached.bundle.accountingPlLines = rows;
+        else if (tKey === "crmDeals") cached.bundle.crmDeals = rows;
+        else if (tKey === "timeEntries") cached.bundle.timeEntries = rows;
+        loadedSet.add(tKey);
+        for (const affectedTab of RAW_TABS_BY_BUNDLE_TABLE[tKey] || []) {
+          cached.bundle.evaluatedTabsCache?.delete(affectedTab);
+        }
+      }
+      cached.bundle.loadedTables = loadedSet;
+      cached.expiresAt = Date.now() + MASTER_BUNDLE_TTL_MS;
+      return cached.bundle;
+    })();
+
+    _inFlightMasterBundle.set(cacheKey, upgradePromise);
+    try {
+      return await upgradePromise;
+    } finally {
+      if (_inFlightMasterBundle.get(cacheKey) === upgradePromise) {
+        _inFlightMasterBundle.delete(cacheKey);
+      }
+    }
   }
 
   const loadPromise = (async () => {
     const supabase = getSupabaseAdmin();
-    const [cfgRes, invRows, dirRows, plRows, crmRows, timeRows] = await Promise.all([
+    const [cfgRes, ...tableResults] = await Promise.all([
       supabase
         .from("pulse_master_sync_configs")
         .select(RELATIONAL_MASTER_SYNC_CFG_COLS)
         .eq("client_id", ctx.clientId)
         .maybeSingle(),
-      fetchAllRowsByClientId_(supabase, "accounting_invoices", ctx.clientId, "sheet_row_num"),
-      fetchAllRowsByClientId_(supabase, "accounting_direct_costs", ctx.clientId, "sheet_row_num"),
-      fetchAllRowsByClientId_(supabase, "accounting_pl_lines", ctx.clientId, "sheet_row_num"),
-      fetchAllRowsByClientId_(supabase, "crm_deals_raw", ctx.clientId, "sheet_row_num"),
-      fetchAllRowsByClientId_(supabase, "time_entries_raw", ctx.clientId, "sheet_row_num"),
+      ...requestedTables.map(async (tKey) => [tKey, await fetchMasterBundleTable_(supabase, ctx.clientId, tKey)]),
     ]);
     if (cfgRes.error) {
       throw new Error(`pulse_master_sync_configs load failed (${ctx.clientName}): ${cfgRes.error.message}`);
     }
 
+    const byTable = Object.fromEntries(tableResults);
     const bundle = {
       clientId: ctx.clientId,
       clientName: ctx.clientName,
       source: "db",
       config: cfgRes.data || {},
-      accountingInvoices: invRows,
-      accountingDirectCosts: dirRows,
-      accountingPlLines: plRows,
-      crmDeals: crmRows,
-      timeEntries: timeRows,
+      accountingInvoices: byTable.invoices || [],
+      accountingDirectCosts: byTable.directCosts || [],
+      accountingPlLines: byTable.plLines || [],
+      crmDeals: byTable.crmDeals || [],
+      timeEntries: byTable.timeEntries || [],
+      loadedTables: new Set(requestedTables),
       evaluatedTabsCache: new Map(),
     };
 
@@ -1852,48 +1966,70 @@ export async function preloadClientRelationalMasterBundle(ctxOrClientName, { sou
   }
 }
 
-export function buildBaseRawMasterTabsFromBundle(bundle) {
+export function buildBaseRawMasterTabsFromBundle(bundle, onlyTabs = null) {
   const cfg = bundle.config || {};
-  return {
-    InvFromApp: projectAccountingInvoicesToGrid({
+  const tabSet = onlyTabs
+    ? onlyTabs instanceof Set
+      ? onlyTabs
+      : new Set(onlyTabs)
+    : null;
+  const need = (tabName) => !tabSet || tabSet.has(tabName);
+  const out = {};
+  if (need("InvFromApp")) {
+    out.InvFromApp = projectAccountingInvoicesToGrid({
       headers: cfg.inv_headers || [],
-      records: bundle.accountingInvoices,
+      records: bundle.accountingInvoices || [],
       recordKind: "invoice",
-    }),
-    RevFromApp: projectAccountingInvoicesToGrid({
+    });
+  }
+  if (need("RevFromApp")) {
+    out.RevFromApp = projectAccountingInvoicesToGrid({
       headers: cfg.rev_headers || [],
-      records: bundle.accountingInvoices,
+      records: bundle.accountingInvoices || [],
       recordKind: "revenue_line",
-    }),
-    JnlsFromApp: projectDirectCostsToGrid({
+    });
+  }
+  if (need("JnlsFromApp")) {
+    out.JnlsFromApp = projectDirectCostsToGrid({
       headers: cfg.jnl_headers || [],
-      records: bundle.accountingDirectCosts,
-    }),
-    PLFromApp: projectPLLinesToGrid({
+      records: bundle.accountingDirectCosts || [],
+    });
+  }
+  if (need("PLFromApp")) {
+    out.PLFromApp = projectPLLinesToGrid({
       headers: cfg.pl_headers || [],
-      records: bundle.accountingPlLines,
+      records: bundle.accountingPlLines || [],
       sourceTab: "PLFromApp",
-    }),
-    Year0PLFromApp: projectPLLinesToGrid({
+    });
+  }
+  if (need("Year0PLFromApp")) {
+    out.Year0PLFromApp = projectPLLinesToGrid({
       headers: cfg.year0_pl_headers || [],
-      records: bundle.accountingPlLines,
+      records: bundle.accountingPlLines || [],
       sourceTab: "Year0PLFromApp",
-    }),
-    DataFromCRM: projectCrmDealsToDataFromCrmGrid({
+    });
+  }
+  if (need("DataFromCRM")) {
+    out.DataFromCRM = projectCrmDealsToDataFromCrmGrid({
       headers: cfg.crm_raw_headers || [],
-      records: bundle.crmDeals,
-    }),
-    DataFromTime: projectTimeDataToGrid({
+      records: bundle.crmDeals || [],
+    });
+  }
+  if (need("DataFromTime")) {
+    out.DataFromTime = projectTimeDataToGrid({
       headers: cfg.time_data_headers || [],
-      records: bundle.timeEntries,
+      records: bundle.timeEntries || [],
       entryKind: "staff_month",
-    }),
-    ProjectsFromTime: projectTimeDataToGrid({
+    });
+  }
+  if (need("ProjectsFromTime")) {
+    out.ProjectsFromTime = projectTimeDataToGrid({
       headers: cfg.time_projects_headers || [],
-      records: bundle.timeEntries,
+      records: bundle.timeEntries || [],
       entryKind: "project_month",
-    }),
-  };
+    });
+  }
+  return out;
 }
 
 export function buildMasterComparisonSeedGridsFromBundle(bundle) {
@@ -1948,12 +2084,39 @@ export async function reconstructRelationalMasterTabFromBundle(bundle, tabName, 
     return clone2D_(bundle.evaluatedTabsCache.get(tabName));
   }
 
-  const rawTabs = buildBaseRawMasterTabsFromBundle(bundle);
-  if (Object.prototype.hasOwnProperty.call(rawTabs, tabName)) {
-    const out = rawTabs[tabName];
+  const requiredTables = MASTER_BUNDLE_TABLES_BY_TAB[tabName] || ALL_MASTER_BUNDLE_TABLES;
+  if (
+    bundle.source === "db" &&
+    bundle.loadedTables instanceof Set &&
+    requiredTables.some((t) => !bundle.loadedTables.has(t))
+  ) {
+    await preloadClientRelationalMasterBundle(ctxOverride || bundle.clientName, {
+      source: "db",
+      tables: requiredTables,
+    });
+  }
+
+  const isRawMasterTab = Object.prototype.hasOwnProperty.call(
+    {
+      InvFromApp: true,
+      RevFromApp: true,
+      JnlsFromApp: true,
+      PLFromApp: true,
+      Year0PLFromApp: true,
+      DataFromCRM: true,
+      DataFromTime: true,
+      ProjectsFromTime: true,
+    },
+    tabName
+  );
+  if (isRawMasterTab) {
+    const rawTabsSingle = buildBaseRawMasterTabsFromBundle(bundle, [tabName]);
+    const out = rawTabsSingle[tabName] || [];
     bundle.evaluatedTabsCache?.set(tabName, out);
     return clone2D_(out);
   }
+
+  const rawTabs = buildBaseRawMasterTabsFromBundle(bundle);
 
   const ctx = ctxOverride || (await resolveSupabaseSheetContext({ clientName: bundle.clientName }));
   if (ctx?.masterComputeMode === "native" && PHASE4_CONFIG_AND_COMP_TABS.includes(tabName)) {

@@ -656,6 +656,14 @@ export default function TriageAnalysisView({
   const rechargedDiagnosis = isInvoiceType ? (alert?.rechargedDiagnosis || null) : null;
   const hasRechargedInBreakdown = spreadsheetItems.some((it) => Number(it?.rechargedAmount || 0) > 0);
 
+  const isDuplicateExpense = isExpenseType && Boolean(
+    alert?.isDuplicateExpense ||
+    (alert?.sheetName === "DirComp" && String(alert?.data?.flags?.[1] || "").trim() === "1") ||
+    (alert?.expenseSpreadsheetItems && alert.expenseSpreadsheetItems.length > 1)
+  );
+  const expenseSpreadsheetItems = isExpenseType ? (alert?.expenseSpreadsheetItems || []) : [];
+  const isContractorExpense = alert?.flagType === "contractorsDashboardDiscr" || alert?.expenseCategoryType === "contractor";
+
   return (
     <div className="pma-page-container" style={styles.container}>
       <div style={styles.header}>
@@ -803,7 +811,7 @@ export default function TriageAnalysisView({
                 const expFlags = alert.data?.flags || [];
                 const isMissing = String(expFlags[0] || "").trim() === "1";
                 if (isMissing) return "Expense in accounting system, missing from Pulse";
-                const expFlagNames = [null, "Duplicate app ID", "Description mismatch", "Amount mismatch", "VAT mismatch", "Received date mismatch", "Pay date mismatch", "Status mismatch"];
+                const expFlagNames = [null, isAdmin ? "Duplicate app ID" : "Duplicate in Pulse", "Description mismatch", "Amount mismatch", "VAT mismatch", "Received date mismatch", "Pay date mismatch", "Status mismatch"];
                 const active = expFlags.map((v, i) => String(v || "").trim() === "1" && expFlagNames[i] ? expFlagNames[i] : null).filter(Boolean);
                 return active.length > 0 ? `Field mismatch: ${active.join(", ").toLowerCase()}` : "Expense discrepancy";
               })()
@@ -921,6 +929,7 @@ export default function TriageAnalysisView({
                 const expPulseVat = conf[6];
 
                 const FIELD_DEFS = [
+                  { name: "Duplicate app ID", line: `Duplicate entry: ${alert.summary?.reference ? `Expense ${alert.summary.reference}` : "This expense"} appears in multiple ${isAdmin ? "entries in the spreadsheet" : "entries in Pulse"} (${expenseSpreadsheetItems.length > 0 ? expenseSpreadsheetItems.length : 2} entries).` },
                   { name: "Description mismatch", line: `Description in accounting: ${acc[1] || "(blank)"}. Description in Pulse: ${conf[3] || "(blank)"}.` },
                   { name: "Amount mismatch", line: `Gross amount in accounting: ${fmtMoney(expAccGross)}. Gross amount in Pulse: ${fmtMoney(expPulseGross)}. Net excl VAT in accounting: ${fmtMoney(expAccNet)}, VAT: ${fmtMoney(expAccVat)}. Net excl VAT in Pulse: ${fmtMoney(expPulseNet)}, VAT: ${fmtMoney(expPulseVat)}.` },
                   { name: "VAT mismatch", line: `VAT in accounting: ${fmtMoney(acc[8])}. VAT in Pulse: ${fmtMoney(conf[6])}.` },
@@ -1158,6 +1167,138 @@ export default function TriageAnalysisView({
             </div>
           </div>
         )}
+
+        {isDuplicateExpense && (() => {
+          const acc = alert.data?.accounting || [];
+          const expAccNet = parseFloat(String(acc[2] || "0").replace(/[£$€,\s]/g, "")) || alert.summary?.amount || 0;
+          const expAccVat = parseFloat(String(acc[8] || "0").replace(/[£$€,\s]/g, "")) || 0;
+          const expAccGross = (acc[9] !== "" && acc[9] !== undefined)
+            ? (parseFloat(String(acc[9] || "0").replace(/[£$€,\s]/g, "")) || 0)
+            : (expAccNet + expAccVat);
+          const isMissingFlag = String(alert.data?.flags?.[0] || "").trim() === "1";
+
+          return (
+            <div style={{
+              backgroundColor: "#fffbeb", border: "1.5px solid #f59e0b",
+              borderRadius: "6px", padding: "14px 16px", marginBottom: "16px",
+              color: "#92400e"
+            }}>
+              <div style={{ fontWeight: "700", fontSize: "14px", display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
+                <span>
+                  {alert?.isPartPaidSplit
+                    ? "Part-paid expense breakdown"
+                    : isContractorExpense
+                      ? (isAdmin ? "Duplicate contractor cost in spreadsheet notice" : "Duplicate contractor cost in Pulse notice")
+                      : (isAdmin ? "Duplicate expense in spreadsheet notice" : "Duplicate expense in Pulse notice")}
+                </span>
+                <span style={{ background: "#d97706", color: "white", padding: "2px 8px", borderRadius: "4px", fontSize: "11px", fontWeight: "700" }}>
+                  {expenseSpreadsheetItems.length > 0
+                    ? `${expenseSpreadsheetItems.length} ${isAdmin ? "spreadsheet entries" : "Pulse entries"}`
+                    : "Duplicate entry"}
+                </span>
+                {alert.summary?.reference && (
+                  <span style={{ fontSize: "13px", color: "#78350f" }}>Ref {alert.summary.reference}</span>
+                )}
+              </div>
+              <div style={{ fontSize: "13px", marginTop: "6px", lineHeight: "1.5" }}>
+                {alert?.isPartPaidSplit ? (
+                  <>This expense is split into <strong>{expenseSpreadsheetItems.length} part-payment tranches in Pulse</strong> against a single accounting expense.</>
+                ) : expenseSpreadsheetItems.length > 0 ? (
+                  <>This expense appears in <strong>{expenseSpreadsheetItems.length} distinct {isAdmin ? "entries in the spreadsheet" : "entries in Pulse"}</strong>, but only <strong>once in accounting</strong>{isAdmin ? ` (DirComp row ${alert.rowNumber})` : ""}.</>
+                ) : (
+                  <>{isAdmin ? `This expense is flagged as having multiple entries in the spreadsheet (DirComp column AP, row ${alert.rowNumber}).` : "This expense is flagged as having multiple entries in Pulse."}</>
+                )}
+                {!isMissingFlag && (
+                  <> Because this expense is already placed in Pulse, it will not appear in the unmatched placement inbox.</>
+                )}
+              </div>
+
+              {expenseSpreadsheetItems.length > 0 && (
+                <div style={{ marginTop: "12px", background: "white", border: "1px solid #fcd34d", borderRadius: "6px", overflow: "hidden" }}>
+                  <div style={{ background: "#fef3c7", padding: "6px 10px", fontWeight: "700", fontSize: "12px", color: "#92400e", borderBottom: "1px solid #fde68a" }}>
+                    {isAdmin ? "Spreadsheet breakdown" : "Pulse breakdown"} ({expenseSpreadsheetItems.length} entries{alert.summary?.reference ? ` for ${alert.summary.reference}` : ""})
+                  </div>
+                  <div style={{ overflowX: "auto" }}>
+                    <table style={{ width: "100%", fontSize: "12px", borderCollapse: "collapse", textAlign: "left" }}>
+                      <thead>
+                        <tr style={{ background: "#fffdf5", borderBottom: "1px solid #fde68a", fontSize: "11px", color: "#78350f" }}>
+                          <th style={{ padding: "6px 8px" }}>{isAdmin ? "Spreadsheet location / entry" : "Pulse entry"}</th>
+                          <th style={{ padding: "6px 8px", textAlign: "right" }}>Excl VAT</th>
+                          <th style={{ padding: "6px 8px", textAlign: "right" }}>VAT</th>
+                          <th style={{ padding: "6px 8px", textAlign: "right" }}>Gross</th>
+                          <th style={{ padding: "6px 8px" }}>Rec date</th>
+                          <th style={{ padding: "6px 8px" }}>Pay date</th>
+                          <th style={{ padding: "6px 8px" }}>Status</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {expenseSpreadsheetItems.map((item, idx) => (
+                          <tr key={idx} style={{ borderBottom: "1px solid #fef3c7" }}>
+                            <td style={{ padding: "6px 8px", fontWeight: "600", color: "#111827" }}>
+                              {item.source === "Outgoings" ? (
+                                <>
+                                  {item.contractor || "Contractor"}{item.month ? ` — ${item.month}` : ""}
+                                  <div style={{ fontSize: "10px", color: "#6b7280", fontWeight: "normal" }}>
+                                    {isAdmin
+                                      ? `Outgoings cell ${item.cellRef}`
+                                      : `Contractors${item.month ? ` (${item.month})` : ""}`}
+                                  </div>
+                                </>
+                              ) : (
+                                <>
+                                  {item.job || "(No job name)"}
+                                  <div style={{ fontSize: "10px", color: "#6b7280", fontWeight: "normal" }}>
+                                    {item.client || ""}{isAdmin ? `${item.client ? " · " : ""}Confirmed row ${item.rowNum}, slot ${item.slotNum}` : ""}
+                                  </div>
+                                </>
+                              )}
+                            </td>
+                            <td style={{ padding: "6px 8px", textAlign: "right" }}>£{Number(item.netAmount || 0).toFixed(2)}</td>
+                            <td style={{ padding: "6px 8px", textAlign: "right" }}>£{Number(item.vatAmount || 0).toFixed(2)}</td>
+                            <td style={{ padding: "6px 8px", textAlign: "right", fontWeight: "600" }}>£{Number(item.grossAmount || 0).toFixed(2)}</td>
+                            <td style={{ padding: "6px 8px", color: "#4b5563" }}>{item.recDate || "-"}</td>
+                            <td style={{ padding: "6px 8px", color: "#4b5563" }}>{item.payDate || "-"}</td>
+                            <td style={{ padding: "6px 8px" }}>
+                              <span style={{ fontSize: "10px", padding: "1px 5px", borderRadius: "3px", background: "#f3f4f6", color: "#374151" }}>
+                                {item.status || "-"}
+                              </span>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                      <tfoot>
+                        <tr style={{ background: "#fff7ed", fontWeight: "700", borderTop: "1.5px solid #fed7aa", color: "#9a3412" }}>
+                          <td style={{ padding: "6px 8px" }}>{isAdmin ? "Spreadsheet total" : "Pulse total"} ({expenseSpreadsheetItems.length} entries):</td>
+                          <td style={{ padding: "6px 8px", textAlign: "right" }}>
+                            £{expenseSpreadsheetItems.reduce((s, it) => s + (Number(it.netAmount) || 0), 0).toFixed(2)}
+                          </td>
+                          <td style={{ padding: "6px 8px", textAlign: "right" }}>
+                            £{expenseSpreadsheetItems.reduce((s, it) => s + (Number(it.vatAmount) || 0), 0).toFixed(2)}
+                          </td>
+                          <td style={{ padding: "6px 8px", textAlign: "right" }}>
+                            £{expenseSpreadsheetItems.reduce((s, it) => s + (Number(it.grossAmount) || 0), 0).toFixed(2)}
+                          </td>
+                          <td colSpan={3}></td>
+                        </tr>
+                        <tr style={{ background: "#eff6ff", fontWeight: "700", borderTop: "1px solid #bfdbfe", color: "#1e40af" }}>
+                          <td style={{ padding: "6px 8px" }}>Accounting total{isAdmin ? ` (Row ${alert.rowNumber})` : ""}:</td>
+                          <td style={{ padding: "6px 8px", textAlign: "right" }}>£{expAccNet.toFixed(2)}</td>
+                          <td style={{ padding: "6px 8px", textAlign: "right" }}>£{expAccVat.toFixed(2)}</td>
+                          <td style={{ padding: "6px 8px", textAlign: "right" }}>£{expAccGross.toFixed(2)}</td>
+                          <td colSpan={3}></td>
+                        </tr>
+                      </tfoot>
+                    </table>
+                  </div>
+                </div>
+              )}
+
+              <div style={{ fontSize: "12px", marginTop: "8px", color: "#b45309" }}>
+                Review all {isAdmin ? "spreadsheet" : "Pulse"} entries against accounting before resolving this discrepancy.
+              </div>
+            </div>
+          );
+        })()}
 
         {acceptError && (
           <div style={{ ...styles.errorBanner, marginBottom: "16px" }}>
@@ -2278,10 +2419,13 @@ export default function TriageAnalysisView({
                         ...newAlerts[idx],
                         options: d.options,
                         ...(patch ? {
-                          isDuplicateInvoice: patch.isDuplicateInvoice,
-                          spreadsheetItems: patch.spreadsheetItems,
-                          pulseAmounts: patch.pulseAmounts,
-                          rechargedDiagnosis: patch.rechargedDiagnosis || null,
+                          ...(patch.isDuplicateInvoice !== undefined ? { isDuplicateInvoice: patch.isDuplicateInvoice } : {}),
+                          ...(patch.spreadsheetItems !== undefined ? { spreadsheetItems: patch.spreadsheetItems } : {}),
+                          ...(patch.isDuplicateExpense !== undefined ? { isDuplicateExpense: patch.isDuplicateExpense } : {}),
+                          ...(patch.expenseSpreadsheetItems !== undefined ? { expenseSpreadsheetItems: patch.expenseSpreadsheetItems } : {}),
+                          ...(patch.isPartPaidSplit !== undefined ? { isPartPaidSplit: patch.isPartPaidSplit } : {}),
+                          ...(patch.pulseAmounts !== undefined ? { pulseAmounts: patch.pulseAmounts } : {}),
+                          ...(patch.rechargedDiagnosis !== undefined ? { rechargedDiagnosis: patch.rechargedDiagnosis || null } : {}),
                           data: {
                             ...(newAlerts[idx].data || {}),
                             flags: Array.isArray(patch.liveFlags) ? patch.liveFlags : newAlerts[idx].data?.flags,

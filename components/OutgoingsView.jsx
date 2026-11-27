@@ -19,7 +19,7 @@ import PmaClientNoteBadge from "./PmaClientNoteBadge";
 import { useTriage } from "../contexts/TriageContext";
 import { useAuth } from "../hooks/useAuth";
 import { useFocusRevalidate } from "../hooks/useFocusRevalidate";
-import { isPlaceholderExpense, groupSlotItemsForDisplay, getRetainerRowMonthLabel, getRetainerDurationMonths } from "../utils/helpers";
+import { isPlaceholderExpense, groupSlotItemsForDisplay, getRetainerRowMonthLabel, getRetainerDurationMonths, toSheetDateFormat } from "../utils/helpers";
 
 const formatCurrency = (val) => {
   const s = String(val || "").trim();
@@ -854,8 +854,8 @@ export default function OutgoingsView({
         appId: item.appId,
         amount: item.amount,
         status: item.status || "",
-        recDate: item.date || "",
-        payDate: item.datePaid || "",
+        recDate: item.date ? toSheetDateFormat(item.date) : "",
+        payDate: item.datePaid ? toSheetDateFormat(item.datePaid) : "",
         description: descToStore || item.description || item.contactName || item.accountName || ""
       };
     });
@@ -2290,8 +2290,8 @@ export default function OutgoingsView({
                 appId: item.appId,
                 amount: item.amount,
                 status: item.status || "",
-                recDate: item.date || "",
-                payDate: item.datePaid || "",
+                recDate: item.date ? toSheetDateFormat(item.date) : "",
+                payDate: item.datePaid ? toSheetDateFormat(item.datePaid) : "",
                 description: descToStore || item.description || item.contactName || item.accountName || ""
               };
             });
@@ -2338,8 +2338,8 @@ export default function OutgoingsView({
                 appId: item.appId,
                 amount: item.amount,
                 status: item.status || "",
-                recDate: item.date || "",
-                payDate: item.datePaid || "",
+                recDate: item.date ? toSheetDateFormat(item.date) : "",
+                payDate: item.datePaid ? toSheetDateFormat(item.datePaid) : "",
                 description: descToStore || item.description || item.contactName || item.accountName || ""
               };
             });
@@ -2735,7 +2735,7 @@ export default function OutgoingsView({
                             <span style={{ fontWeight: "700", color: "#111827", fontSize: "11.5px" }}>
                               £{(exp.amount || 0).toLocaleString("en-GB", { minimumFractionDigits: 2 })}
                             </span>
-                            <span>{exp.date}</span>
+                            <span>{exp.date ? toSheetDateFormat(exp.date) : ""}</span>
                           </div>
 
                           {exp.reference && (
@@ -4188,7 +4188,7 @@ export default function OutgoingsView({
                                                     </span>
                                                   </div>
                                                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "4px", fontSize: "10px", color: "#64748b" }}>
-                                                    <span>{expItem.date || "-"}</span>
+                                                    <span>{expItem.date ? toSheetDateFormat(expItem.date) : "-"}</span>
                                                     {expItem.status && (
                                                       <span style={{ ...getStatusPill(expItem.status), padding: "1px 5px", borderRadius: "3px", fontSize: "9px", fontWeight: "600" }}>
                                                         {expItem.status}
@@ -4505,7 +4505,7 @@ export default function OutgoingsView({
                                           <div title={s.description} style={{ fontWeight: "600", color: isManualEntry ? "#9333ea" : "inherit", wordBreak: "break-word" }}>
                                             {isManualEntry && "(placeholder) "}{s.description}
                                           </div>
-                                          <div style={{ color: "#888" }}>{/^[£$€]/.test(String(s.amount)) ? s.amount : `£${s.amount}`} · {s.date}{s.status ? ` · ${s.status}` : ""}</div>
+                                          <div style={{ color: "#888" }}>{/^[£$€]/.test(String(s.amount)) ? s.amount : `£${s.amount}`} · {s.date ? toSheetDateFormat(s.date) : ""}{s.status ? ` · ${s.status}` : ""}</div>
                                           {isManualEntry && isPlacing && (
                                             <div style={{ color: "#1a56db", fontWeight: "700", marginTop: "2px" }}>Click to overwrite</div>
                                           )}

@@ -6,18 +6,30 @@ export default function PlaceholderChoiceModal({
   type = "invoice", // "invoice" | "expense"
   job,
   itemToPlace,
+  itemsToPlace = null,
   manualPlaceholders = [],
   onReplaceManual,
   onUseAuto,
   onClose,
 }) {
-  if (!isOpen || !job || !itemToPlace) return null;
+  const itemList = Array.isArray(itemsToPlace) && itemsToPlace.length > 0
+    ? itemsToPlace
+    : (itemToPlace ? [itemToPlace] : []);
+  if (!isOpen || !job || itemList.length === 0) return null;
 
   const isInvoice = type === "invoice";
-  const itemTitle = isInvoice
-    ? `Invoice #${itemToPlace.invoiceNo || itemToPlace.ref || ""}`
-    : (itemToPlace.description || (itemToPlace.transactionId ? `#${itemToPlace.transactionId}` : "Expense"));
-  const itemAmt = formatCurrency(itemToPlace.amount);
+  const isMulti = itemList.length > 1;
+  const primaryItem = itemList[0];
+  const totalAmount = itemList.reduce((sum, it) => {
+    const num = parseFloat(String(it?.amount ?? "").replace(/[£$€,\s]/g, "")) || 0;
+    return sum + num;
+  }, 0);
+  const itemTitle = isMulti
+    ? `${itemList.length} ${isInvoice ? "invoices" : "expenses"}`
+    : isInvoice
+      ? `Invoice #${primaryItem.invoiceNo || primaryItem.ref || ""}`
+      : (primaryItem.description || (primaryItem.transactionId ? `#${primaryItem.transactionId}` : "Expense"));
+  const itemAmt = formatCurrency(isMulti ? totalAmount : primaryItem.amount);
 
   return (
     <div
@@ -28,9 +40,11 @@ export default function PlaceholderChoiceModal({
         backdropFilter: "blur(2px)",
         zIndex: 1300,
         display: "flex",
-        alignItems: "center",
+        alignItems: "flex-start",
         justifyContent: "center",
         padding: "16px",
+        overflowY: "auto",
+        boxSizing: "border-box",
       }}
       onClick={(e) => {
         if (e.target === e.currentTarget) onClose();
@@ -41,9 +55,11 @@ export default function PlaceholderChoiceModal({
           background: "#ffffff",
           borderRadius: "12px",
           width: "min(94vw, 480px)",
+          maxHeight: "calc(100dvh - 32px)",
+          overflowY: "auto",
+          margin: "auto 0",
           boxShadow: "0 20px 40px rgba(0,0,0,0.2)",
           border: "1px solid #e2e8f0",
-          overflow: "hidden",
           display: "flex",
           flexDirection: "column",
         }}
@@ -86,7 +102,7 @@ export default function PlaceholderChoiceModal({
         {/* Body */}
         <div style={{ padding: "20px 22px", display: "flex", flexDirection: "column", gap: "16px" }}>
           <div style={{ fontSize: "13px", color: "#334155", lineHeight: "1.5" }}>
-            Placing <strong>{itemTitle}</strong> ({itemAmt}). This job contains existing manual placeholder(s). How would you like to proceed?
+            Placing <strong>{itemTitle}</strong> ({itemAmt}){isMulti ? " — the first invoice will replace your chosen placeholder and any remaining invoices will be placed into the next available slots" : ""}. This job contains existing manual placeholder(s). How would you like to proceed?
           </div>
 
           {/* Option 1: Replace a manual placeholder */}

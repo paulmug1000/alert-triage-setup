@@ -616,7 +616,7 @@ export default function OutgoingsDetailModal({
               <div style={{ fontSize: "13px", color: "#92400e", lineHeight: "1.4" }}>
                 <strong>Stale UNRECON-GAP expense overdue</strong>
                 <div>
-                  This gap expense has received date <strong>{target.recDate || "overdue"}</strong> ({target.weeksAgo} weeks ago — more than 6 weeks overdue without reconciliation).
+                  This gap expense has received date <strong>{target.recDate ? toSheetDateFormat(target.recDate) : "overdue"}</strong> ({target.weeksAgo} weeks ago — more than 6 weeks overdue without reconciliation).
                 </div>
               </div>
             </div>

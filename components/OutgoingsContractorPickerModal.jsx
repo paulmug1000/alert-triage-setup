@@ -2,7 +2,7 @@ import React, { useState, useEffect, useMemo, useCallback } from "react";
 import Spinner from "./Spinner";
 import DeferredSearchInput from "./DeferredSearchInput";
 import { formatCurrency } from "./JobsView";
-import { isPlaceholderExpense } from "../utils/helpers";
+import { isPlaceholderExpense, toSheetDateFormat } from "../utils/helpers";
 import OutgoingsNewVendorModal from "./OutgoingsNewVendorModal";
 
 export default function OutgoingsContractorPickerModal({
@@ -221,7 +221,7 @@ export default function OutgoingsContractorPickerModal({
             <div style={{ fontSize: "13px", color: "#64748b", marginTop: "3px" }}>
               Placing <strong style={{ color: "#059669" }}>{expAmountStr}</strong>
               {" · "}{expense?.description || expense?.reference || "Expense"}
-              {expense?.date && <span>{" · Date: "}<strong>{expense.date}</strong></span>}
+              {expense?.date && <span>{" · Date: "}<strong>{toSheetDateFormat(expense.date)}</strong></span>}
             </div>
           </div>
           <button

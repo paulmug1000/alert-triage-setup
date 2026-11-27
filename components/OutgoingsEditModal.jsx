@@ -464,7 +464,7 @@ export default function OutgoingsEditModal({ editCellData, outgoingsData, update
                           await updateCell(contractor, colLetter, newBlocks, topNote);
                           onReturnToInbox({
                             appId: b.appId, amount: b.amount,
-                            date: b.recDate || "", datePaid: b.payDate || "",
+                            date: b.recDate ? toSheetDateFormat(b.recDate) : "", datePaid: b.payDate ? toSheetDateFormat(b.payDate) : "",
                             description: b.description || "", accountName: b.description || "",
                             status: b.status || "",
                           });
@@ -624,7 +624,7 @@ export default function OutgoingsEditModal({ editCellData, outgoingsData, update
                       color: "#334155",
                     }}
                   >
-                    {b.recDate || "-"}
+                    {b.recDate ? toSheetDateFormat(b.recDate) : "-"}
                   </div>
                 </div>
                 <div>
@@ -642,7 +642,7 @@ export default function OutgoingsEditModal({ editCellData, outgoingsData, update
                       }}
                       title={isAutoLocked ? "Automatic placeholder. Convert to manual placeholder to edit." : "Pay date is recorded in accounting software for paid bills."}
                     >
-                      {b.payDate || "-"}
+                      {b.payDate ? toSheetDateFormat(b.payDate) : "-"}
                     </div>
                   )}
                 </div>

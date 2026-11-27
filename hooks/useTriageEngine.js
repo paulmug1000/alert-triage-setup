@@ -723,8 +723,12 @@ export function useTriageEngine({
         alert.options.length === 0 &&
         isMissingInvOrExp &&
         !alert._pipelineChecked;
+      const needsDuplicateExpenseBreakdown =
+        isExpMismatch &&
+        (Boolean(alert.isDuplicateExpense) || String(alert.data?.flags?.[1] || "").trim() === "1" || String(alert.data?.flags?.[3] || "").trim() === "1") &&
+        !Array.isArray(alert.expenseSpreadsheetItems);
 
-      if (Array.isArray(alert.options) && !hasStaleOrIncompleteCache && !needsPipelineFallbackCheck && !needsLiveRecheckForUnconfirmed) {
+      if (Array.isArray(alert.options) && !hasStaleOrIncompleteCache && !needsPipelineFallbackCheck && !needsLiveRecheckForUnconfirmed && !needsDuplicateExpenseBreakdown) {
         console.log(`✅ Using cached options instantly`);
         setFromCache(true);
         setClaudeAnalysis(JSON.stringify(alert.options, null, 2));
@@ -774,10 +778,13 @@ export function useTriageEngine({
             _liveRecheckedInSession: true,
             ...(data.pipelineChecked ? { _pipelineChecked: true } : {}),
             ...(patch ? {
-              isDuplicateInvoice: patch.isDuplicateInvoice,
-              spreadsheetItems: patch.spreadsheetItems,
-              pulseAmounts: patch.pulseAmounts,
-              rechargedDiagnosis: patch.rechargedDiagnosis || null,
+              ...(patch.isDuplicateInvoice !== undefined ? { isDuplicateInvoice: patch.isDuplicateInvoice } : {}),
+              ...(patch.spreadsheetItems !== undefined ? { spreadsheetItems: patch.spreadsheetItems } : {}),
+              ...(patch.isDuplicateExpense !== undefined ? { isDuplicateExpense: patch.isDuplicateExpense } : {}),
+              ...(patch.expenseSpreadsheetItems !== undefined ? { expenseSpreadsheetItems: patch.expenseSpreadsheetItems } : {}),
+              ...(patch.isPartPaidSplit !== undefined ? { isPartPaidSplit: patch.isPartPaidSplit } : {}),
+              ...(patch.pulseAmounts !== undefined ? { pulseAmounts: patch.pulseAmounts } : {}),
+              ...(patch.rechargedDiagnosis !== undefined ? { rechargedDiagnosis: patch.rechargedDiagnosis || null } : {}),
               data: {
                 ...(newAlerts[idx].data || {}),
                 flags: Array.isArray(patch.liveFlags) ? patch.liveFlags : newAlerts[idx].data?.flags,

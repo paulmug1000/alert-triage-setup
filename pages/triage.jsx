@@ -133,12 +133,13 @@ function TriageSystemContent({ onBack, appGlobals, initialNav, initialUser = nul
 
   const [screen, setScreen] = useState("initial");
   const [activeNav, setActiveNav] = useState(() => {
-    if (initialNav) return initialNav;
+    const normalizeNav = (n) => (n === "vat" ? "taxes" : n);
+    if (initialNav) return normalizeNav(initialNav);
     if (typeof window !== "undefined") {
       const p = new URLSearchParams(window.location.search);
       if (p.get("integration")) return "integrations";
       const navParam = p.get("nav");
-      if (navParam) return navParam;
+      if (navParam) return normalizeNav(navParam);
       const path = window.location.pathname.toLowerCase();
       if (path.includes("/alerts")) return "alerts";
     }
@@ -211,7 +212,7 @@ function TriageSystemContent({ onBack, appGlobals, initialNav, initialUser = nul
     if (query.integration) {
       setActiveNav("integrations");
     } else if (query.nav && typeof query.nav === "string") {
-      setActiveNav(query.nav);
+      setActiveNav(query.nav === "vat" ? "taxes" : query.nav);
     }
     if (query.client && typeof query.client === "string") {
       setSetupClientName(query.client);
@@ -237,9 +238,10 @@ function TriageSystemContent({ onBack, appGlobals, initialNav, initialUser = nul
   const [viewsStickyClient, setViewsStickyClient] = useState(null);
   const [activeViewTab, setActiveViewTab] = useState("fyPerformance");
   const [alertAssignOverlay, setAlertAssignOverlay] = useState(null); // { mode: "invoices" | "outgoings", client }
+  const [overlayViewport, setOverlayViewport] = useState(null); // { height, offsetTop } on mobile visualViewport
 
   const EDIT_NAV_KEYS = useMemo(
-    () => new Set(["jobs", "outgoings", "passthrough", "invoices", "retainers", "salaries", "expenses", "nbtofind", "budget", "cash", "vat", "year0"]),
+    () => new Set(["jobs", "outgoings", "passthrough", "invoices", "retainers", "salaries", "expenses", "nbtofind", "budget", "cash", "taxes", "vat"]),
     []
   );
 
@@ -263,6 +265,45 @@ function TriageSystemContent({ onBack, appGlobals, initialNav, initialUser = nul
     document.body.style.overflow = "hidden";
     return () => {
       document.body.style.overflow = prevOverflow;
+    };
+  }, [alertAssignOverlay]);
+
+  useEffect(() => {
+    if (!alertAssignOverlay || typeof window === "undefined") {
+      setOverlayViewport(null);
+      return;
+    }
+    const syncViewport = () => {
+      if (window.innerWidth > 768) {
+        setOverlayViewport(null);
+        return;
+      }
+      const vv = window.visualViewport;
+      if (vv) {
+        setOverlayViewport({
+          height: Math.max(240, Math.round(vv.height)),
+          offsetTop: Math.max(0, Math.round(vv.offsetTop)),
+        });
+      } else {
+        setOverlayViewport({
+          height: Math.max(240, Math.round(window.innerHeight)),
+          offsetTop: 0,
+        });
+      }
+    };
+    syncViewport();
+    const vv = window.visualViewport;
+    if (vv) {
+      vv.addEventListener("resize", syncViewport);
+      vv.addEventListener("scroll", syncViewport);
+    }
+    window.addEventListener("resize", syncViewport);
+    return () => {
+      if (vv) {
+        vv.removeEventListener("resize", syncViewport);
+        vv.removeEventListener("scroll", syncViewport);
+      }
+      window.removeEventListener("resize", syncViewport);
     };
   }, [alertAssignOverlay]);
 
@@ -905,10 +946,14 @@ function TriageSystemContent({ onBack, appGlobals, initialNav, initialUser = nul
     loadClients();
   });
   const handleNavCash = () => navigateWithGuard(() => { setActiveNav("cash"); loadClients(); });
-  const handleNavVat = () => navigateWithGuard(() => { setActiveNav("vat"); loadClients(); });
+  const handleNavVat = () => navigateWithGuard(() => { setActiveNav("taxes"); loadClients(); });
   const handleNavYear0 = (clientName = "") => navigateWithGuard(() => {
+    fireOutgoingsPullIfPending();
+    setSettingsSubsection("");
     if (typeof clientName === "string" && clientName.trim()) {
-      setEditStickyClient(clientName.trim());
+      setSetupClientName(clientName.trim());
+    } else if (managedClient?.clientName) {
+      setSetupClientName(managedClient.clientName);
     }
     setActiveNav("year0");
     loadClients();
@@ -933,6 +978,9 @@ function TriageSystemContent({ onBack, appGlobals, initialNav, initialUser = nul
     } else if (activeNav === "setup") {
       const activeClient = managedClient?.clientName || setupClientName;
       target = activeClient ? `/pma?nav=setup&client=${encodeURIComponent(activeClient)}` : `/pma?nav=setup`;
+    } else if (activeNav === "year0") {
+      const activeClient = managedClient?.clientName || setupClientName;
+      target = activeClient ? `/pma?nav=year0&client=${encodeURIComponent(activeClient)}` : `/pma?nav=year0`;
     } else if (activeNav === "settings") {
       const activeClient = managedClient?.clientName || settingsClientName;
       const params = new URLSearchParams();
@@ -957,7 +1005,7 @@ function TriageSystemContent({ onBack, appGlobals, initialNav, initialUser = nul
   useEffect(() => {
     const onPopState = (e) => {
       if (e.state?.nav) {
-        setActiveNav(e.state.nav);
+        setActiveNav(e.state.nav === "vat" ? "taxes" : e.state.nav);
         if (typeof window !== "undefined") {
           const p = new URLSearchParams(window.location.search);
           const clientParam = p.get("client");
@@ -1007,7 +1055,7 @@ function TriageSystemContent({ onBack, appGlobals, initialNav, initialUser = nul
       if (subsectionParam) setSettingsSubsection(subsectionParam);
       const path = window.location.pathname.toLowerCase();
       if (initialNav) {
-        setActiveNav(initialNav);
+        setActiveNav(initialNav === "vat" ? "taxes" : initialNav);
       } else if (path.includes("/alerts") || navParam === "alerts") {
         setActiveNav("alerts");
       } else if (navParam === "integrations" || p.get("integration") === "xero") {
@@ -1019,7 +1067,7 @@ function TriageSystemContent({ onBack, appGlobals, initialNav, initialUser = nul
         if (filterParam) setTasksFilter(filterParam);
         setActiveNav("tasks");
       } else if (navParam) {
-        setActiveNav(navParam);
+        setActiveNav(navParam === "vat" ? "taxes" : navParam);
       }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1411,8 +1459,8 @@ function TriageSystemContent({ onBack, appGlobals, initialNav, initialUser = nul
       );
     }
 
-    // ── VAT SCREEN ──────────────────────────────────────────────────────────────
-    if (activeNav === "vat") {
+    // ── TAXES SCREEN ────────────────────────────────────────────────────────────
+    if (activeNav === "taxes" || activeNav === "vat") {
       return (
         <VATView
           allOutgoingsClients={allOutgoingsClients}
@@ -1433,8 +1481,9 @@ function TriageSystemContent({ onBack, appGlobals, initialNav, initialUser = nul
           styles={styles}
           managedClient={managedClient}
           onClearManagedClient={handleClearManagedClient}
-          initialClient={editStickyClient}
-          onSelectClient={setEditStickyClient}
+          initialClient={managedClient || setupClientName}
+          onSelectClient={(c) => setSetupClientName(typeof c === "string" ? c : (c?.clientName || ""))}
+          onBackToSetup={(clientName) => handleNavSetup(clientName || managedClient?.clientName || setupClientName)}
           onRegisterNavGuard={registerNavGuard}
         />
       );
@@ -1493,6 +1542,7 @@ function TriageSystemContent({ onBack, appGlobals, initialNav, initialUser = nul
           initialClientName={managedClient ? managedClient.clientName : setupClientName}
           onSelectClient={setSetupClientName}
           onGoToBudget={handleNavBudget}
+          onGoToYear0={handleNavYear0}
           onGoToTasks={handleNavTasks}
           user={user}
           isAdmin={isAdmin}
@@ -1659,7 +1709,6 @@ function TriageSystemContent({ onBack, appGlobals, initialNav, initialUser = nul
         onBudget={handleNavBudget}
         onCash={handleNavCash}
         onVat={handleNavVat}
-        onYear0={handleNavYear0}
         onViews={handleNavViews}
         onTools={handleNavTools}
         onIntegrations={handleNavIntegrations}
@@ -1687,13 +1736,17 @@ function TriageSystemContent({ onBack, appGlobals, initialNav, initialUser = nul
             className="pma-assign-overlay-backdrop"
             style={{
               position: "fixed",
-              inset: 0,
+              top: overlayViewport ? `${overlayViewport.offsetTop}px` : 0,
+              left: 0,
+              right: 0,
+              bottom: overlayViewport ? "auto" : 0,
+              height: overlayViewport ? `${overlayViewport.height}px` : undefined,
               zIndex: 950,
               backgroundColor: "rgba(15, 23, 42, 0.58)",
               backdropFilter: "blur(3px)",
               WebkitBackdropFilter: "blur(3px)",
               display: "flex",
-              alignItems: "center",
+              alignItems: overlayViewport ? "stretch" : "center",
               justifyContent: "center",
               padding: "20px",
               boxSizing: "border-box",
@@ -1705,15 +1758,35 @@ function TriageSystemContent({ onBack, appGlobals, initialNav, initialUser = nul
             }}
           >
             <style>{`
-              @media (max-width: 640px) {
+              @media (max-width: 768px) {
                 .pma-assign-overlay-backdrop {
                   padding: 0 !important;
+                  align-items: stretch !important;
+                  justify-content: flex-start !important;
                 }
                 .pma-assign-overlay-dialog {
-                  width: 100vw !important;
-                  height: 100vh !important;
-                  max-height: 100vh !important;
+                  width: 100% !important;
+                  height: 100% !important;
+                  max-height: 100% !important;
                   border-radius: 0 !important;
+                }
+                .pma-assign-overlay-header {
+                  padding: max(10px, env(safe-area-inset-top)) 14px 10px !important;
+                  gap: 8px !important;
+                }
+                .pma-assign-overlay-title {
+                  font-size: 15px !important;
+                }
+                .pma-assign-overlay-client-pill {
+                  font-size: 11.5px !important;
+                  padding: 2px 8px !important;
+                  max-width: 150px !important;
+                  overflow: hidden !important;
+                  text-overflow: ellipsis !important;
+                  white-space: nowrap !important;
+                }
+                .pma-assign-overlay-body {
+                  padding-bottom: 24px !important;
                 }
               }
             `}</style>
@@ -1724,8 +1797,8 @@ function TriageSystemContent({ onBack, appGlobals, initialNav, initialUser = nul
               aria-label={alertAssignOverlay.mode === "invoices" ? "Assign invoices" : alertAssignOverlay.mode === "passthrough" ? "Assign pass-through costs" : "Assign contractor costs"}
               style={{
                 width: "min(96vw, 1680px)",
-                height: "92vh",
-                maxHeight: "92vh",
+                height: "92dvh",
+                maxHeight: "92dvh",
                 backgroundColor: "#f8fafc",
                 borderRadius: "14px",
                 boxShadow: "0 25px 60px -12px rgba(15, 23, 42, 0.45), 0 0 0 1px rgba(15, 23, 42, 0.08)",
@@ -1736,6 +1809,7 @@ function TriageSystemContent({ onBack, appGlobals, initialNav, initialUser = nul
             >
               {/* Modal sticky top header */}
               <div
+                className="pma-assign-overlay-header"
                 style={{
                   display: "flex",
                   alignItems: "center",
@@ -1747,7 +1821,7 @@ function TriageSystemContent({ onBack, appGlobals, initialNav, initialUser = nul
                   flexShrink: 0,
                 }}
               >
-                <div style={{ display: "flex", alignItems: "center", gap: "12px", flexWrap: "wrap", minWidth: 0 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: "10px", flexWrap: "nowrap", minWidth: 0, flex: 1 }}>
                   <span
                     style={{
                       display: "inline-flex",
@@ -1777,12 +1851,13 @@ function TriageSystemContent({ onBack, appGlobals, initialNav, initialUser = nul
                       )}
                     </svg>
                   </span>
-                  <div style={{ display: "flex", alignItems: "baseline", gap: "10px", flexWrap: "wrap" }}>
-                    <h2 style={{ margin: 0, fontSize: "18px", fontWeight: 700, color: "#0f172a" }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap", minWidth: 0 }}>
+                    <h2 className="pma-assign-overlay-title" style={{ margin: 0, fontSize: "18px", fontWeight: 700, color: "#0f172a" }}>
                       {alertAssignOverlay.mode === "invoices" ? "Assign invoices" : alertAssignOverlay.mode === "passthrough" ? "Assign pass-through costs" : "Assign contractor costs"}
                     </h2>
                     {alertAssignOverlay.client?.clientName && (
                       <span
+                        className="pma-assign-overlay-client-pill"
                         style={{
                           fontSize: "13px",
                           fontWeight: 600,
@@ -1799,12 +1874,12 @@ function TriageSystemContent({ onBack, appGlobals, initialNav, initialUser = nul
                   </div>
                 </div>
 
-                <div style={{ display: "flex", alignItems: "center", gap: "10px", flexShrink: 0 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: "8px", flexShrink: 0 }}>
                   <button
                     type="button"
                     onClick={handleCloseAlertAssignOverlay}
                     style={{
-                      padding: "7px 16px",
+                      padding: "7px 14px",
                       fontSize: "13px",
                       fontWeight: 600,
                       color: "#ffffff",
@@ -1844,10 +1919,14 @@ function TriageSystemContent({ onBack, appGlobals, initialNav, initialUser = nul
 
               {/* Modal scrollable workspace body */}
               <div
+                className="pma-assign-overlay-body"
                 style={{
                   flex: 1,
+                  minHeight: 0,
                   overflowY: "auto",
                   overflowX: "hidden",
+                  WebkitOverflowScrolling: "touch",
+                  overscrollBehavior: "contain",
                   position: "relative",
                 }}
               >

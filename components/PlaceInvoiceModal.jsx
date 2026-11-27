@@ -16,8 +16,9 @@ const fmtGBP = (n) =>
 
 /**
  * Unified invoice placement confirmation modal used across PMA > Alerts and PMA > Invoices.
- * Supports synced line-item breakdown selection, "of which recharged" + cost month allocation,
- * billable budget overrun prompts, and client/job name mismatch resolution.
+ * Supports single or multiple invoices, synced line-item breakdown (info-only by default,
+ * interactive when "Includes recharged expenses?" is checked), "of which recharged" + cost month
+ * allocation, billable budget overrun prompts, and client/job name mismatch resolution.
  */
 export default function PlaceInvoiceModal({
   isOpen,
@@ -27,6 +28,7 @@ export default function PlaceInvoiceModal({
   error = "",
   job,
   invoice,
+  invoices = null,
   targetRowNum = null,
   targetSlotNum = null,
   slot = null,
@@ -37,15 +39,17 @@ export default function PlaceInvoiceModal({
   isAdmin = false,
   allowJobNameEdit = false,
 }) {
-  const lineItems = useMemo(
-    () => (Array.isArray(invoice?.lineItems) ? invoice.lineItems : []),
-    [invoice]
+  const invoiceList = useMemo(
+    () => (Array.isArray(invoices) && invoices.length > 0 ? invoices : invoice ? [invoice] : []),
+    [invoices, invoice]
   );
+  const isMulti = invoiceList.length > 1;
 
-  const invoiceAmount = useMemo(() => round2(parseMoney(invoice?.amount)), [invoice?.amount]);
-  const detectedRecharged = useMemo(
-    () => round2(parseMoney(invoice?.detectedRechargedAmount ?? invoice?.rechargedAmount)),
-    [invoice?.detectedRechargedAmount, invoice?.rechargedAmount]
+  const getInvKey = (inv, idx) => `${String(inv?.invoiceNo || "").trim()}__${idx}`;
+
+  const invoiceAmount = useMemo(
+    () => round2(invoiceList.reduce((sum, inv) => sum + parseMoney(inv?.amount), 0)),
+    [invoiceList]
   );
 
   const jobFeeRevenue = useMemo(
@@ -65,6 +69,7 @@ export default function PlaceInvoiceModal({
     for (const r of rows) {
       for (const sl of r.invoiceSlots || []) {
         const isTargetSlot =
+          !isMulti &&
           !createNewRow &&
           targetRowNum != null &&
           targetSlotNum != null &&
@@ -88,7 +93,7 @@ export default function PlaceInvoiceModal({
       currentRealInvoiced: round2(realInv),
       otherNonAutoRechgd: round2(otherRech),
     };
-  }, [job, createNewRow, targetRowNum, targetSlotNum]);
+  }, [job, isMulti, createNewRow, targetRowNum, targetSlotNum]);
 
   const unallocatedJobRecharged = useMemo(
     () => Math.max(0, round2(jobRecharged - otherNonAutoRechgd)),
@@ -105,15 +110,18 @@ export default function PlaceInvoiceModal({
   );
 
   const sheetClientName = String(job?.client || "").trim();
-  const invoiceClientName = String(invoice?.client || "").trim();
-  const hasClientMismatch = Boolean(
-    sheetClientName && invoiceClientName && sheetClientName.toLowerCase() !== invoiceClientName.toLowerCase()
+  const mismatchInv = useMemo(
+    () =>
+      invoiceList.find((inv) => {
+        const c = String(inv?.client || "").trim();
+        return Boolean(sheetClientName && c && sheetClientName.toLowerCase() !== c.toLowerCase());
+      }) || null,
+    [invoiceList, sheetClientName]
   );
+  const invoiceClientName = String(mismatchInv?.client || invoiceList[0]?.client || "").trim();
+  const hasClientMismatch = Boolean(mismatchInv);
 
-  const [selectedLineIndices, setSelectedLineIndices] = useState(() => new Set());
-  const [hasRechargedExpenses, setHasRechargedExpenses] = useState(false);
-  const [ofWhichRechgd, setOfWhichRechgd] = useState("");
-  const [costMonth, setCostMonth] = useState("");
+  const [perInvoiceRech, setPerInvoiceRech] = useState(() => ({}));
   const [excessChoice, setExcessChoice] = useState("increase_revenue");
   const [rechargedUpdateMode, setRechargedUpdateMode] = useState("increase_recharged");
   const [remainingExcessChoice, setRemainingExcessChoice] = useState("increase_revenue");
@@ -122,36 +130,51 @@ export default function PlaceInvoiceModal({
   const [newJobName, setNewJobName] = useState(String(job?.jobName || ""));
   const [validationError, setValidationError] = useState("");
 
+  const invoiceInitKey = useMemo(
+    () => invoiceList.map((inv, idx) => `${inv?.invoiceNo || ""}:${inv?.amount || ""}:${idx}`).join("|"),
+    [invoiceList]
+  );
+
   useEffect(() => {
     if (!isOpen) return;
-    const initSet = new Set();
-    let lineSum = 0;
-    lineItems.forEach((li, idx) => {
-      if (li.isRecharged) {
-        initSet.add(idx);
-        if ((Number(li.amountGbp) || 0) > 0) lineSum += Number(li.amountGbp) || 0;
-      }
+    const initMap = {};
+    invoiceList.forEach((inv, idx) => {
+      const key = getInvKey(inv, idx);
+      const invLineItems = Array.isArray(inv?.lineItems) ? inv.lineItems : [];
+      const invAmt = round2(parseMoney(inv?.amount));
+      const invDetected = round2(parseMoney(inv?.detectedRechargedAmount ?? inv?.rechargedAmount));
+      const initSet = new Set();
+      let lineSum = 0;
+      invLineItems.forEach((li, liIdx) => {
+        if (li.isRecharged) {
+          initSet.add(liIdx);
+          if ((Number(li.amountGbp) || 0) > 0) lineSum += Number(li.amountGbp) || 0;
+        }
+      });
+      const rawInitRech =
+        initSet.size > 0
+          ? Math.min(round2(lineSum), invAmt)
+          : invDetected > 0
+            ? Math.min(invDetected, invAmt)
+            : 0;
+      const initRech = round2(rawInitRech);
+      initMap[key] = {
+        selectedLineIndices: initSet,
+        hasRechargedExpenses: initRech > 0.005,
+        ofWhichRechgd: initRech > 0.005 ? initRech.toFixed(2) : "",
+        costMonth: "",
+      };
     });
-    const rawInitRech =
-      initSet.size > 0
-        ? Math.min(round2(lineSum), invoiceAmount)
-        : detectedRecharged > 0
-          ? Math.min(detectedRecharged, invoiceAmount)
-          : 0;
-    const initRech = round2(rawInitRech);
 
-    setSelectedLineIndices(initSet);
-    setHasRechargedExpenses(initRech > 0.005);
-    setOfWhichRechgd(initRech > 0.005 ? initRech.toFixed(2) : "");
-    setCostMonth("");
+    setPerInvoiceRech(initMap);
     setExcessChoice("increase_revenue");
     setRechargedUpdateMode("increase_recharged");
     setRemainingExcessChoice("increase_revenue");
     setUpdateClientName(hasClientMismatch);
     setUpdateJobName(false);
-    setNewJobName(String(invoice?.job || job?.jobName || ""));
+    setNewJobName(String(invoiceList[0]?.job || job?.jobName || ""));
     setValidationError("");
-  }, [isOpen, invoice?.invoiceNo, job?.jobName, job?.client, lineItems, detectedRecharged, invoiceAmount, hasClientMismatch, invoice?.job]);
+  }, [isOpen, invoiceInitKey, job?.jobName, job?.client, hasClientMismatch, invoiceList]);
 
   useEffect(() => {
     if (!isOpen) return;
@@ -162,9 +185,41 @@ export default function PlaceInvoiceModal({
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [isOpen, isSaving, onClose]);
 
-  if (!isOpen || !job || !invoice) return null;
+  if (!isOpen || !job || invoiceList.length === 0) return null;
 
-  const ofWhichNum = hasRechargedExpenses ? Math.max(0, round2(parseMoney(ofWhichRechgd))) : 0;
+  const getInvState = (inv, idx) => {
+    const key = getInvKey(inv, idx);
+    return (
+      perInvoiceRech[key] || {
+        selectedLineIndices: new Set(),
+        hasRechargedExpenses: false,
+        ofWhichRechgd: "",
+        costMonth: "",
+      }
+    );
+  };
+
+  const updateInvState = (inv, idx, updater) => {
+    const key = getInvKey(inv, idx);
+    setPerInvoiceRech((prev) => {
+      const current = prev[key] || {
+        selectedLineIndices: new Set(),
+        hasRechargedExpenses: false,
+        ofWhichRechgd: "",
+        costMonth: "",
+      };
+      const nextVal = typeof updater === "function" ? updater(current) : { ...current, ...updater };
+      return { ...prev, [key]: nextVal };
+    });
+  };
+
+  const ofWhichNum = round2(
+    invoiceList.reduce((sum, inv, idx) => {
+      const st = getInvState(inv, idx);
+      if (!st.hasRechargedExpenses) return sum;
+      return sum + Math.max(0, round2(parseMoney(st.ofWhichRechgd)));
+    }, 0)
+  );
   const totalNonAutoRechgd = round2(otherNonAutoRechgd + ofWhichNum);
   const rechargedNeedsIncrease = ofWhichNum > 0.005 && totalNonAutoRechgd > jobRecharged + 0.01;
   const deltaRech = round2(totalNonAutoRechgd - jobRecharged);
@@ -191,28 +246,41 @@ export default function PlaceInvoiceModal({
   const remainingExcessAmt = Math.max(0, round2(projectedTotalInvoiced - effectiveBillable));
   const newFeeAfterRemainingExcess = round2(effectiveJobFee + remainingExcessAmt);
 
-  const handleToggleLineItem = (idx) => {
-    const next = new Set(selectedLineIndices);
-    if (next.has(idx)) next.delete(idx);
-    else next.add(idx);
-    setSelectedLineIndices(next);
+  const handleToggleLineItem = (inv, invIdx, lineIdx) => {
+    const invLineItems = Array.isArray(inv?.lineItems) ? inv.lineItems : [];
+    const invAmt = round2(parseMoney(inv?.amount));
+    updateInvState(inv, invIdx, (cur) => {
+      if (!cur.hasRechargedExpenses) return cur;
+      const nextSet = new Set(cur.selectedLineIndices);
+      if (nextSet.has(lineIdx)) nextSet.delete(lineIdx);
+      else nextSet.add(lineIdx);
 
-    let sum = 0;
-    next.forEach((i) => {
-      const amt = Number(lineItems[i]?.amountGbp) || 0;
-      if (amt > 0) sum += amt;
+      let sum = 0;
+      nextSet.forEach((i) => {
+        const amt = Number(invLineItems[i]?.amountGbp) || 0;
+        if (amt > 0) sum += amt;
+      });
+      const clamped = Math.min(round2(sum), invAmt);
+      return {
+        ...cur,
+        selectedLineIndices: nextSet,
+        ofWhichRechgd: clamped > 0.005 ? clamped.toFixed(2) : "",
+      };
     });
-    const clamped = Math.min(round2(sum), invoiceAmount);
-    setHasRechargedExpenses(clamped > 0.005);
-    setOfWhichRechgd(clamped > 0.005 ? clamped.toFixed(2) : "");
     setValidationError("");
   };
 
   const handleSelectTreatExcessAsRecharged = () => {
-    const excess = Math.min(Math.max(0, initialExcessOverBillable), invoiceAmount);
+    if (isMulti) return;
+    const primaryInv = invoiceList[0];
+    const primaryAmt = round2(parseMoney(primaryInv?.amount));
+    const excess = Math.min(Math.max(0, initialExcessOverBillable), primaryAmt);
     setExcessChoice("treat_as_recharged");
-    setHasRechargedExpenses(excess > 0.005);
-    setOfWhichRechgd(excess > 0.005 ? excess.toFixed(2) : "");
+    updateInvState(primaryInv, 0, (cur) => ({
+      ...cur,
+      hasRechargedExpenses: excess > 0.005,
+      ofWhichRechgd: excess > 0.005 ? excess.toFixed(2) : "",
+    }));
     setRechargedUpdateMode("increase_recharged");
     setValidationError("");
   };
@@ -220,17 +288,25 @@ export default function PlaceInvoiceModal({
   const handleConfirmClick = () => {
     setValidationError("");
 
-    if (ofWhichNum > invoiceAmount + 0.01) {
-      setValidationError(`Of which recharged (${fmtGBP(ofWhichNum)}) cannot exceed the invoice amount (${fmtGBP(invoiceAmount)}).`);
-      return;
-    }
+    for (let idx = 0; idx < invoiceList.length; idx++) {
+      const inv = invoiceList[idx];
+      const st = getInvState(inv, idx);
+      const invAmt = round2(parseMoney(inv?.amount));
+      const invRechNum = st.hasRechargedExpenses ? Math.max(0, round2(parseMoney(st.ofWhichRechgd))) : 0;
+      const label = inv?.invoiceNo ? `#${inv.invoiceNo}` : `invoice ${idx + 1}`;
 
-    if (ofWhichNum > 0.005 && String(costMonth || "").trim().toLowerCase().startsWith("[split]")) {
-      const entries = extractSplitMonths(costMonth);
-      const splitSum = entries.reduce((s, e) => s + (Number(e.amount) || 0), 0);
-      if (Math.abs(splitSum - ofWhichNum) > 0.02) {
-        setValidationError(`Split cost months (${fmtGBP(splitSum)}) must equal the invoice recharged amount (${fmtGBP(ofWhichNum)}).`);
+      if (invRechNum > invAmt + 0.01) {
+        setValidationError(`Of which recharged for ${label} (${fmtGBP(invRechNum)}) cannot exceed the invoice amount (${fmtGBP(invAmt)}).`);
         return;
+      }
+
+      if (invRechNum > 0.005 && String(st.costMonth || "").trim().toLowerCase().startsWith("[split]")) {
+        const entries = extractSplitMonths(st.costMonth);
+        const splitSum = entries.reduce((s, e) => s + (Number(e.amount) || 0), 0);
+        if (Math.abs(splitSum - invRechNum) > 0.02) {
+          setValidationError(`Split cost months for ${label} (${fmtGBP(splitSum)}) must equal the invoice recharged amount (${fmtGBP(invRechNum)}).`);
+          return;
+        }
       }
     }
 
@@ -272,9 +348,22 @@ export default function PlaceInvoiceModal({
       }
     }
 
+    const invoiceConfigs = invoiceList.map((inv, idx) => {
+      const st = getInvState(inv, idx);
+      const invRechNum = st.hasRechargedExpenses ? Math.max(0, round2(parseMoney(st.ofWhichRechgd))) : 0;
+      return {
+        invoiceNo: inv?.invoiceNo || "",
+        ofWhichRechgd: invRechNum > 0.005 ? invRechNum : "",
+        costMonth: invRechNum > 0.005 ? String(st.costMonth || "").trim() : "",
+      };
+    });
+
+    const primaryConfig = invoiceConfigs[0] || { ofWhichRechgd: "", costMonth: "" };
+
     onConfirm?.({
-      ofWhichRechgd: ofWhichNum > 0.005 ? ofWhichNum : "",
-      costMonth: ofWhichNum > 0.005 ? String(costMonth || "").trim() : "",
+      ofWhichRechgd: primaryConfig.ofWhichRechgd,
+      costMonth: primaryConfig.costMonth,
+      invoiceConfigs,
       updateJobRecharged,
       newJobRecharged,
       updateJobRevenue,
@@ -297,40 +386,306 @@ export default function PlaceInvoiceModal({
       : "";
 
   const isReplacingRealSlot = Boolean(
-    slot &&
+    !isMulti &&
+      slot &&
       (slot.ref || (slot.amount && parseMoney(slot.amount) > 0)) &&
       !isPlaceholderInvoice(slot.ref, slot.status)
   );
 
   const displayedError = validationError || error;
 
+  const renderInvoiceRechargedSection = (inv, invIdx, showTopSummary = false) => {
+    const invLineItems = Array.isArray(inv?.lineItems) ? inv.lineItems : [];
+    const invAmt = round2(parseMoney(inv?.amount));
+    const invDetectedRech = round2(parseMoney(inv?.detectedRechargedAmount ?? inv?.rechargedAmount));
+    const st = getInvState(inv, invIdx);
+    const invOfWhichNum = st.hasRechargedExpenses ? Math.max(0, round2(parseMoney(st.ofWhichRechgd))) : 0;
+    const allocatedElsewhere = invoiceList.reduce((sum, otherInv, oIdx) => {
+      if (oIdx === invIdx) return sum;
+      const oSt = getInvState(otherInv, oIdx);
+      return sum + (oSt.hasRechargedExpenses ? Math.max(0, round2(parseMoney(oSt.ofWhichRechgd))) : 0);
+    }, 0);
+    const remainingUnallocatedForThisInv = Math.max(0, round2(unallocatedJobRecharged - allocatedElsewhere));
+
+    return (
+      <div
+        key={getInvKey(inv, invIdx)}
+        style={
+          showTopSummary
+            ? {
+                border: "1px solid #cbd5e1",
+                borderRadius: "8px",
+                padding: "10px 12px",
+                background: "#ffffff",
+              }
+            : undefined
+        }
+      >
+        {showTopSummary && (
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "8px", marginBottom: "8px", flexWrap: "wrap" }}>
+            <div style={{ fontSize: "12.5px", color: "#0f172a" }}>
+              <strong>#{inv.invoiceNo || "N/A"}</strong>
+              {inv.sentDate && <span style={{ color: "#64748b", marginLeft: "6px" }}>· {inv.sentDate}</span>}
+              {inv.status && <span style={{ color: "#64748b", marginLeft: "6px" }}>· {inv.status}</span>}
+            </div>
+            <strong style={{ fontSize: "13px", color: "#16a34a" }}>{fmtGBP(invAmt)}</strong>
+          </div>
+        )}
+
+        {/* Synced invoice line items (info-only by default; checkboxes revealed when "Includes recharged expenses?" is checked) */}
+        {invLineItems.length > 0 && (
+          <div style={{ background: "#f8fafc", border: "1px solid #cbd5e1", borderRadius: "8px", padding: "10px 12px", marginBottom: showTopSummary ? "8px" : "14px" }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "8px", gap: "8px" }}>
+              <span style={{ fontSize: "12px", fontWeight: "700", color: "#0f172a" }}>
+                {st.hasRechargedExpenses
+                  ? "Invoice line items (tick any recharged expenses)"
+                  : "Invoice line items"}
+              </span>
+              <span style={{ fontSize: "11px", color: "#64748b", whiteSpace: "nowrap" }}>
+                {invLineItems.length} {invLineItems.length === 1 ? "line" : "lines"}
+              </span>
+            </div>
+            <div style={{ display: "flex", flexDirection: "column", gap: "6px", maxHeight: "170px", overflowY: "auto" }}>
+              {invLineItems.map((li, liIdx) => {
+                const isChecked = st.hasRechargedExpenses && st.selectedLineIndices.has(liIdx);
+                const matchesExcess =
+                  !isMulti &&
+                  !li.isRecharged &&
+                  initialExcessOverBillable > 0.01 &&
+                  Math.abs((Number(li.amountGbp) || 0) - initialExcessOverBillable) <= 0.02;
+
+                const rowContent = (
+                  <>
+                    <div style={{ display: "flex", alignItems: "flex-start", gap: "8px", minWidth: 0 }}>
+                      {st.hasRechargedExpenses && (
+                        <input
+                          type="checkbox"
+                          checked={isChecked}
+                          onChange={() => handleToggleLineItem(inv, invIdx, liIdx)}
+                          style={{ marginTop: "2px", accentColor: "#2563eb", cursor: "pointer" }}
+                        />
+                      )}
+                      <div style={{ minWidth: 0 }}>
+                        <div style={{ fontWeight: "600", color: "#0f172a", wordBreak: "break-word" }}>
+                          {li.description || "(No description)"}
+                        </div>
+                        <div style={{ display: "flex", flexWrap: "wrap", gap: "6px", marginTop: "2px", alignItems: "center" }}>
+                          {(li.accountName || li.accountCode) && (
+                            <span style={{ fontSize: "11px", color: "#64748b" }}>
+                              {li.accountCode ? `${li.accountCode} · ` : ""}{li.accountName}
+                            </span>
+                          )}
+                          {st.hasRechargedExpenses && li.isRecharged && (
+                            <span style={{ fontSize: "10px", fontWeight: "600", background: "#dbeafe", color: "#1d4ed8", padding: "1px 6px", borderRadius: "10px" }}>
+                              Auto-detected
+                            </span>
+                          )}
+                          {matchesExcess && (
+                            <span style={{ fontSize: "10px", fontWeight: "600", background: "#fef3c7", color: "#92400e", padding: "1px 6px", borderRadius: "10px" }}>
+                              Matches excess
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                    <strong style={{ color: "#0f172a", whiteSpace: "nowrap" }}>
+                      {fmtGBP(li.amountGbp)}
+                    </strong>
+                  </>
+                );
+
+                const commonStyle = {
+                  display: "flex",
+                  alignItems: "flex-start",
+                  justifyContent: "space-between",
+                  gap: "10px",
+                  padding: "6px 8px",
+                  borderRadius: "6px",
+                  background: isChecked ? "#eff6ff" : "#ffffff",
+                  border: `1px solid ${isChecked ? "#93c5fd" : matchesExcess ? "#fcd34d" : "#e2e8f0"}`,
+                  fontSize: "12px",
+                };
+
+                if (!st.hasRechargedExpenses) {
+                  return (
+                    <div key={liIdx} style={{ ...commonStyle, cursor: "default" }}>
+                      {rowContent}
+                    </div>
+                  );
+                }
+
+                return (
+                  <label key={liIdx} style={{ ...commonStyle, cursor: "pointer" }}>
+                    {rowContent}
+                  </label>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
+        {/* Recharged expenses toggle & amount */}
+        <div style={{ background: "#f8fafc", border: "1px solid #cbd5e1", borderRadius: "8px", padding: "10px 12px", marginBottom: showTopSummary ? 0 : "14px" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "8px" }}>
+            <label style={{ display: "inline-flex", alignItems: "center", gap: "8px", fontSize: "12.5px", fontWeight: "600", color: "#0f172a", cursor: "pointer" }}>
+              <input
+                type="checkbox"
+                checked={st.hasRechargedExpenses}
+                onChange={(e) => {
+                  const checked = e.target.checked;
+                  updateInvState(inv, invIdx, (cur) => {
+                    if (!checked) {
+                      return {
+                        selectedLineIndices: new Set(),
+                        hasRechargedExpenses: false,
+                        ofWhichRechgd: "",
+                        costMonth: "",
+                      };
+                    }
+                    const nextRech = !cur.ofWhichRechgd && invDetectedRech > 0
+                      ? Math.min(invDetectedRech, invAmt).toFixed(2)
+                      : cur.ofWhichRechgd;
+                    return {
+                      ...cur,
+                      hasRechargedExpenses: true,
+                      ofWhichRechgd: nextRech,
+                    };
+                  });
+                  if (!checked && excessChoice === "treat_as_recharged") {
+                    setExcessChoice("increase_revenue");
+                  }
+                  setValidationError("");
+                }}
+                style={{ accentColor: "#2563eb", cursor: "pointer" }}
+              />
+              <span>Includes recharged expenses?</span>
+            </label>
+
+            {!st.hasRechargedExpenses && remainingUnallocatedForThisInv > 0.01 && (
+              <button
+                type="button"
+                onClick={() => {
+                  const fill = Math.min(remainingUnallocatedForThisInv, invAmt);
+                  updateInvState(inv, invIdx, (cur) => ({
+                    ...cur,
+                    hasRechargedExpenses: true,
+                    ofWhichRechgd: fill.toFixed(2),
+                  }));
+                  setValidationError("");
+                }}
+                style={{
+                  fontSize: "11px",
+                  fontWeight: "600",
+                  padding: "3px 8px",
+                  borderRadius: "6px",
+                  border: "1px solid #93c5fd",
+                  background: "#eff6ff",
+                  color: "#1d4ed8",
+                  cursor: "pointer",
+                }}
+              >
+                Allocate {fmtGBP(Math.min(remainingUnallocatedForThisInv, invAmt))} unallocated job recharged
+              </button>
+            )}
+          </div>
+
+          {st.hasRechargedExpenses && (
+            <div style={{ marginTop: "10px", display: "flex", flexDirection: "column", gap: "8px" }}>
+              <div>
+                <label style={{ display: "block", fontSize: "11.5px", fontWeight: "600", color: "#475569", marginBottom: "4px" }}>
+                  Of which recharged (excl. VAT{isAdmin ? ", col R & invoice" : ""})
+                </label>
+                <input
+                  className="pma-place-modal-input"
+                  type="number"
+                  step="0.01"
+                  min="0"
+                  placeholder="0.00"
+                  value={st.ofWhichRechgd}
+                  onChange={(e) => {
+                    const nextVal = e.target.value;
+                    updateInvState(inv, invIdx, (cur) => ({ ...cur, ofWhichRechgd: nextVal }));
+                    setValidationError("");
+                  }}
+                  style={{
+                    width: "100%",
+                    padding: "7px 10px",
+                    border: "1px solid #cbd5e1",
+                    borderRadius: "6px",
+                    fontSize: "13px",
+                    boxSizing: "border-box",
+                    backgroundColor: "#ffffff",
+                  }}
+                />
+              </div>
+
+              {invOfWhichNum > 0.005 && (
+                <InvoiceCostMonthControl
+                  value={st.costMonth}
+                  onChange={(nextCm) => updateInvState(inv, invIdx, (cur) => ({ ...cur, costMonth: nextCm }))}
+                  totalAmount={invOfWhichNum}
+                  invoiceSentDate={inv.sentDate || ""}
+                  jobStartDate={job?.rows?.[0]?.startDate || job?.startDate || ""}
+                  compact={true}
+                />
+              )}
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  };
+
+  const primaryInv = invoiceList[0];
+
   return (
     <div
+      className="pma-place-modal-backdrop"
       style={{
         position: "fixed",
         inset: 0,
         backgroundColor: "rgba(15, 23, 42, 0.45)",
         backdropFilter: "blur(2px)",
         display: "flex",
-        alignItems: "center",
+        alignItems: "flex-start",
         justifyContent: "center",
         zIndex: 2200,
-        padding: "20px",
+        padding: "16px",
+        overflowY: "auto",
+        boxSizing: "border-box",
       }}
       onClick={(e) => {
         if (e.target === e.currentTarget && !isSaving) onClose?.();
       }}
     >
+      <style>{`
+        @media (max-width: 768px) {
+          .pma-place-modal-backdrop {
+            padding: 10px !important;
+          }
+          .pma-place-modal-card {
+            width: 100% !important;
+            padding: 16px !important;
+            max-height: calc(100dvh - 20px) !important;
+          }
+          .pma-place-modal-input {
+            font-size: 16px !important;
+          }
+        }
+      `}</style>
       <div
+        className="pma-place-modal-card"
         style={{
           background: "#ffffff",
           borderRadius: "12px",
-          width: "min(94vw, 560px)",
-          maxHeight: "90vh",
+          width: isMulti ? "min(94vw, 620px)" : "min(94vw, 560px)",
+          maxHeight: "calc(100dvh - 32px)",
           overflowY: "auto",
+          margin: "auto 0",
           padding: "22px 24px",
           boxShadow: "0 25px 60px rgba(0,0,0,0.3)",
           border: "1px solid #e2e8f0",
+          boxSizing: "border-box",
         }}
         onClick={(e) => e.stopPropagation()}
       >
@@ -338,7 +693,7 @@ export default function PlaceInvoiceModal({
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "14px" }}>
           <div>
             <h3 style={{ margin: 0, fontSize: "17px", fontWeight: "700", color: "#0f172a" }}>
-              Place invoice on job
+              {isMulti ? `Place ${invoiceList.length} invoices on job` : "Place invoice on job"}
             </h3>
             <p style={{ margin: "4px 0 0", fontSize: "13px", color: "#64748b" }}>
               Confirm placement details and any revenue or recharged expense updates.
@@ -381,24 +736,37 @@ export default function PlaceInvoiceModal({
 
             <div style={{ height: "1px", background: "#e2e8f0", margin: "4px 0" }} />
 
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "8px" }}>
-              <div>
-                <span style={{ color: "#64748b", fontSize: "12px" }}>Invoice number</span>
-                <div style={{ fontWeight: "700", color: "#0f172a" }}>#{invoice.invoiceNo || "N/A"}</div>
+            {!isMulti ? (
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "8px" }}>
+                <div>
+                  <span style={{ color: "#64748b", fontSize: "12px" }}>Invoice number</span>
+                  <div style={{ fontWeight: "700", color: "#0f172a" }}>#{primaryInv.invoiceNo || "N/A"}</div>
+                </div>
+                <div>
+                  <span style={{ color: "#64748b", fontSize: "12px" }}>Amount (excl. VAT)</span>
+                  <div style={{ fontWeight: "700", color: "#16a34a" }}>{fmtGBP(invoiceAmount)}</div>
+                </div>
+                <div>
+                  <span style={{ color: "#64748b", fontSize: "12px" }}>Sent date</span>
+                  <div style={{ fontWeight: "500", color: "#334155" }}>{primaryInv.sentDate || "Not recorded"}</div>
+                </div>
+                <div>
+                  <span style={{ color: "#64748b", fontSize: "12px" }}>Status</span>
+                  <div style={{ fontWeight: "500", color: "#334155" }}>{primaryInv.status || "Sent"}</div>
+                </div>
               </div>
-              <div>
-                <span style={{ color: "#64748b", fontSize: "12px" }}>Amount (excl. VAT)</span>
-                <div style={{ fontWeight: "700", color: "#16a34a" }}>{fmtGBP(invoiceAmount)}</div>
+            ) : (
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "8px" }}>
+                <div>
+                  <span style={{ color: "#64748b", fontSize: "12px" }}>Selected invoices</span>
+                  <div style={{ fontWeight: "700", color: "#0f172a" }}>{invoiceList.length} invoices</div>
+                </div>
+                <div>
+                  <span style={{ color: "#64748b", fontSize: "12px" }}>Total (excl. VAT)</span>
+                  <div style={{ fontWeight: "700", color: "#16a34a" }}>{fmtGBP(invoiceAmount)}</div>
+                </div>
               </div>
-              <div>
-                <span style={{ color: "#64748b", fontSize: "12px" }}>Sent date</span>
-                <div style={{ fontWeight: "500", color: "#334155" }}>{invoice.sentDate || "Not recorded"}</div>
-              </div>
-              <div>
-                <span style={{ color: "#64748b", fontSize: "12px" }}>Status</span>
-                <div style={{ fontWeight: "500", color: "#334155" }}>{invoice.status || "Sent"}</div>
-              </div>
-            </div>
+            )}
           </div>
         </div>
 
@@ -432,6 +800,7 @@ export default function PlaceInvoiceModal({
                 </label>
                 {updateJobName && (
                   <input
+                    className="pma-place-modal-input"
                     type="text"
                     value={newJobName}
                     onChange={(e) => setNewJobName(e.target.value)}
@@ -453,171 +822,14 @@ export default function PlaceInvoiceModal({
           </div>
         )}
 
-        {/* Synced invoice line items (when available from accounting sync) */}
-        {lineItems.length > 0 && (
-          <div style={{ background: "#f8fafc", border: "1px solid #cbd5e1", borderRadius: "8px", padding: "10px 12px", marginBottom: "14px" }}>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "8px" }}>
-              <span style={{ fontSize: "12px", fontWeight: "700", color: "#0f172a" }}>
-                Invoice line items (tick any recharged expenses)
-              </span>
-              <span style={{ fontSize: "11px", color: "#64748b" }}>
-                {lineItems.length} {lineItems.length === 1 ? "line" : "lines"}
-              </span>
-            </div>
-            <div style={{ display: "flex", flexDirection: "column", gap: "6px", maxHeight: "170px", overflowY: "auto" }}>
-              {lineItems.map((li, idx) => {
-                const isChecked = selectedLineIndices.has(idx);
-                const matchesExcess =
-                  !li.isRecharged &&
-                  initialExcessOverBillable > 0.01 &&
-                  Math.abs((Number(li.amountGbp) || 0) - initialExcessOverBillable) <= 0.02;
-                return (
-                  <label
-                    key={idx}
-                    style={{
-                      display: "flex",
-                      alignItems: "flex-start",
-                      justifyContent: "space-between",
-                      gap: "10px",
-                      padding: "6px 8px",
-                      borderRadius: "6px",
-                      background: isChecked ? "#eff6ff" : "#ffffff",
-                      border: `1px solid ${isChecked ? "#93c5fd" : matchesExcess ? "#fcd34d" : "#e2e8f0"}`,
-                      cursor: "pointer",
-                      fontSize: "12px",
-                    }}
-                  >
-                    <div style={{ display: "flex", alignItems: "flex-start", gap: "8px", minWidth: 0 }}>
-                      <input
-                        type="checkbox"
-                        checked={isChecked}
-                        onChange={() => handleToggleLineItem(idx)}
-                        style={{ marginTop: "2px", accentColor: "#2563eb", cursor: "pointer" }}
-                      />
-                      <div style={{ minWidth: 0 }}>
-                        <div style={{ fontWeight: "600", color: "#0f172a", wordBreak: "break-word" }}>
-                          {li.description || "(No description)"}
-                        </div>
-                        <div style={{ display: "flex", flexWrap: "wrap", gap: "6px", marginTop: "2px", alignItems: "center" }}>
-                          {(li.accountName || li.accountCode) && (
-                            <span style={{ fontSize: "11px", color: "#64748b" }}>
-                              {li.accountCode ? `${li.accountCode} · ` : ""}{li.accountName}
-                            </span>
-                          )}
-                          {li.isRecharged && (
-                            <span style={{ fontSize: "10px", fontWeight: "600", background: "#dbeafe", color: "#1d4ed8", padding: "1px 6px", borderRadius: "10px" }}>
-                              Auto-detected
-                            </span>
-                          )}
-                          {matchesExcess && (
-                            <span style={{ fontSize: "10px", fontWeight: "600", background: "#fef3c7", color: "#92400e", padding: "1px 6px", borderRadius: "10px" }}>
-                              Matches excess
-                            </span>
-                          )}
-                        </div>
-                      </div>
-                    </div>
-                    <strong style={{ color: "#0f172a", whiteSpace: "nowrap" }}>
-                      {fmtGBP(li.amountGbp)}
-                    </strong>
-                  </label>
-                );
-              })}
-            </div>
+        {/* Per-invoice line items & recharged expenses */}
+        {!isMulti ? (
+          renderInvoiceRechargedSection(primaryInv, 0, false)
+        ) : (
+          <div style={{ display: "flex", flexDirection: "column", gap: "10px", marginBottom: "14px", maxHeight: "340px", overflowY: "auto", paddingRight: "2px" }}>
+            {invoiceList.map((inv, idx) => renderInvoiceRechargedSection(inv, idx, true))}
           </div>
         )}
-
-        {/* Recharged expenses toggle & amount */}
-        <div style={{ background: "#f8fafc", border: "1px solid #cbd5e1", borderRadius: "8px", padding: "10px 12px", marginBottom: "14px" }}>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "8px" }}>
-            <label style={{ display: "inline-flex", alignItems: "center", gap: "8px", fontSize: "12.5px", fontWeight: "600", color: "#0f172a", cursor: "pointer" }}>
-              <input
-                type="checkbox"
-                checked={hasRechargedExpenses}
-                onChange={(e) => {
-                  const checked = e.target.checked;
-                  setHasRechargedExpenses(checked);
-                  if (!checked) {
-                    setOfWhichRechgd("");
-                    setCostMonth("");
-                    setSelectedLineIndices(new Set());
-                    if (excessChoice === "treat_as_recharged") setExcessChoice("increase_revenue");
-                  } else if (!ofWhichRechgd && detectedRecharged > 0) {
-                    setOfWhichRechgd(Math.min(detectedRecharged, invoiceAmount).toFixed(2));
-                  }
-                  setValidationError("");
-                }}
-                style={{ accentColor: "#2563eb", cursor: "pointer" }}
-              />
-              <span>Includes recharged expenses?</span>
-            </label>
-
-            {!hasRechargedExpenses && unallocatedJobRecharged > 0.01 && (
-              <button
-                type="button"
-                onClick={() => {
-                  const fill = Math.min(unallocatedJobRecharged, invoiceAmount);
-                  setHasRechargedExpenses(true);
-                  setOfWhichRechgd(fill.toFixed(2));
-                  setValidationError("");
-                }}
-                style={{
-                  fontSize: "11px",
-                  fontWeight: "600",
-                  padding: "3px 8px",
-                  borderRadius: "6px",
-                  border: "1px solid #93c5fd",
-                  background: "#eff6ff",
-                  color: "#1d4ed8",
-                  cursor: "pointer",
-                }}
-              >
-                Allocate {fmtGBP(Math.min(unallocatedJobRecharged, invoiceAmount))} unallocated job recharged
-              </button>
-            )}
-          </div>
-
-          {hasRechargedExpenses && (
-            <div style={{ marginTop: "10px", display: "flex", flexDirection: "column", gap: "8px" }}>
-              <div>
-                <label style={{ display: "block", fontSize: "11.5px", fontWeight: "600", color: "#475569", marginBottom: "4px" }}>
-                  Of which recharged (excl. VAT{isAdmin ? ", col R & invoice" : ""})
-                </label>
-                <input
-                  type="number"
-                  step="0.01"
-                  min="0"
-                  placeholder="0.00"
-                  value={ofWhichRechgd}
-                  onChange={(e) => {
-                    setOfWhichRechgd(e.target.value);
-                    setValidationError("");
-                  }}
-                  style={{
-                    width: "100%",
-                    padding: "7px 10px",
-                    border: "1px solid #cbd5e1",
-                    borderRadius: "6px",
-                    fontSize: "13px",
-                    boxSizing: "border-box",
-                    backgroundColor: "#ffffff",
-                  }}
-                />
-              </div>
-
-              {ofWhichNum > 0.005 && (
-                <InvoiceCostMonthControl
-                  value={costMonth}
-                  onChange={setCostMonth}
-                  totalAmount={ofWhichNum}
-                  invoiceSentDate={invoice.sentDate || ""}
-                  jobStartDate={job?.rows?.[0]?.startDate || job?.startDate || ""}
-                  compact={true}
-                />
-              )}
-            </div>
-          )}
-        </div>
 
         {/* Scenario A: Exceeds job billable budget and no recharged amount specified yet */}
         {hasInitialExcessWithoutRecharged && (
@@ -651,7 +863,7 @@ export default function PlaceInvoiceModal({
                 </span>
               </label>
 
-              {initialExcessOverBillable <= invoiceAmount + 0.01 && (
+              {!isMulti && initialExcessOverBillable <= invoiceAmount + 0.01 && (
                 <label style={{ display: "flex", alignItems: "center", gap: "8px", cursor: "pointer", color: "#0f172a" }}>
                   <input
                     type="radio"
@@ -817,6 +1029,8 @@ export default function PlaceInvoiceModal({
                 <Spinner size={12} color="#ffffff" />
                 <span>Placing...</span>
               </>
+            ) : isMulti ? (
+              `Confirm and place ${invoiceList.length} invoices`
             ) : (
               "Confirm and place"
             )}

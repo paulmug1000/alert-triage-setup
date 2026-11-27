@@ -1992,6 +1992,7 @@ export async function checkRetroactiveOutgoingsChanges_(clientName, masterSheetI
     const data = rawData.slice(0, 100);
     if (!data.length) return alerts;
 
+    const seenSummaries = new Set();
     for (let r = 0; r < data.length; r++) {
       const row = data[r];
       const timestamp = row[0];
@@ -2009,13 +2010,17 @@ export async function checkRetroactiveOutgoingsChanges_(clientName, masterSheetI
         summary.toLowerCase().includes("bank transaction added from unrecon");
 
       if (isOutgoingsUpdate || isBankTxnFallback) {
+        const dedupeKey = summary.toLowerCase();
+        if (seenSummaries.has(dedupeKey)) continue;
+        seenSummaries.add(dedupeKey);
+
         const tsStr = timestamp instanceof Date ? timestamp.toISOString() : String(timestamp || "");
-        const alertKey = `retroactive_outgoings_update|${clientName}|${summary}|${tsStr}`;
+        const alertKey = `retroactive_outgoings_update|${clientName}|${summary}`;
 
         alerts.push({
           alertType: "retroactive_outgoings_update",
           alertKey,
-          legacyAlertKey: `retroactive_outgoings_update|${clientName}|${summary}`,
+          legacyAlertKey: alertKey,
           severity: "info",
           category: "Expenses",
           heading: summary,

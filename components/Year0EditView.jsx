@@ -31,6 +31,7 @@ export default function Year0EditView({
   onClearManagedClient,
   initialClient,
   onSelectClient,
+  onBackToSetup,
   onRegisterNavGuard,
 }) {
   const { user } = useAuth();
@@ -1058,7 +1059,7 @@ export default function Year0EditView({
         }}
       >
         <div style={{ display: "flex", alignItems: "center", gap: "12px", flexWrap: "wrap" }}>
-          {selectedClient && !managedClient && (allOutgoingsClients || []).length > 1 && (
+          {!onBackToSetup && selectedClient && !managedClient && (allOutgoingsClients || []).length > 1 && (
             <button
               type="button"
               onClick={handleBackToClients}
@@ -1093,6 +1094,27 @@ export default function Year0EditView({
             </button>
           )}
           <div>
+            {onBackToSetup && (
+              <button
+                type="button"
+                onClick={() => onBackToSetup(selectedClient?.clientName || "")}
+                style={{
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: "6px",
+                  background: "transparent",
+                  border: "none",
+                  color: "#0047AB",
+                  fontWeight: "700",
+                  fontSize: "13px",
+                  cursor: "pointer",
+                  padding: 0,
+                  marginBottom: "6px",
+                }}
+              >
+                <span>← Back to setup</span>
+              </button>
+            )}
             <h1
               style={{
                 margin: 0,

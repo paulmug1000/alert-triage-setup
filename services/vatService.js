@@ -13,7 +13,8 @@
 
 import { getSheetsClient, withRetry, extractSheetIdFromUrl } from "./sheetsClient.js";
 import { unwrapSheetId } from "./userPermissions.js";
-import { resolvePortalCache } from "./cacheService.js";
+import { resolvePortalCache, invalidatePmaClientCache } from "./cacheService.js";
+import { logPmaActivity } from "./pmaLogger.js";
 
 const MONTH_NAMES = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"];
 const SHORT_MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
@@ -126,6 +127,130 @@ function parseNumericCell(unformattedVal, formattedVal) {
     return { num: 0, isError: false, rawDisplay: fStr };
   }
   return { num: isNeg ? -Math.abs(parsed) : parsed, isError: false, rawDisplay: fStr };
+}
+
+function parsePercentCell(unformattedVal, formattedVal) {
+  const fStr = formattedVal !== undefined && formattedVal !== null ? String(formattedVal).trim() : "";
+  if (fStr.startsWith("#")) {
+    return { num: 0, isError: true, rawDisplay: fStr };
+  }
+  if (typeof unformattedVal === "number" && !Number.isNaN(unformattedVal)) {
+    return { num: unformattedVal, isError: false, rawDisplay: fStr };
+  }
+  const uStr = unformattedVal !== undefined && unformattedVal !== null ? String(unformattedVal).trim() : "";
+  const candidate = uStr || fStr;
+  if (!candidate || candidate === "-") {
+    return { num: 0, isError: false, rawDisplay: fStr };
+  }
+  const hasPct = candidate.includes("%");
+  const isNeg = (candidate.startsWith("(") && candidate.endsWith(")")) || candidate.startsWith("-");
+  const cleaned = candidate.replace(/[%,\s()]/g, "");
+  const parsed = parseFloat(cleaned);
+  if (isNaN(parsed)) {
+    return { num: 0, isError: false, rawDisplay: fStr };
+  }
+  const signed = isNeg ? -Math.abs(parsed) : parsed;
+  return { num: hasPct ? signed / 100 : signed, isError: false, rawDisplay: fStr };
+}
+
+function buildCorpTaxSectionPayload({
+  sectionKey,
+  title,
+  rateSheetRow,
+  rowSpecs,
+  perfFormattedRows,
+  perfUnformattedRows,
+  fyConfigs,
+}) {
+  const rateOffset = rateSheetRow - 55;
+  const fRateRow = perfFormattedRows[rateOffset] || [];
+  const uRateRow = perfUnformattedRows[rateOffset] || [];
+
+  const ratesByFy = {};
+  fyConfigs.forEach((fy) => {
+    const rateColIdx = fy.monthCols?.[0]?.colIdx ?? (fy.index === 0 ? 6 : fy.index === 1 ? 21 : 36);
+    const parsedRate = parsePercentCell(uRateRow[rateColIdx - 6], fRateRow[rateColIdx]);
+    ratesByFy[fy.id] = {
+      decimal: parsedRate.num,
+      pct: parsedRate.isError ? null : Math.round(parsedRate.num * 10000) / 100,
+      rawDisplay: parsedRate.rawDisplay,
+      colLetter: colIdxToLetter(rateColIdx),
+      isError: parsedRate.isError,
+    };
+  });
+
+  const rows = rowSpecs.map((spec) => {
+    const rowOffset = spec.sheetRow - 55;
+    const fRow = perfFormattedRows[rowOffset] || [];
+    const uRow = perfUnformattedRows[rowOffset] || [];
+    const label = String(fRow[0] || "").trim() || spec.defaultLabel;
+    const valueType = spec.valueType || "currency";
+    const parseFn = valueType === "percent" ? parsePercentCell : parseNumericCell;
+
+    const fyData = {};
+    fyConfigs.forEach((fy) => {
+      const months = fy.monthCols.map((m) => {
+        if (spec.fyTotalOnly) {
+          return {
+            colIdx: m.colIdx,
+            colLetter: m.colLetter,
+            label: m.label,
+            value: null,
+            isBlank: true,
+            isError: false,
+            rawDisplay: "",
+          };
+        }
+        const fVal = fRow[m.colIdx];
+        const uVal = uRow[m.colIdx - 6];
+        const parsed = parseFn(uVal, fVal);
+        return {
+          colIdx: m.colIdx,
+          colLetter: m.colLetter,
+          label: m.label,
+          value: parsed.num,
+          isError: parsed.isError,
+          rawDisplay: parsed.rawDisplay,
+        };
+      });
+
+      const fTotalVal = fRow[fy.totalCol];
+      const uTotalVal = uRow[fy.totalCol - 6];
+      const parsedTotal = parseFn(uTotalVal, fTotalVal);
+      const isBlankTotal =
+        (uTotalVal === undefined || uTotalVal === "" || uTotalVal === null) &&
+        (fTotalVal === undefined || fTotalVal === "" || fTotalVal === null);
+      const fyTotalValue =
+        !spec.fyTotalOnly && valueType === "currency" && isBlankTotal && !parsedTotal.isError
+          ? months.reduce((acc, item) => acc + (typeof item.value === "number" ? item.value : 0), 0)
+          : parsedTotal.num;
+
+      fyData[fy.id] = {
+        months,
+        total: fyTotalValue,
+        isError: parsedTotal.isError,
+        rawDisplay: parsedTotal.rawDisplay,
+      };
+    });
+
+    return {
+      sheetRow: spec.sheetRow,
+      label,
+      valueType,
+      fyTotalOnly: Boolean(spec.fyTotalOnly),
+      isHighlight: Boolean(spec.isHighlight),
+      isDifferenceRow: Boolean(spec.isDifferenceRow),
+      fyData,
+    };
+  });
+
+  return {
+    key: sectionKey,
+    title,
+    rateRow: rateSheetRow,
+    ratesByFy,
+    rows,
+  };
 }
 
 function buildSectionPayload({
@@ -283,7 +408,16 @@ export async function fetchVatData(clientName, clientSheetId, bypassCache = fals
     minBypassAgeMs: options?.minBypassAgeMs || 0,
     l1TtlSecs: 120,
     redisTtlSecs: 86400,
-    isValidPayload: (p) => Boolean(p && p.success && Array.isArray(p.sections) && Array.isArray(p.fyConfigs)),
+    isValidPayload: (p) =>
+      Boolean(
+        p &&
+        p.success &&
+        Array.isArray(p.sections) &&
+        Array.isArray(p.otherSections) &&
+        p.corpTax &&
+        Array.isArray(p.corpTax.sections) &&
+        Array.isArray(p.fyConfigs)
+      ),
     fetchFreshFn: async () => {
       const sheets = await getSheetsClient();
 
@@ -295,6 +429,7 @@ export async function fetchVatData(clientName, clientSheetId, bypassCache = fals
               "VAT!A1:AX29",
               "KeyInfo!B6:B8",
               "KeyInfo!C4:D5",
+              "Performance!A55:AX83",
             ],
             valueRenderOption: "FORMATTED_VALUE",
           });
@@ -302,7 +437,10 @@ export async function fetchVatData(clientName, clientSheetId, bypassCache = fals
         withRetry(async () => {
           return await sheets.spreadsheets.values.batchGet({
             spreadsheetId: cleanClientId,
-            ranges: ["VAT!G4:AX29"],
+            ranges: [
+              "VAT!G4:AX29",
+              "Performance!G55:AX83",
+            ],
             valueRenderOption: "UNFORMATTED_VALUE",
           });
         }),
@@ -312,7 +450,10 @@ export async function fetchVatData(clientName, clientSheetId, bypassCache = fals
       const formattedRows = fRanges[0]?.values || [];
       const keyInfoB6B8 = fRanges[1]?.values || [];
       const currencyRows = fRanges[2]?.values || [];
-      const unformattedRows = unformattedRes.data.valueRanges?.[0]?.values || [];
+      const perfFormattedRows = fRanges[3]?.values || [];
+      const uRanges = unformattedRes.data.valueRanges || [];
+      const unformattedRows = uRanges[0]?.values || [];
+      const perfUnformattedRows = uRanges[1]?.values || [];
 
       if (!formattedRows.length) {
         throw new Error("VAT data could not be found for this client.");
@@ -408,9 +549,9 @@ export async function fetchVatData(clientName, clientSheetId, bypassCache = fals
       });
 
       const isCash = vatScheme === "Cash";
-      const sections = isCash
-        ? [
-          buildSectionPayload({
+      const cashSections = [
+        {
+          ...buildSectionPayload({
             sectionKey: "confirmed",
             headerRowIdx: 16, // Row 17
             lineRowIndices: [17, 18, 19, 20], // Rows 18-21
@@ -428,7 +569,10 @@ export async function fetchVatData(clientName, clientSheetId, bypassCache = fals
             allMonths,
             quarterMod,
           }),
-          buildSectionPayload({
+          scheme: "Cash",
+        },
+        {
+          ...buildSectionPayload({
             sectionKey: "total",
             headerRowIdx: 23, // Row 24
             lineRowIndices: [24, 25, 26, 27], // Rows 25-28
@@ -446,9 +590,13 @@ export async function fetchVatData(clientName, clientSheetId, bypassCache = fals
             allMonths,
             quarterMod,
           }),
-        ]
-        : [
-          buildSectionPayload({
+          scheme: "Cash",
+        },
+      ];
+
+      const accrualSections = [
+        {
+          ...buildSectionPayload({
             sectionKey: "confirmed",
             headerRowIdx: 2, // Row 3
             lineRowIndices: [3, 4, 5, 6], // Rows 4-7
@@ -466,7 +614,10 @@ export async function fetchVatData(clientName, clientSheetId, bypassCache = fals
             allMonths,
             quarterMod,
           }),
-          buildSectionPayload({
+          scheme: "Accrual",
+        },
+        {
+          ...buildSectionPayload({
             sectionKey: "total",
             headerRowIdx: 9, // Row 10
             lineRowIndices: [10, 11, 12, 13], // Rows 11-14
@@ -484,23 +635,162 @@ export async function fetchVatData(clientName, clientSheetId, bypassCache = fals
             allMonths,
             quarterMod,
           }),
-        ];
+          scheme: "Accrual",
+        },
+      ];
+
+      const sections = isCash ? cashSections : accrualSections;
+      const otherScheme = isCash ? "Accrual" : "Cash";
+      const otherSections = isCash ? accrualSections : cashSections;
+
+      const corpTaxSections = [
+        buildCorpTaxSectionPayload({
+          sectionKey: "cashflow",
+          title: "Calculations for cashflow",
+          rateSheetRow: 55,
+          rowSpecs: [
+            { sheetRow: 57, defaultLabel: "Op. profit excl dividends as salary", valueType: "currency" },
+            { sheetRow: 58, defaultLabel: "Corporation tax", valueType: "currency", isHighlight: true },
+            { sheetRow: 60, defaultLabel: "Retained profit INCL dividends", valueType: "currency" },
+            { sheetRow: 63, defaultLabel: "Corp tax excl pipeline", valueType: "currency", isHighlight: true },
+            { sheetRow: 66, defaultLabel: "Actual corp tax due on FY amt:", valueType: "currency", fyTotalOnly: true },
+            { sheetRow: 67, defaultLabel: "Difference:", valueType: "currency", fyTotalOnly: true, isDifferenceRow: true },
+          ],
+          perfFormattedRows,
+          perfUnformattedRows,
+          fyConfigs,
+        }),
+        buildCorpTaxSectionPayload({
+          sectionKey: "actual",
+          title: "Calculations for actual liability",
+          rateSheetRow: 72,
+          rowSpecs: [
+            { sheetRow: 74, defaultLabel: "Op. profit EXCL dividends as salary", valueType: "currency" },
+            { sheetRow: 75, defaultLabel: "Corporation tax at actual rate", valueType: "currency", isHighlight: true },
+            { sheetRow: 77, defaultLabel: "Retained / net profit EXCL dividends", valueType: "currency" },
+            { sheetRow: 78, defaultLabel: "Retained / net profit %", valueType: "percent" },
+            { sheetRow: 80, defaultLabel: "Retained / net profit INCL dividends", valueType: "currency" },
+            { sheetRow: 81, defaultLabel: "Retained / net profit %", valueType: "percent" },
+            { sheetRow: 83, defaultLabel: "Op. profit EXCL dividends as salary %", valueType: "percent" },
+          ],
+          perfFormattedRows,
+          perfUnformattedRows,
+          fyConfigs,
+        }),
+      ];
 
       return {
         success: true,
         clientName: clientName || "Client",
         clientSheetId: cleanClientId,
         vatScheme,
+        otherScheme,
         vatQuarters,
         currencySymbol,
         thousandsSeparator,
         fyConfigs,
         defaultFyIndex,
         sections,
+        otherSections,
+        corpTax: {
+          sections: corpTaxSections,
+        },
         lastUpdated: new Date().toISOString(),
       };
     },
   });
 
   return cachedResult.data;
+}
+
+const CORP_TAX_ROW_BY_SECTION = Object.assign(Object.create(null), {
+  cashflow: 55,
+  actual: 72,
+});
+
+const CORP_TAX_COL_BY_FY = Object.assign(Object.create(null), {
+  fy1: "G",
+  fy2: "V",
+  fy3: "AK",
+});
+
+/**
+ * Updates a single FY's Corporation tax rate (Performance!G55/V55/AK55 or G72/V72/AK72),
+ * recalculates downstream tabs synchronously, invalidates caches, and returns fresh Taxes data.
+ */
+export async function saveCorpTaxRate({
+  clientName,
+  clientSheetId,
+  section,
+  fyId,
+  fyLabel = "",
+  ratePct,
+  userEmail = "",
+}) {
+  if (!clientSheetId) throw new Error("Client Sheet ID is required.");
+  const cleanSection = String(section || "").trim();
+  const cleanFyId = String(fyId || "").trim();
+  const rowNum = CORP_TAX_ROW_BY_SECTION[cleanSection];
+  const colLetter = CORP_TAX_COL_BY_FY[cleanFyId];
+
+  if (!rowNum) {
+    throw new Error("Invalid corporation tax section. Expected 'cashflow' or 'actual'.");
+  }
+  if (!colLetter) {
+    throw new Error("Invalid financial year identifier. Expected 'fy1', 'fy2', or 'fy3'.");
+  }
+
+  const parsedPct = typeof ratePct === "number" ? ratePct : parseFloat(String(ratePct ?? "").trim());
+  if (!Number.isFinite(parsedPct) || parsedPct < 0 || parsedPct > 100) {
+    throw new Error("Corporation tax rate must be a percentage between 0 and 100.");
+  }
+
+  const cleanPct = Math.round(parsedPct * 100) / 100;
+  const decimalRate = Math.round(cleanPct * 10000) / 1000000;
+  const cleanClientId = unwrapSheetId(extractSheetIdFromUrl(clientSheetId) || clientSheetId);
+  if (!cleanClientId) throw new Error("Client Sheet ID is required.");
+
+  const sheets = await getSheetsClient();
+  const range = `Performance!${colLetter}${rowNum}`;
+  await withRetry(() =>
+    sheets.spreadsheets.values.update({
+      spreadsheetId: cleanClientId,
+      range,
+      valueInputOption: "USER_ENTERED",
+      requestBody: { values: [[decimalRate]] },
+      _syncFormulaRecompute: true,
+    })
+  );
+
+  await invalidatePmaClientCache(cleanClientId, null, ["performance", "cash", "views"]);
+
+  const sectionLabel =
+    cleanSection === "cashflow" ? "Calculations for cashflow" : "Calculations for actual liability";
+  const resolvedFyLabel = String(fyLabel || cleanFyId.toUpperCase()).trim();
+  logPmaActivity({
+    clientName: clientName || "Client",
+    category: "TAXES",
+    action: "CORP_TAX_RATE_UPDATED",
+    summary: `Updated corporation tax rate (${sectionLabel}, ${resolvedFyLabel}) to ${cleanPct}%`,
+    details: {
+      section: cleanSection,
+      fyId: cleanFyId,
+      fyLabel: resolvedFyLabel,
+      ratePct: cleanPct,
+      decimalRate,
+    },
+    userEmail: userEmail || "PMA User",
+  }).catch(() => {});
+
+  const data = await fetchVatData(clientName || "Client", cleanClientId, true);
+  return {
+    success: true,
+    data,
+    updated: {
+      section: cleanSection,
+      fyId: cleanFyId,
+      ratePct: cleanPct,
+      decimalRate,
+    },
+  };
 }

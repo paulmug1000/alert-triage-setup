@@ -12,6 +12,7 @@ export default function SetupView({
   initialClientName = "",
   onSelectClient,
   onGoToBudget,
+  onGoToYear0,
   onGoToTasks,
   user,
   isAdmin,
@@ -1075,6 +1076,7 @@ export default function SetupView({
               user={user}
               onOpenSheetEditor={(editor) => setActiveSheetEditor(editor)}
               onGoToBudget={onGoToBudget}
+              onGoToYear0={onGoToYear0}
               onGoToTasks={onGoToTasks}
               onSetupModeToggled={(nextState) => {
                 if (nextState && typeof nextState === "object") {
@@ -1232,14 +1234,14 @@ export default function SetupView({
                   </div>
                 </div>
 
-                {/* 3. BUDGET DATA EDITOR */}
+                {/* 3. SETUP DATA */}
                 <div style={{ background: "#FFFFFF", borderRadius: "12px", border: "1px solid #E2E8F0", padding: "20px", boxShadow: "0 1px 3px rgba(0,0,0,0.04)" }}>
                   <div style={{ marginBottom: "14px" }}>
                     <h2 style={{ margin: "0 0 4px 0", fontSize: "16px", fontWeight: "700", color: "#0F172A" }}>
-                      3. Budget editor
+                      3. Setup data
                     </h2>
                     <p style={{ margin: 0, fontSize: "13px", color: "#64748B" }}>
-                      Edit the client financial budget model (also available under the Edit menu).
+                      Edit the client financial budget model (also available under the Data menu) and historical Year 0 profit &amp; loss figures.
                     </p>
                   </div>
 
@@ -1265,8 +1267,42 @@ export default function SetupView({
                         boxShadow: "0 1px 2px rgba(2, 63, 152, 0.2)"
                       }}
                     >
-                      <span>📊</span>
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                        <line x1="18" y1="20" x2="18" y2="10" />
+                        <line x1="12" y1="20" x2="12" y2="4" />
+                        <line x1="6" y1="20" x2="6" y2="14" />
+                      </svg>
                       <span>Open budget editor</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (onGoToYear0) onGoToYear0(selectedClient?.clientName);
+                        else if (typeof window !== "undefined") window.location.href = `/pma?nav=year0&client=${encodeURIComponent(selectedClient?.clientName || "")}`;
+                      }}
+                      style={{
+                        display: "inline-flex",
+                        alignItems: "center",
+                        gap: "6px",
+                        padding: "9px 16px",
+                        borderRadius: "8px",
+                        background: "#023f98",
+                        color: "#FFFFFF",
+                        fontSize: "13px",
+                        fontWeight: "600",
+                        border: "none",
+                        cursor: "pointer",
+                        boxShadow: "0 1px 2px rgba(2, 63, 152, 0.2)"
+                      }}
+                    >
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                        <rect x="3" y="4" width="18" height="18" rx="2" ry="2" />
+                        <line x1="16" y1="2" x2="16" y2="6" />
+                        <line x1="8" y1="2" x2="8" y2="6" />
+                        <line x1="3" y1="10" x2="21" y2="10" />
+                      </svg>
+                      <span>Open Year 0</span>
                     </button>
                   </div>
                 </div>
@@ -1309,6 +1345,7 @@ export default function SetupView({
                         user={user}
                         onOpenSheetEditor={(editor) => setActiveSheetEditor(editor)}
                         onGoToBudget={onGoToBudget}
+                        onGoToYear0={onGoToYear0}
                         onGoToTasks={onGoToTasks}
                         onSetupModeToggled={(newMode) => {
                           setSetupMode(newMode);

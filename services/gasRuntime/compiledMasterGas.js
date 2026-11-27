@@ -16246,6 +16246,7 @@ async function getBrokerExcelAccessToken_() {
 /**
  * ----------------------------------------------------------------
  * 7_COST_SYNC
+ * v3.58 (Preserve existing UNRECON-GAP ID, status, and future pay date in updateOutgoingsExpense_, roll overdue gap pay dates using active pay-run cutoff, and include Status tag to prevent 2-hour overdue-audit ping-pong)
  * v3.57 (Support [VarRetainer] monthly series: route through Project parent+overflow-child branch and auto-bump Col AH upward when real bills exceed forecast, formula-safe, never auto-lowering)
  * v3.56 (Preserve untouched formulas and guard rows 225-226 / string formula promotion in syncExpenseTransactionBreakdownToClientSheet_)
  * v3.55 (Batch compactExpenseJobGroup_ reads/writes with getNotes() and contiguous-run setValues() to minimize Google Sheets recalculations)
@@ -17328,7 +17329,12 @@ function updateOutgoingsExpense_(sheet, row, col, appData, updateValue, skipAmtD
 
    // --- 3. PROCESS DATA BLOCKS (Working only on 'bottomDataText') ---
    let rawBlocks = bottomDataText.split(/(?=\{App ID:)/).map(s => s.trim()).filter(s => s.length > 0);
-   
+   const existingGapBlockBeforeFilter = rawBlocks.find(b =>
+       b.includes("{App ID: UNRECON-GAP") ||
+       b.includes("{App ID: PLACE-GAP") ||
+       b.includes("{App ID: MANUAL-GAP")
+   ) || null;
+
    if (appData.id) {
        rawBlocks = rawBlocks.filter(b => !b.includes("{App ID: PLACE-EXP") && !b.includes("{App ID: MANUAL-ENTRY") && !b.includes("{App ID: UNRECON-GAP") && !b.includes("{App ID: PLACE-GAP") && !b.includes("{App ID: MANUAL-GAP"));
    }
@@ -17445,12 +17451,42 @@ function updateOutgoingsExpense_(sheet, row, col, appData, updateValue, skipAmtD
    
    const gapIdx = rawBlocks.findIndex(b => b.includes("{App ID: UNRECON-GAP") || b.includes("{App ID: PLACE-GAP") || b.includes("{App ID: MANUAL-GAP") || b.includes("{App ID: PLACE-EXP") || b.includes("{App ID: MANUAL-ENTRY"));
    if (Math.abs(gap) > 0.05) {
+       const today = new Date();
+       const currentMonthStart = new Date(today.getFullYear(), today.getMonth(), 1);
+       const currentPayCutoff = 20;
+       const currentPayDay = 28;
+       const currentPayDateObj = today.getDate() > currentPayCutoff
+           ? new Date(today.getFullYear(), today.getMonth() + 1, currentPayDay)
+           : new Date(today.getFullYear(), today.getMonth(), currentPayDay);
+       const currentPayDateStr = fmtDate_(currentPayDateObj);
+
+       const priorGapBlock = gapIdx !== -1 ? rawBlocks[gapIdx] : existingGapBlockBeforeFilter;
        let gapID = "";
-       let estDates = { rec: "", pay: "" };
-       if (gapIdx !== -1) {
-           const idMatch = rawBlocks[gapIdx].match(/\{App ID: (.*?)\}/);
-           gapID = idMatch ? idMatch[1] : "UNRECON-GAP";
-           estDates = calculateEstDates(headerDate, recTiming, payTiming);
+       let gapStatus = "";
+       let estDates = calculateEstDates(headerDate, recTiming, payTiming);
+
+       if (priorGapBlock) {
+           const idMatch = priorGapBlock.match(/\{App ID:\s*(.*?)\}/i);
+           gapID = idMatch && idMatch[1] ? idMatch[1].trim() : "UNRECON-GAP";
+           const oldRecMatch = priorGapBlock.match(/\{Rec date:\s*(.*?)\}/i);
+           if (oldRecMatch && oldRecMatch[1] && oldRecMatch[1].trim()) {
+               estDates.rec = oldRecMatch[1].trim();
+           }
+           const oldPayMatch = priorGapBlock.match(/\{Pay date:\s*(.*?)\}/i);
+           const oldPayStr = oldPayMatch && oldPayMatch[1] ? oldPayMatch[1].trim() : "";
+           const oldPayDate = oldPayStr ? (parseDateSafe_(oldPayStr) || new Date(oldPayStr)) : null;
+           if (oldPayDate && !isNaN(oldPayDate.getTime()) && oldPayDate >= currentMonthStart) {
+               estDates.pay = oldPayStr;
+           } else {
+               const estPayDate = estDates.pay ? (parseDateSafe_(estDates.pay) || new Date(estDates.pay)) : null;
+               if (!estPayDate || isNaN(estPayDate.getTime()) || estPayDate < currentMonthStart) {
+                   estDates.pay = currentPayDateStr;
+               }
+           }
+           const oldStatusMatch = priorGapBlock.match(/\{Status:\s*(.*?)\}/i);
+           if (oldStatusMatch && oldStatusMatch[1]) {
+               gapStatus = oldStatusMatch[1].trim();
+           }
        } else {
            let dateStr = "UNK";
            if (headerDate instanceof Date) {
@@ -17460,9 +17496,12 @@ function updateOutgoingsExpense_(sheet, row, col, appData, updateValue, skipAmtD
            const rowName = String(sheet.getRange(row, 1).getValue()).slice(0, 5).replace(/[^a-zA-Z0-9]/g, "");
            const rand = Math.floor(1000 + Math.random() * 9000); 
            gapID = `UNRECON-GAP-${dateStr}-${rowName}-${rand}`;
-           estDates = calculateEstDates(headerDate, recTiming, payTiming);
+           const estPayDate = estDates.pay ? (parseDateSafe_(estDates.pay) || new Date(estDates.pay)) : null;
+           if (estPayDate && !isNaN(estPayDate.getTime()) && estPayDate < currentMonthStart) {
+               estDates.pay = currentPayDateStr;
+           }
        }
-       const gapBlock = `{App ID: ${sanitizeOutgoingsNoteField_(gapID)}}{Amt: ${gap.toFixed(2)}}{Rec date: ${sanitizeOutgoingsNoteField_(estDates.rec)}}{Pay date: ${sanitizeOutgoingsNoteField_(estDates.pay)}}{Description: Manual/Unaccounted balance (Gap)}`;
+       const gapBlock = `{App ID: ${sanitizeOutgoingsNoteField_(gapID)}}{Amt: ${gap.toFixed(2)}}{Status: ${sanitizeOutgoingsNoteField_(gapStatus)}}{Rec date: ${sanitizeOutgoingsNoteField_(estDates.rec)}}{Pay date: ${sanitizeOutgoingsNoteField_(estDates.pay)}}{Description: Manual/Unaccounted balance (Gap)}`;
        if (gapIdx !== -1) rawBlocks[gapIdx] = gapBlock;
        else rawBlocks.push(gapBlock);
    } else {

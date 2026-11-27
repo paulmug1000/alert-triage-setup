@@ -69,6 +69,7 @@ export default function OnboardingChecklistView({
   user,
   onOpenSheetEditor,
   onGoToBudget,
+  onGoToYear0,
   onGoToTasks,
   onSetupModeToggled,
   onClientsChanged
@@ -1261,22 +1262,43 @@ export default function OnboardingChecklistView({
                   Pulls the 12 months of P&amp;L leading up to the system start date, lets you add dividends in lieu of salary with delivery %, and apply monthly category adjustments.
                 </p>
               </div>
-              <button
-                type="button"
-                onClick={() => setShowYear0Modal(true)}
-                style={{
-                  padding: "8px 16px",
-                  borderRadius: "6px",
-                  border: "none",
-                  background: "#023f98",
-                  color: "#FFFFFF",
-                  fontSize: "12px",
-                  fontWeight: "700",
-                  cursor: "pointer"
-                }}
-              >
-                Get started
-              </button>
+              <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
+                <button
+                  type="button"
+                  onClick={() => setShowYear0Modal(true)}
+                  style={{
+                    padding: "8px 16px",
+                    borderRadius: "6px",
+                    border: "none",
+                    background: "#023f98",
+                    color: "#FFFFFF",
+                    fontSize: "12px",
+                    fontWeight: "700",
+                    cursor: "pointer"
+                  }}
+                >
+                  Get started
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (onGoToYear0) onGoToYear0(clientName);
+                    else if (typeof window !== "undefined") window.location.href = `/pma?nav=year0&client=${encodeURIComponent(clientName || "")}`;
+                  }}
+                  style={{
+                    padding: "8px 14px",
+                    borderRadius: "6px",
+                    border: "1px solid #CBD5E1",
+                    background: "#FFFFFF",
+                    color: "#1E293B",
+                    fontWeight: "600",
+                    fontSize: "12px",
+                    cursor: "pointer"
+                  }}
+                >
+                  Open full Year 0 view
+                </button>
+              </div>
             </div>
           </div>
         )}

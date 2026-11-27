@@ -2076,7 +2076,7 @@ export function PmaTransitionSkeleton({ user = null, targetNav = "home", clientN
     { key: "home", label: "Home" },
     { key: "alerts", label: "Alerts" },
     { key: "tasks", label: "Tasks" },
-    { key: "edit", label: "Edit", isDropdown: true },
+    { key: "edit", label: "Data", isDropdown: true },
     { key: "views", label: "Views", isDropdown: true },
     { key: "tools", label: "EoM" },
     { key: "integrations", label: "Integrations" },

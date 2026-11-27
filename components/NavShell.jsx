@@ -290,7 +290,7 @@ if (typeof document !== "undefined") {
 export default function NavShell({
   activeNav, activeViewTab = "fyPerformance", onSelectViewTab,
   onHome, onAlerts, onOverview, onTasks, onNotes, onActivity, onAppLog,
-  onOutgoings, onPassThrough, onInvoices, onRetainers, onJobs, onSalaries, onExpenses, onNBToFind, onBudget, onCash, onVat, onYear0, onViews, onTools, onIntegrations, onSetup, onSettings, onDb,
+  onOutgoings, onPassThrough, onInvoices, onRetainers, onJobs, onSalaries, onExpenses, onNBToFind, onBudget, onCash, onVat, onViews, onTools, onIntegrations, onSetup, onSettings, onDb,
   homeAlertCount, taskCount, notesCount = 0, integrationsCount, user, onLogout, clients = [],
   managedClient, activeEditClient, onSelectManagedClient, onClearManagedClient,
   isSingleClientUser: propIsSingleClientUser, singleClient: propSingleClient,
@@ -459,7 +459,11 @@ export default function NavShell({
     }}>{count > 99 ? "99+" : count}</span>
   ) : null;
 
-  const isTabActive = (name) => activeNav === name || (name === "activity" && activeNav === "appLog");
+  const isTabActive = (name) =>
+    activeNav === name ||
+    (name === "activity" && activeNav === "appLog") ||
+    (name === "setup" && activeNav === "year0") ||
+    (name === "taxes" && activeNav === "vat");
   const isChildActive = (sub) => {
     if (sub.tabId) {
       return activeNav === "views" && activeViewTab === sub.tabId;
@@ -503,8 +507,8 @@ export default function NavShell({
     textDecoration: "none", boxSizing: "border-box", margin: 0,
   });
 
-  // Strict requested menu order with Edit and Views dropdowns:
-  // Home, Alerts, Tasks, Edit (...), Views (...), EoM, Integrations, Setup, Activity, Settings
+  // Strict requested menu order with Data and Views dropdowns:
+  // Home, Alerts, Tasks, Notes, Data (...), Views (...), EoM, Integrations, Setup, Activity, Settings
   const handleSelectViewOption = (tabId) => {
     if (onSelectViewTab) {
       onSelectViewTab(tabId);
@@ -529,7 +533,7 @@ export default function NavShell({
     { key: "notes", label: "Notes", handler: onNotes, badge: notesCount },
     {
       key: "edit",
-      label: "Edit",
+      label: "Data",
       isDropdown: true,
       children: [
         { key: "jobs", label: "Jobs", handler: onJobs },
@@ -542,8 +546,7 @@ export default function NavShell({
         { key: "nbtofind", label: "New business to find", handler: onNBToFind },
         { key: "budget", label: "Budget", handler: onBudget },
         { key: "cash", label: "Cash", handler: onCash },
-        { key: "vat", label: "VAT", handler: onVat },
-        { key: "year0", label: "Year 0", handler: onYear0 },
+        { key: "taxes", label: "Taxes", handler: onVat },
       ],
     },
     {
@@ -1431,7 +1434,7 @@ export default function NavShell({
         )}
       </div>
 
-      {/* Persistent Edit Sub-Navigation Bar when viewing any Edit screen */}
+      {/* Persistent Data Sub-Navigation Bar when viewing any Data screen */}
       {isEditSubActive && editGroupItem && (
         <div
           className="pma-edit-subbar"
@@ -1455,7 +1458,7 @@ export default function NavShell({
               whiteSpace: "nowrap",
             }}
           >
-            Edit:
+            Data:
           </span>
           {editGroupItem.children.map((sub) => {
             const active = isChildActive(sub);

@@ -5,7 +5,7 @@
  *
  * Shared pure helpers for computing live Year 0 P&L totals, margins,
  * dividend splits, and KPI margin threshold colours across both Setup
- * (Year0SetupModal) and PMA Edit > Year 0 (Year0EditView).
+ * (Year0SetupModal) and PMA Setup > Year 0 (Year0EditView).
  */
 
 export function roundYear0(n) {

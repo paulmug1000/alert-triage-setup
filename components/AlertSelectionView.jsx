@@ -1434,7 +1434,7 @@ export default function AlertSelectionView({
       const flags = alert.data?.flags || [];
       const isMissing = String(flags[0] || "").trim() === "1";
       if (isMissing) return "Missing Expense";
-      const expFlagNames = [null, "Duplicate App ID", "Description mismatch", "Amount mismatch", "VAT mismatch", "Rec date mismatch", "Pay date mismatch", "Status mismatch"];
+      const expFlagNames = [null, isAdmin ? "Duplicate app ID" : "Duplicate in Pulse", "Description mismatch", "Amount mismatch", "VAT mismatch", "Rec date mismatch", "Pay date mismatch", "Status mismatch"];
       const active = flags.map((v, i) => String(v || "").trim() === "1" && expFlagNames[i] ? expFlagNames[i] : null).filter(Boolean);
       return active.length > 0 ? `Mismatch: ${active.join(", ")}` : "";
     }
@@ -1718,7 +1718,7 @@ export default function AlertSelectionView({
       const title = vendorName && cleanDesc ? `${vendorName} - ${cleanDesc}` : vendorName;
 
       const isMissing = String(flags[0] || "").trim() === "1";
-      const expFlagNames = [null, "Duplicate App ID", "Description mismatch", "Amount mismatch", "VAT mismatch", "Rec date mismatch", "Pay date mismatch", "Status mismatch"];
+      const expFlagNames = [null, isAdmin ? "Duplicate app ID" : "Duplicate in Pulse", "Description mismatch", "Amount mismatch", "VAT mismatch", "Rec date mismatch", "Pay date mismatch", "Status mismatch"];
       const activeExpMismatches = flags.map((v, i) => String(v || "").trim() === "1" && expFlagNames[i] ? expFlagNames[i] : null).filter(Boolean);
 
       return (

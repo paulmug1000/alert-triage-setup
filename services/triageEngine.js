@@ -1522,6 +1522,7 @@ export async function readDirCompAlerts(sheets, spreadsheetId, cachedData = null
           },
           flagColumns: headers.slice(40, 48),
         };
+        alert.isDuplicateExpense = String(alert.data.flags[1] || "").trim() === "1";
         alert.summary = buildDirCompSummary(alert);
         alerts.push(alert);
       }
@@ -3557,6 +3558,8 @@ export async function handleRunFlagSweep(req, res, sheets) {
           const logEntries = await readRecentAutoLogEntries_(sheets, client.masterSheetId, 200, batchData.autoLog);
           for (const [autoLogType, patterns] of Object.entries(AUTOLOG_TYPE_PATTERNS)) {
             const matchedAlerts = [];
+            const seenFingerprints = new Set();
+            const isTimestampFreeType = autoLogType === "expenseUnreconGaps" || autoLogType === "invoiceStaleUnsentChanges";
             for (const entry of logEntries) {
               const lines = (entry.details || "").split(/\n+/);
               const ts = entry.timestamp ? (entry.timestamp instanceof Date ? entry.timestamp.toISOString() : String(entry.timestamp).trim()) : "";
@@ -3573,14 +3576,19 @@ export async function handleRunFlagSweep(req, res, sheets) {
                   const isActive = await isInvoicePlaceholderStillActive_(line, client.clientSheetId, null, sheets);
                   if (!isActive) continue; // Skip: underlying invoice already resolved in sheet
                 }
-                const fingerprintInput = `${client.clientName}|${autoLogType}|${ts}|${line}`;
                 const legacyFingerprintInput = `${client.clientName}|${autoLogType}|${line}`;
+                const fingerprintInput = isTimestampFreeType
+                  ? legacyFingerprintInput
+                  : `${client.clientName}|${autoLogType}|${ts}|${line}`;
+                const fp = createHash("sha256").update(fingerprintInput).digest("hex").substring(0, 16);
+                if (isTimestampFreeType && seenFingerprints.has(fp)) continue;
+                seenFingerprints.add(fp);
                 matchedAlerts.push({
                   clientName: client.clientName,
                   alertType: autoLogType,
                   summary: line,
                   timestamp: ts,
-                  _fingerprint: createHash("sha256").update(fingerprintInput).digest("hex").substring(0, 16),
+                  _fingerprint: fp,
                   _legacyFingerprint: createHash("sha256").update(legacyFingerprintInput).digest("hex").substring(0, 16),
                 });
               }
@@ -5438,6 +5446,169 @@ export function scanLiveConfirmedMatchesForInvoice_(invConfirmedRows, invoiceNo,
 }
 
 /**
+ * Live-scans Outgoings cell notes and Confirmed direct cost slots for all placements
+ * matching `transactionId` (App ID) to power the duplicate contractor/expense breakdown UI.
+ */
+export async function scanLiveExpenseMatchesForAppId_(sheets, clientSheetId, transactionId, { vatAmount = 0, netAmount = 0 } = {}) {
+  const normTxId = String(transactionId || "").trim().toLowerCase();
+  if (!clientSheetId || !normTxId) {
+    return {
+      liveExpenseItems: [],
+      livePulseAmounts: { net: 0, vat: 0, gross: 0 },
+      liveIsDuplicateExpense: false,
+      isPartPaidSplit: false,
+    };
+  }
+
+  const parseAmt = (v) => parseFloat(String(v ?? "0").replace(/[£$€,\s]/g, "")) || 0;
+  const round2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
+  const colIdx1ToLetter = (col1) => {
+    let n = col1;
+    let s = "";
+    while (n > 0) {
+      const rem = (n - 1) % 26;
+      s = String.fromCharCode(65 + rem) + s;
+      n = Math.floor((n - 1) / 26);
+    }
+    return s;
+  };
+  const vatRate = netAmount > 0 && vatAmount > 0 ? vatAmount / netAmount : 0.2;
+
+  const [outgoingsResp, confirmedResp] = await Promise.all([
+    sheets.spreadsheets.get({
+      spreadsheetId: clientSheetId,
+      ranges: ["Outgoings!A1:AZ1", "Outgoings!A13:AZ110"],
+      fields: "sheets(data(rowData(values(formattedValue,note))))",
+    }).catch(() => null),
+    sheets.spreadsheets.values.get({
+      spreadsheetId: clientSheetId,
+      range: "Confirmed!A2:CR5000",
+    }).catch(() => null),
+  ]);
+
+  const liveExpenseItems = [];
+
+  // 1. Scan Outgoings cell notes (rows 13..110)
+  const outHeaderCells = outgoingsResp?.data?.sheets?.[0]?.data?.[0]?.rowData?.[0]?.values || [];
+  const colHeaders = outHeaderCells.map((c) => String(c?.formattedValue || "").trim());
+  const outRows = outgoingsResp?.data?.sheets?.[0]?.data?.[1]?.rowData || [];
+  for (let rIdx = 0; rIdx < outRows.length; rIdx++) {
+    const rowCells = outRows[rIdx]?.values || [];
+    const contractor = String(rowCells[0]?.formattedValue || "").trim();
+    const vatApplicable = String(rowCells[1]?.formattedValue || "").trim().toLowerCase() === "yes";
+    const rowNum = 13 + rIdx;
+
+    for (let cIdx = 5; cIdx < rowCells.length; cIdx++) {
+      const note = String(rowCells[cIdx]?.note || "");
+      if (!note || !note.toLowerCase().includes(normTxId)) continue;
+
+      const blocks = note.split(/(?=\{App ID:)/i).map((b) => b.trim()).filter(Boolean);
+      for (const block of blocks) {
+        const blockAppId = block.match(/\{App ID:\s*([^}]+)\}/i)?.[1]?.trim() || "";
+        const blockLower = blockAppId.toLowerCase();
+        if (
+          blockLower !== normTxId &&
+          blockLower !== `${normTxId}-p1` &&
+          blockLower !== `${normTxId}-bal`
+        ) {
+          continue;
+        }
+        const amt = round2(parseAmt(block.match(/\{Amt:\s*([^}]+)\}/i)?.[1]));
+        const status = block.match(/\{Status:\s*([^}]*)\}/i)?.[1]?.trim() || "";
+        const recDate = block.match(/\{Rec date:\s*([^}]*)\}/i)?.[1]?.trim() || "";
+        const payDate = block.match(/\{Pay date:\s*([^}]*)\}/i)?.[1]?.trim() || "";
+        const description = block.match(/\{Description:\s*([^}]*)\}/i)?.[1]?.trim() || "";
+        const itemVat = vatApplicable ? round2(amt * vatRate) : 0;
+        const itemGross = round2(amt + itemVat);
+
+        liveExpenseItems.push({
+          source: "Outgoings",
+          contractor: contractor || "Contractor",
+          month: colHeaders[cIdx] || "",
+          rowNum,
+          cellRef: `${colIdx1ToLetter(cIdx + 1)}${rowNum}`,
+          appId: blockAppId,
+          netAmount: amt,
+          vatAmount: itemVat,
+          grossAmount: itemGross,
+          recDate,
+          payDate,
+          status,
+          description,
+          isPartPaidTranche: /part-paid/i.test(status),
+        });
+      }
+    }
+  }
+
+  // 2. Scan Confirmed direct cost slots (BX..CR)
+  const confRows = confirmedResp?.data?.values || [];
+  const slotDefs = [
+    { slotNum: 1, descIdx: 75, amtIdx: 76, vatIdx: 77, recIdx: 78, daysIdx: 79, stIdx: 80, idIdx: 81, colLetter: "CD" },
+    { slotNum: 2, descIdx: 82, amtIdx: 83, vatIdx: 84, recIdx: 85, daysIdx: 86, stIdx: 87, idIdx: 88, colLetter: "CK" },
+    { slotNum: 3, descIdx: 89, amtIdx: 90, vatIdx: 91, recIdx: 92, daysIdx: 93, stIdx: 94, idIdx: 95, colLetter: "CR" },
+  ];
+  let lastParentClient = "";
+  let lastParentJob = "";
+  for (let i = 0; i < confRows.length; i++) {
+    const r = confRows[i] || [];
+    const cName = String(r[0] || "").trim();
+    const jName = String(r[1] || "").trim();
+    if (cName) lastParentClient = cName;
+    if (jName) lastParentJob = jName;
+
+    const rowNum = i + 2;
+    for (const sd of slotDefs) {
+      const slotId = String(r[sd.idIdx] || "").trim();
+      if (!slotId) continue;
+      const slotLower = slotId.toLowerCase();
+      if (
+        slotLower !== normTxId &&
+        slotLower !== `${normTxId}-p1` &&
+        slotLower !== `${normTxId}-bal`
+      ) {
+        continue;
+      }
+      const amt = round2(parseAmt(r[sd.amtIdx]));
+      const vatYes = String(r[sd.vatIdx] || "").trim().toLowerCase() === "yes";
+      const itemVat = vatYes ? round2(amt * vatRate) : 0;
+      const itemGross = round2(amt + itemVat);
+      const status = String(r[sd.stIdx] || "").trim();
+      const recDate = String(r[sd.recIdx] || "").trim();
+      const description = String(r[sd.descIdx] || "").trim();
+
+      liveExpenseItems.push({
+        source: "Confirmed",
+        client: cName || lastParentClient,
+        job: jName || lastParentJob,
+        slotNum: sd.slotNum,
+        rowNum,
+        cellRef: `${sd.colLetter}${rowNum}`,
+        appId: slotId,
+        netAmount: amt,
+        vatAmount: itemVat,
+        grossAmount: itemGross,
+        recDate,
+        payDate: "",
+        status,
+        description,
+        isPartPaidTranche: /part-paid/i.test(status),
+      });
+    }
+  }
+
+  const livePulseAmounts = {
+    net: round2(liveExpenseItems.reduce((s, it) => s + (Number(it.netAmount) || 0), 0)),
+    vat: round2(liveExpenseItems.reduce((s, it) => s + (Number(it.vatAmount) || 0), 0)),
+    gross: round2(liveExpenseItems.reduce((s, it) => s + (Number(it.grossAmount) || 0), 0)),
+  };
+  const liveIsDuplicateExpense = liveExpenseItems.length > 1;
+  const isPartPaidSplit = liveExpenseItems.length > 1 && liveExpenseItems.every((it) => it.isPartPaidTranche);
+
+  return { liveExpenseItems, livePulseAmounts, liveIsDuplicateExpense, isPartPaidSplit };
+}
+
+/**
  * When a duplicate invoice spans 2 distinct jobs (e.g. a retainer job + a standalone extra-revenue job)
  * and removing the extra job leaves the kept job needing an amount adjustment to match accounting,
  * generates compound "Delete extra job and adjust invoice amount" option(s).
@@ -5932,7 +6103,7 @@ export async function handleAnalyzeAlert(req, res, sheets) {
           const isCrmAlert = alert.type === "crm" || alert.sheetName === "CRMComp" || Boolean(alert.alertType?.startsWith("crm")) || Boolean(alert.flagType?.startsWith("crm"));
           const isCrmMismatch = isCrmAlert && alert.subType === "field_mismatch";
           if (isCrmMismatch && (!opt.actionButtonText || validCachedOptions.length !== 2 || String(opt.actionButtonText).includes("Mark as reviewed") || opt.matchType === "info")) return true;
-          const isExpAlert = alert.type === "expense" || alert.sheetName === "DirComp" || alert.flagType === "expenseDashboardDiscr" || alert.alertType === "expenseDashboardDiscr";
+          const isExpAlert = alert.type === "expense" || alert.sheetName === "DirComp" || alert.flagType === "expenseDashboardDiscr" || alert.alertType === "expenseDashboardDiscr" || alert.flagType === "contractorsDashboardDiscr" || alert.alertType === "contractorsDashboardDiscr" || alert.flagType === "passThroughDashboardDiscr" || alert.alertType === "passThroughDashboardDiscr";
           const isExpMismatch = isExpAlert && String(alert.data?.flags?.[0] || "").trim() !== "1";
           if (isExpMismatch && (!opt.actionButtonText || String(opt.actionButtonText).includes("Mark as reviewed") || opt.matchType === "info" || validCachedOptions.length > 2)) return true;
           if (opt.matchType === "existing_job" || opt.matchType === "job") {
@@ -6017,6 +6188,43 @@ export async function handleAnalyzeAlert(req, res, sheets) {
             console.log(`  ⚠ jobRowsData regeneration on cache hit failed (non-fatal): ${jrdErr.message}`);
           }
 
+          const isExpCacheHit = (
+            alert.type === "expense" ||
+            alert.sheetName === "DirComp" ||
+            alert.flagType === "expenseDashboardDiscr" ||
+            alert.alertType === "expenseDashboardDiscr" ||
+            alert.flagType === "contractorsDashboardDiscr" ||
+            alert.alertType === "contractorsDashboardDiscr" ||
+            alert.flagType === "passThroughDashboardDiscr" ||
+            alert.alertType === "passThroughDashboardDiscr"
+          ) && String(alert.data?.flags?.[0] || "").trim() !== "1";
+          let cacheUpdatedAlertPatch = null;
+          if (isExpCacheHit && alert.clientId) {
+            const expTxId = String(alert.data?.confirmed?.[0] || alert.data?.accounting?.[6] || alert.summary?.transactionId || "").trim();
+            const hasDupOrAmtFlag =
+              Boolean(alert.isDuplicateExpense) ||
+              String(alert.data?.flags?.[1] || "").trim() === "1" ||
+              String(alert.data?.flags?.[3] || "").trim() === "1";
+            if (expTxId && hasDupOrAmtFlag) {
+              try {
+                const expAccNet = parseFloat(String(alert.data?.accounting?.[2] || "0").replace(/[£$€,\s]/g, "")) || 0;
+                const expAccVat = parseFloat(String(alert.data?.accounting?.[8] || "0").replace(/[£$€,\s]/g, "")) || 0;
+                const expLive = await scanLiveExpenseMatchesForAppId_(sheets, alert.clientId, expTxId, {
+                  vatAmount: expAccVat,
+                  netAmount: expAccNet,
+                });
+                cacheUpdatedAlertPatch = {
+                  isDuplicateExpense: expLive.liveIsDuplicateExpense || String(alert.data?.flags?.[1] || "").trim() === "1",
+                  expenseSpreadsheetItems: expLive.liveExpenseItems,
+                  ...(expLive.liveExpenseItems.length > 0 ? { pulseAmounts: expLive.livePulseAmounts } : {}),
+                  isPartPaidSplit: expLive.isPartPaidSplit,
+                };
+              } catch (expScanErr) {
+                console.log(`  ⚠ Cache-hit expense duplicate scan failed (non-fatal): ${expScanErr.message}`);
+              }
+            }
+          }
+
           return res.status(200).json({
             success: true,
             options: optionsToReturn,
@@ -6024,6 +6232,7 @@ export async function handleAnalyzeAlert(req, res, sheets) {
             fromCache: true,
             pipelineChecked: hasPipelineCheckedFlag_(memoryRow.dataSnapshot) || Boolean(alert._pipelineChecked),
             previousIgnoreReason: await findPreviousIgnoreReason(memoryRows, alert),
+            ...(cacheUpdatedAlertPatch ? { updatedAlertPatch: cacheUpdatedAlertPatch } : {}),
           });
         }
         console.log(`  ⚠️ Cached options have no valid title - treating as cache miss`);
@@ -6099,6 +6308,28 @@ export async function handleAnalyzeAlert(req, res, sheets) {
         console.log(`  📊 Expense data mismatch for "${vendorName || vendorDesc || expDescription}"`);
         console.log(`  Discrepancy type(s): ${activeFlags.join(", ") || "Data mismatch"}`);
         console.log(`  Source: ${source}, TransactionID: ${transactionId}, Job: ${jobName}`);
+
+        let expenseDuplicatePatch = null;
+        const hasDupOrAmtFlag =
+          Boolean(alert.isDuplicateExpense) ||
+          String(flags[1] || "").trim() === "1" ||
+          String(flags[3] || "").trim() === "1";
+        if (transactionId && alert.clientId && hasDupOrAmtFlag) {
+          try {
+            const expLive = await scanLiveExpenseMatchesForAppId_(sheets, alert.clientId, transactionId, {
+              vatAmount,
+              netAmount: expAmount,
+            });
+            expenseDuplicatePatch = {
+              isDuplicateExpense: expLive.liveIsDuplicateExpense || String(flags[1] || "").trim() === "1",
+              expenseSpreadsheetItems: expLive.liveExpenseItems,
+              ...(expLive.liveExpenseItems.length > 0 ? { pulseAmounts: expLive.livePulseAmounts } : {}),
+              isPartPaidSplit: expLive.isPartPaidSplit,
+            };
+          } catch (expScanErr) {
+            console.log(`  ⚠ Live expense duplicate scan failed (non-fatal): ${expScanErr.message}`);
+          }
+        }
 
         let slotNum = source === "Slot1" ? 1 : source === "Slot2" ? 2 : source === "Slot3" ? 3 : null;
         const slotColMapExp = {
@@ -6320,7 +6551,13 @@ export async function handleAnalyzeAlert(req, res, sheets) {
             }
           ];
 
-          return res.status(200).json({ success: true, options, alertId: alert.rowNumber, previousIgnoreReason });
+          return res.status(200).json({
+            success: true,
+            options,
+            alertId: alert.rowNumber,
+            previousIgnoreReason,
+            ...(expenseDuplicatePatch ? { updatedAlertPatch: expenseDuplicatePatch } : {}),
+          });
         }
 
         // ── Branch 2: Outgoings tab expense (OG-) ──────────────────────────
@@ -6465,7 +6702,13 @@ export async function handleAnalyzeAlert(req, res, sheets) {
               }
             ];
 
-            return res.status(200).json({ success: true, options, alertId: alert.rowNumber, previousIgnoreReason });
+            return res.status(200).json({
+              success: true,
+              options,
+              alertId: alert.rowNumber,
+              previousIgnoreReason,
+              ...(expenseDuplicatePatch ? { updatedAlertPatch: expenseDuplicatePatch } : {}),
+            });
           }
 
           // Sub-case: Other Outgoings discrepancies (Amount, Date, Description, Status)
@@ -6511,7 +6754,13 @@ export async function handleAnalyzeAlert(req, res, sheets) {
             }
           ];
 
-          return res.status(200).json({ success: true, options, alertId: alert.rowNumber, previousIgnoreReason });
+          return res.status(200).json({
+            success: true,
+            options,
+            alertId: alert.rowNumber,
+            previousIgnoreReason,
+            ...(expenseDuplicatePatch ? { updatedAlertPatch: expenseDuplicatePatch } : {}),
+          });
         }
 
         // ── Branch 3: Fallback for any other source when !isMissingCost ────
@@ -6555,7 +6804,13 @@ export async function handleAnalyzeAlert(req, res, sheets) {
           }
         ];
 
-        return res.status(200).json({ success: true, options, alertId: alert.rowNumber, previousIgnoreReason });
+        return res.status(200).json({
+          success: true,
+          options,
+          alertId: alert.rowNumber,
+          previousIgnoreReason,
+          ...(expenseDuplicatePatch ? { updatedAlertPatch: expenseDuplicatePatch } : {}),
+        });
       }
 
       // ── Missing cost - existing Claude path follows ────────────────────

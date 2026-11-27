@@ -196,6 +196,19 @@ export default function PortalPage({
     }
   }, [router.query.view]);
 
+  // Always start at the top of the page when switching views or clients
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const resetScroll = () => {
+      window.scrollTo(0, 0);
+      document.documentElement.scrollTop = 0;
+      document.body.scrollTop = 0;
+    };
+    resetScroll();
+    const rafId = window.requestAnimationFrame(resetScroll);
+    return () => window.cancelAnimationFrame(rafId);
+  }, [activeView, selectedClient?.clientSheetId]);
+
   // Month View live payload state (hydrated from SSR when available)
   const [payload, setPayload] = useState(() => initialPayload || null);
   const [loadingPayload, setLoadingPayload] = useState(false);

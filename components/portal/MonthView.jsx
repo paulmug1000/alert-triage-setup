@@ -1201,13 +1201,13 @@ export default function MonthView({
       grid-template-columns: repeat(3, 1fr);
       gap: 20px;
     }
-    :global(.home-chart-axis-label) {
+    .home-chart-axis-label {
       font-size: 11.5px;
       font-family: 'Kumbh Sans', sans-serif;
       fill: #64748b;
       user-select: none;
     }
-    :global(.home-chart-legend) {
+    .home-chart-legend {
       font-size: 11.5px;
     }
     .month-header-row-mobile {
@@ -1242,7 +1242,7 @@ export default function MonthView({
     }
 
     @media (max-width: 1080px) {
-      :global(.home-view-container) {
+      .home-view-container {
         padding: 0 0.5rem 3rem 0.5rem !important;
       }
       .home-workspace-grid {
@@ -1272,14 +1272,19 @@ export default function MonthView({
       }
       .home-glance-card {
         order: 3 !important;
+        width: 100% !important;
+        max-width: 100% !important;
       }
       .home-chart-card {
         order: 4 !important;
         flex: none !important;
+        width: 100% !important;
+        max-width: 100% !important;
         height: auto !important;
         min-height: 340px !important;
       }
-      :global(.home-chart-svg-wrap) {
+      .home-chart-svg-wrap {
+        width: 100% !important;
         height: 260px !important;
         min-height: 240px !important;
       }
@@ -1313,18 +1318,21 @@ export default function MonthView({
     }
 
     @media (max-width: 768px) {
-      :global(.home-action-bar) {
+      .home-action-bar {
         margin-top: -4px !important;
       }
-      :global(.home-chart-legend) {
+      .home-chart-legend {
         font-size: 10px !important;
       }
-      :global(.home-chart-axis-label) {
+      .home-chart-axis-label {
         font-size: 10.5px !important;
       }
     }
 
     @media (max-width: 640px) {
+      .home-chart-card {
+        padding: 16px 12px !important;
+      }
       .home-exec-title {
         font-size: 10.8px !important;
       }
@@ -1486,11 +1494,13 @@ function HomeLineChart({
     if (!containerRef.current) return;
     const updateDimensions = () => {
       if (containerRef.current) {
-        const { clientWidth, clientHeight } = containerRef.current;
-        if (clientWidth > 0 && clientHeight > 0) {
+        const rect = containerRef.current.getBoundingClientRect();
+        const rawW = rect?.width || containerRef.current.clientWidth;
+        const rawH = rect?.height || containerRef.current.clientHeight;
+        if (rawW > 0 && rawH > 0) {
           setDimensions((prev) => {
-            const nextW = Math.round(clientWidth);
-            const nextH = Math.round(clientHeight);
+            const nextW = Math.round(rawW);
+            const nextH = Math.round(rawH);
             if (prev.width === nextW && prev.height === nextH) return prev;
             return { width: nextW, height: nextH };
           });
@@ -1498,21 +1508,31 @@ function HomeLineChart({
       }
     };
     updateDimensions();
+    const rafId = window.requestAnimationFrame(updateDimensions);
 
+    let ro = null;
     if (typeof ResizeObserver !== "undefined") {
-      const ro = new ResizeObserver(updateDimensions);
+      ro = new ResizeObserver(updateDimensions);
       ro.observe(containerRef.current);
-      return () => ro.disconnect();
-    } else {
-      window.addEventListener("resize", updateDimensions);
-      return () => window.removeEventListener("resize", updateDimensions);
     }
+    window.addEventListener("resize", updateDimensions);
+    window.addEventListener("orientationchange", updateDimensions);
+
+    return () => {
+      window.cancelAnimationFrame(rafId);
+      if (ro) ro.disconnect();
+      window.removeEventListener("resize", updateDimensions);
+      window.removeEventListener("orientationchange", updateDimensions);
+    };
   }, []);
 
   const [hoveredPoint, setHoveredPoint] = useState(null);
 
   const { width, height } = dimensions;
-  const padding = { top: 20, right: 28, bottom: 35, left: 68 };
+  const isCompact = width < 480;
+  const padding = isCompact
+    ? { top: 16, right: 12, bottom: 30, left: 46 }
+    : { top: 20, right: 28, bottom: 35, left: 68 };
 
   const chartW = Math.max(width - padding.left - padding.right, 10);
   const chartH = Math.max(height - padding.top - padding.bottom, 10);
@@ -1648,21 +1668,20 @@ function HomeLineChart({
           flex: "1 1 auto",
           minHeight: "240px",
           height: "260px",
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "center"
+          maxHeight: "440px"
         }}
         onMouseLeave={() => setHoveredPoint(null)}
       >
         <svg
+          width={width}
+          height={height}
           viewBox={`0 0 ${width} ${height}`}
           style={{
             position: "absolute",
-            inset: 0,
+            top: 0,
+            left: 0,
             width: "100%",
             height: "100%",
-            maxHeight: "440px",
-            margin: "auto",
             display: "block"
           }}
         >
@@ -1696,11 +1715,11 @@ function HomeLineChart({
                 />
                 <text
                   className="home-chart-axis-label"
-                  x={padding.left - 8}
+                  x={padding.left - (isCompact ? 6 : 8)}
                   y={y}
                   textAnchor="end"
                   dominantBaseline="central"
-                  fontSize="11.5"
+                  fontSize={isCompact ? "10" : "11.5"}
                   fill="#64748b"
                   fontFamily="'Kumbh Sans', sans-serif"
                 >
@@ -1717,6 +1736,9 @@ function HomeLineChart({
 
           {/* X Ticks (Month labels) */}
           {months.map((m, i) => {
+            if (isCompact && months.length > 8 && chartW / Math.max(months.length - 1, 1) < 22 && i % 2 !== 0 && i !== months.length - 1) {
+              return null;
+            }
             const x = getX(i);
             const shortMonth = String(m).split(" ")[0]; // e.g. "Oct"
             return (
@@ -1727,7 +1749,7 @@ function HomeLineChart({
                 y={height - 10}
                 textAnchor="middle"
                 dominantBaseline="auto"
-                fontSize="11.5"
+                fontSize={isCompact ? "9.5" : "11.5"}
                 fill="#64748b"
                 fontFamily="'Kumbh Sans', sans-serif"
               >

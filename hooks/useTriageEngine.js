@@ -265,6 +265,7 @@ export function useTriageEngine({
     const isBg = isBackground === true;
     const pollStart = Date.now();
     const pollInterval = isBg ? 5000 : 1500;
+    let completedCleanly = false;
     // Safety timeout: max 5 minutes (300s) of polling
     while (isMountedRef.current && (Date.now() - pollStart < 300000)) {
       await new Promise(r => setTimeout(r, pollInterval));
@@ -309,6 +310,7 @@ export function useTriageEngine({
             throw new Error(preData.error || "Failed to load precomputed alerts");
           }
         }
+        completedCleanly = true;
         if (!isBg) setRefreshStatus("");
         break;
       } else if (st.status === "error") {
@@ -321,9 +323,15 @@ export function useTriageEngine({
         break;
       } else {
         // idle
-        if (!isBg) setRefreshStatus("");
+        if (!isBg) {
+          throw new Error("Alert refresh stopped before completing. Please try again.");
+        }
         break;
       }
+    }
+
+    if (isMountedRef.current && !isBg && !completedCleanly) {
+      throw new Error("Alert refresh timed out before completing. Please try again in a moment.");
     }
   }, [automationCommanderSheetId, applyPrecomputedData]);
 

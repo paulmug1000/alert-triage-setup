@@ -186,6 +186,7 @@ export default function InvoicesView({
 
   const prevInitialClientRef = React.useRef(null);
   const prevManagedClientRef = React.useRef(null);
+  const lastTriggeredClientKeyRef = React.useRef("");
   // Auto-select managedClient when in manage mode, or initialClient when passed, or clear when cancelled
   useEffect(() => {
     if (managedClient) {
@@ -200,9 +201,13 @@ export default function InvoicesView({
         setInvoicesClient(clientObj);
         if (clientObj?.clientSheetId) {
           prevManagedClientRef.current = currentName;
-          loadInvoicesInbox(clientObj, Boolean(isModalOverlay));
-          loadInvoicesJobs(clientObj, false);
-          setInvoicesShowAll(false);
+          const triggerKey = `${currentName}::${clientObj.clientSheetId}::${clientObj.masterSheetId || ""}`;
+          if (lastTriggeredClientKeyRef.current !== triggerKey) {
+            lastTriggeredClientKeyRef.current = triggerKey;
+            loadInvoicesInbox(clientObj, false, false, Boolean(isModalOverlay));
+            loadInvoicesJobs(clientObj, false);
+            setInvoicesShowAll(false);
+          }
         }
       }
     } else if (initialClient && (initialClient !== prevInitialClientRef.current || (!invoicesClient?.clientSheetId && initialClient.clientSheetId))) {
@@ -214,12 +219,17 @@ export default function InvoicesView({
       setInvoicesClient(clientObj);
       if (clientObj?.clientSheetId) {
         prevInitialClientRef.current = initialClient;
-        loadInvoicesInbox(clientObj, Boolean(isModalOverlay));
-        loadInvoicesJobs(clientObj, false);
-        setInvoicesShowAll(false);
+        const triggerKey = `${currentName}::${clientObj.clientSheetId}::${clientObj.masterSheetId || ""}`;
+        if (lastTriggeredClientKeyRef.current !== triggerKey) {
+          lastTriggeredClientKeyRef.current = triggerKey;
+          loadInvoicesInbox(clientObj, false, false, Boolean(isModalOverlay));
+          loadInvoicesJobs(clientObj, false);
+          setInvoicesShowAll(false);
+        }
       }
     } else if (prevManagedClientRef.current && !managedClient) {
       prevManagedClientRef.current = null;
+      lastTriggeredClientKeyRef.current = "";
       setInvoicesClient(null);
       setInvoicesInbox([]);
       setInvoicesJobs(null);

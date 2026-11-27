@@ -96,7 +96,7 @@ export function useOutgoings(assignedAppIds, assignedByClient, setAssignedByClie
   const [directCostsSavingCell, setDirectCostsSavingCell] = useState(null);
   const [outgoingsError, setOutgoingsError] = useState("");
 
-  const loadOutgoings = async (client, bypassCache = false, silent = false) => {
+  const loadOutgoings = async (client, bypassCache = false, silent = false, backgroundRefreshInbox = false) => {
     if (!client) return;
     if (outgoingsClient?.clientSheetId !== client.clientSheetId) {
       setDirectCostsJobs(null);
@@ -123,7 +123,7 @@ export function useOutgoings(assignedAppIds, assignedByClient, setAssignedByClie
 
     // Check client cache for grid & inbox (0ms instant render)
     const cachedGrid = (!bypassCache && !silent) ? getCachedClientData(client.clientSheetId, "outgoings") : null;
-    const cachedInbox = (!bypassCache && !silent) ? getCachedClientData(client.clientSheetId, "outgoings_inbox") : null;
+    const cachedInbox = (!bypassCache && (!silent || backgroundRefreshInbox)) ? getCachedClientData(client.clientSheetId, "outgoings_inbox") : null;
 
     const hasGridCached = hasValidContractors(cachedGrid?.data);
     const hasInboxCached = Boolean(cachedInbox?.data?.inbox);
@@ -154,7 +154,7 @@ export function useOutgoings(assignedAppIds, assignedByClient, setAssignedByClie
     }
 
     const needGridFetch = bypassCache || !hasGridCached || cachedGrid?.isStale;
-    const needInboxFetch = bypassCache || !hasInboxCached || cachedInbox?.isStale;
+    const needInboxFetch = bypassCache || !hasInboxCached || cachedInbox?.isStale || backgroundRefreshInbox;
     if (!needGridFetch && !needInboxFetch) return;
 
     const applyGridData = (gridData) => {
@@ -320,10 +320,11 @@ export function useOutgoings(assignedAppIds, assignedByClient, setAssignedByClie
             }
           }
         }
+        const requestInboxBypass = Boolean(bypassCache || (backgroundRefreshInbox && hasInboxCached));
         const inboxRes = await fetch("/api/triage", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ action: "get_outgoings_inbox", clientSheetId: client.clientSheetId, masterSheetId: client.masterSheetId, bypassCache }),
+          body: JSON.stringify({ action: "get_outgoings_inbox", clientSheetId: client.clientSheetId, masterSheetId: client.masterSheetId, bypassCache: requestInboxBypass }),
         });
         const inboxData = await inboxRes.json().catch(() => ({ success: false, error: `Server returned status ${inboxRes.status}` }));
         applyInboxData(inboxData);

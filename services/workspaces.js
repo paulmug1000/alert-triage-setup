@@ -705,6 +705,70 @@ export async function handleGetOutgoingsInbox(req, res, sheets) {
       }
     }
 
+    const buildOutgoingsInboxFromRows = (rows, revFocus, rawDcMode, contractorsList, passThroughList) => {
+      const directCostsMode = revFocus.toLowerCase() === "income" ? "Pass-through" : (rawDcMode === "Pass-through" ? "Pass-through" : "Contractors");
+      const inbox = [];
+      for (const row of rows) {
+        if (!row || row.length === 0) continue;
+        const rawFlag = String(row[40] || "").trim();
+        if (rawFlag !== "1") continue;
+
+        const date = row[0] !== undefined && row[0] !== null && String(row[0]).trim() !== "" ? toSheetDateFormat(row[0]) : "";
+        const description = String(row[1] || "").trim();
+        const amount = parseFloat(String(row[2] || "0").replace(/,/g, "")) || 0;
+        const reference = String(row[3] || "").trim();
+        const accountName = String(row[4] || "").trim();
+        const status = String(row[5] || "").trim();
+        const appId = String(row[6] || "").trim();
+        const datePaid = row[7] !== undefined && row[7] !== null && String(row[7]).trim() !== "" ? toSheetDateFormat(row[7]) : "";
+        const vatAmount = parseFloat(String(row[8] || "0").replace(/[£$€,]/g, "")) || 0;
+        const contactName = String(row[11] || "").trim();
+
+        if (!appId) continue;
+        const { flagType, expenseCategoryType } = classifyExpenseCategory(accountName, contractorsList, passThroughList, directCostsMode);
+        inbox.push({ appId, amount, date, description, reference, accountName, status, datePaid, vatAmount, contactName, expenseCategoryType, flagType });
+      }
+      return { success: true, inbox, directCostsMode };
+    };
+
+    // Fast Path: Supabase-native master compute mode skips GAS switch writes and fetches DirComp + KeyInfo in parallel
+    const sbCtx = await resolveSupabaseSheetContext({ spreadsheetId: sheetIdClean }).catch(() => null);
+    if (sbCtx?.clientId && sbCtx.masterMode === "supabase" && sbCtx.masterComputeMode === "native") {
+      try {
+        const supabase = getSupabaseAdmin();
+        if (supabase) {
+          const { loadPersistedOrEvaluateMasterComparisonTab } = await import("./nativeMasterComparisonService.js");
+          const [cfgRes, dirCompGrid] = await Promise.all([
+            supabase
+              .from("pulse_master_sync_configs")
+              .select("data_chg_alert_grid, master_key_info_grid")
+              .eq("client_id", sbCtx.clientId)
+              .maybeSingle(),
+            loadPersistedOrEvaluateMasterComparisonTab(sbCtx, "DirComp"),
+          ]);
+
+          const cachedLockRow = cfgRes?.data?.data_chg_alert_grid?.[3]?.slice(1, 9) || [];
+          const allLocks = await checkAllGASLocks(sheets, sheetIdClean, [cachedLockRow]);
+          if (allLocks.expense.locked) {
+            return res.status(200).json({ success: true, inbox: [], locked: true, lockMessage: "Expense automation is currently running - try again in a moment" });
+          }
+
+          const keyInfoGrid = cfgRes?.data?.master_key_info_grid;
+          if (Array.isArray(dirCompGrid) && dirCompGrid.length > 0 && Array.isArray(keyInfoGrid) && keyInfoGrid.length > 0) {
+            const revFocus = String(keyInfoGrid[14]?.[1] || "Revenue").trim();
+            const rawDcMode = String(keyInfoGrid[7]?.[3] || "Contractors").trim();
+            const contractorsList = keyInfoGrid.slice(3, 22).map(r => String(r?.[45] || "").trim()).filter(Boolean);
+            const passThroughList = keyInfoGrid.slice(23, 40).map(r => String(r?.[45] || "").trim()).filter(Boolean);
+            const payload = buildOutgoingsInboxFromRows(dirCompGrid.slice(5, 1000), revFocus, rawDcMode, contractorsList, passThroughList);
+            await set2TierCache(cacheKey, payload, 60);
+            return res.status(200).json(payload);
+          }
+        }
+      } catch (nativeOutgoingsErr) {
+        console.warn(`handleGetOutgoingsInbox native fast-path fallback (${sbCtx.clientName}):`, nativeOutgoingsErr?.message);
+      }
+    }
+
     const allLocks = await checkAllGASLocks(sheets, sheetIdClean);
     const expLock = allLocks.expense;
     if (expLock.locked) {
@@ -722,35 +786,10 @@ export async function handleGetOutgoingsInbox(req, res, sheets) {
     const rows = valRanges[0]?.values || [];
     const revFocus = String(valRanges[1]?.values?.[0]?.[0] || "Revenue").trim();
     const rawDcMode = String(valRanges[2]?.values?.[0]?.[0] || "Contractors").trim();
-    const directCostsMode = revFocus.toLowerCase() === "income" ? "Pass-through" : (rawDcMode === "Pass-through" ? "Pass-through" : "Contractors");
     const contractorsList = (valRanges[3]?.values || []).map(r => String(r?.[0] || "").trim()).filter(Boolean);
     const passThroughList = (valRanges[4]?.values || []).map(r => String(r?.[0] || "").trim()).filter(Boolean);
 
-    const inbox = [];
-    let skippedNoFlag = 0, skippedNoAppId = 0;
-    for (const row of rows) {
-      if (!row || row.length === 0) continue;
-      const rawFlag = String(row[40] || "").trim();
-      const isMissing = rawFlag === "1";
-      if (!isMissing) { skippedNoFlag++; continue; }
-
-      const date = row[0] !== undefined && row[0] !== null && String(row[0]).trim() !== "" ? toSheetDateFormat(row[0]) : "";
-      const description = String(row[1] || "").trim();
-      const amount = parseFloat(String(row[2] || "0").replace(/,/g, "")) || 0;
-      const reference = String(row[3] || "").trim();
-      const accountName = String(row[4] || "").trim();
-      const status = String(row[5] || "").trim();
-      const appId = String(row[6] || "").trim();
-      const datePaid = row[7] !== undefined && row[7] !== null && String(row[7]).trim() !== "" ? toSheetDateFormat(row[7]) : "";
-      const vatAmount = parseFloat(String(row[8] || "0").replace(/[£$€,]/g, "")) || 0;
-      const contactName = String(row[11] || "").trim();
-
-      if (!appId) { skippedNoAppId++; continue; }
-      const { flagType, expenseCategoryType } = classifyExpenseCategory(accountName, contractorsList, passThroughList, directCostsMode);
-      inbox.push({ appId, amount, date, description, reference, accountName, status, datePaid, vatAmount, contactName, expenseCategoryType, flagType });
-    }
-
-    const payload = { success: true, inbox, directCostsMode };
+    const payload = buildOutgoingsInboxFromRows(rows, revFocus, rawDcMode, contractorsList, passThroughList);
     await set2TierCache(cacheKey, payload, 60);
     return res.status(200).json(payload);
   } catch (err) {
@@ -780,6 +819,120 @@ export async function handleGetInvoicesInbox(req, res, sheets) {
       const cached = await get2TierCache(cacheKey);
       if (cached && Array.isArray(cached.inbox)) {
         return res.status(200).json(cached);
+      }
+    }
+
+    const fmtDate = (dStr) => {
+      if (!dStr) return "";
+      const nativeParsed = new Date(dStr);
+      let d = null;
+      if (!isNaN(nativeParsed.getTime())) d = nativeParsed;
+      else {
+        const MONTHS_MAP = { jan: 0, feb: 1, mar: 2, apr: 3, may: 4, jun: 5, jul: 6, aug: 7, sep: 8, oct: 9, nov: 10, dec: 11 };
+        const parts = String(dStr).split(/[-\/]/);
+        if (parts.length === 3) {
+          const mNum = MONTHS_MAP[parts[1]?.toLowerCase()?.substring(0, 3)];
+          if (mNum !== undefined) {
+            const yr = parts[2].length === 2 ? 2000 + parseInt(parts[2]) : parseInt(parts[2]);
+            d = new Date(yr, mNum, parseInt(parts[0]));
+          }
+        }
+      }
+      if (!d) return String(dStr).trim();
+      const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+      return `${d.getDate()}-${months[d.getMonth()]}-${String(d.getFullYear()).slice(-2)}`;
+    };
+
+    const buildInboxEntry = (row, metaLookup) => {
+      const isMissing = String(row[18] || "").trim() === "1";
+      if (!isMissing) return null;
+      const invoiceNo = String(row[5] || "").trim();
+      if (!invoiceNo) return null;
+
+      const client = String(row[0] || "").trim();
+      const job = String(row[1] || "").trim();
+      const invoiceAmt = parseFloat(String(row[2] || "0").replace(/,/g, "")) || 0;
+      const totalExclVAT = parseFloat(String(row[3] || "0").replace(/,/g, "")) || 0;
+      const vatIncluded = parseFloat(String(row[4] || "0").replace(/,/g, "")) || 0;
+      const sentDate = fmtDate(row[6]);
+      const dueDate = fmtDate(row[7]);
+      const fullyPaidOn = fmtDate(row[8]);
+      const status = String(row[9] || "").trim();
+      const currency = String(row[10] || "").trim() || "GBP";
+      const meta = metaLookup(invoiceNo);
+
+      return {
+        invoiceNo, client, job, currency, sentDate, dueDate, fullyPaidOn, status,
+        amount: totalExclVAT !== 0 ? totalExclVAT : invoiceAmt,
+        grossAmount: invoiceAmt, vatAmount: vatIncluded,
+        isMissing,
+        detectedRechargedAmount: meta?.rechargedAmountGbp || 0,
+        lineItems: meta?.lineItems || [],
+      };
+    };
+
+    // Fast Path: Supabase-native master compute mode skips GAS switch writes and loads only InvComp + accounting_invoices
+    const sbCtx = await resolveSupabaseSheetContext({ spreadsheetId: sheetIdClean }).catch(() => null);
+    if (sbCtx?.clientId && sbCtx.masterMode === "supabase" && sbCtx.masterComputeMode === "native") {
+      try {
+        const supabase = getSupabaseAdmin();
+        if (supabase) {
+          const { loadPersistedOrEvaluateMasterComparisonTab } = await import("./nativeMasterComparisonService.js");
+          const [cfgRes, invCompGrid, dbInvRes] = await Promise.all([
+            supabase
+              .from("pulse_master_sync_configs")
+              .select("data_chg_alert_grid, inv_app_list_meta")
+              .eq("client_id", sbCtx.clientId)
+              .maybeSingle(),
+            loadPersistedOrEvaluateMasterComparisonTab(sbCtx, "InvComp"),
+            supabase
+              .from("accounting_invoices")
+              .select("invoice_number, currency_code, currency_rate, recharged_amount, line_items")
+              .eq("client_id", sbCtx.clientId)
+              .eq("record_kind", "invoice"),
+          ]);
+
+          const cachedLockRow = cfgRes?.data?.data_chg_alert_grid?.[3]?.slice(1, 9) || [];
+          const allLocks = await checkAllGASLocks(sheets, sheetIdClean, [cachedLockRow]);
+          if (allLocks.invoice.locked) {
+            return res.status(200).json({ success: true, inbox: [], locked: true, lockMessage: "Invoice automation is currently running - try again in a moment" });
+          }
+
+          if (Array.isArray(invCompGrid) && invCompGrid.length > 0 && !dbInvRes?.error) {
+            const dbInvRows = dbInvRes.data || [];
+            const invFormatRule = String(cfgRes?.data?.inv_app_list_meta?.headerRows?.[0]?.[5] || "").trim();
+            const exactInvMap = new Map();
+            for (const dbRow of dbInvRows) {
+              const rawNo = String(dbRow?.invoice_number ?? "").replace(/^'/, "").trim().toLowerCase();
+              if (!rawNo) continue;
+              if (!exactInvMap.has(rawNo)) exactInvMap.set(rawNo, dbRow);
+              const noHash = rawNo.replace(/^#/, "");
+              if (noHash && !exactInvMap.has(noHash)) exactInvMap.set(noHash, dbRow);
+            }
+
+            const lookupNativeMeta = (invoiceNo) => {
+              const clean = String(invoiceNo || "").trim().toLowerCase().replace(/^#/, "");
+              const matched = exactInvMap.get(clean) || matchInvoiceRowByNumberAndRule(dbInvRows, invFormatRule, invoiceNo);
+              if (!matched) return null;
+              const detail = normalizeAccountingInvoiceDbRow(matched);
+              return detail ? { rechargedAmountGbp: detail.rechargedAmountGbp || 0, lineItems: detail.lineItems || [] } : null;
+            };
+
+            const nativeRows = invCompGrid.slice(5, 1000);
+            const inbox = [];
+            for (const row of nativeRows) {
+              if (!row || row.length === 0) continue;
+              const entry = buildInboxEntry(row, lookupNativeMeta);
+              if (entry) inbox.push(entry);
+            }
+
+            const payload = { success: true, inbox };
+            await set2TierCache(cacheKey, payload, 60);
+            return res.status(200).json(payload);
+          }
+        }
+      } catch (nativeInboxErr) {
+        console.warn(`handleGetInvoicesInbox native fast-path fallback (${sbCtx.clientName}):`, nativeInboxErr?.message);
       }
     }
 
@@ -813,56 +966,10 @@ export async function handleGetInvoicesInbox(req, res, sheets) {
     const invMetaIndex = buildInvFromAppMetaMap(invFromAppRows, invFormatRule);
     const rows = dataResp.data.values || [];
     const inbox = [];
-    let skippedNoFlag = 0, skippedNoInvNo = 0;
     for (const row of rows) {
       if (!row || row.length === 0) continue;
-      const isMissing = String(row[18] || "").trim() === "1";
-      if (!isMissing) { skippedNoFlag++; continue; }
-
-      const client = String(row[0] || "").trim();
-      const job = String(row[1] || "").trim();
-      const invoiceAmt = parseFloat(String(row[2] || "0").replace(/,/g, "")) || 0;
-      const totalExclVAT = parseFloat(String(row[3] || "0").replace(/,/g, "")) || 0;
-      const vatIncluded = parseFloat(String(row[4] || "0").replace(/,/g, "")) || 0;
-      const invoiceNo = String(row[5] || "").trim();
-
-      const fmtDate = (dStr) => {
-        if (!dStr) return "";
-        const nativeParsed = new Date(dStr);
-        let d = null;
-        if (!isNaN(nativeParsed.getTime())) d = nativeParsed;
-        else {
-          const MONTHS_MAP = { jan: 0, feb: 1, mar: 2, apr: 3, may: 4, jun: 5, jul: 6, aug: 7, sep: 8, oct: 9, nov: 10, dec: 11 };
-          const parts = String(dStr).split(/[-\/]/);
-          if (parts.length === 3) {
-            const mNum = MONTHS_MAP[parts[1]?.toLowerCase()?.substring(0, 3)];
-            if (mNum !== undefined) {
-              const yr = parts[2].length === 2 ? 2000 + parseInt(parts[2]) : parseInt(parts[2]);
-              d = new Date(yr, mNum, parseInt(parts[0]));
-            }
-          }
-        }
-        if (!d) return String(dStr).trim();
-        const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
-        return `${d.getDate()}-${months[d.getMonth()]}-${String(d.getFullYear()).slice(-2)}`;
-      };
-
-      const sentDate = fmtDate(row[6]);
-      const dueDate = fmtDate(row[7]);
-      const fullyPaidOn = fmtDate(row[8]);
-      const status = String(row[9] || "").trim();
-      const currency = String(row[10] || "").trim() || "GBP";
-
-      if (!invoiceNo) { skippedNoInvNo++; continue; }
-      const meta = lookupInvFromAppMeta(invMetaIndex, invoiceNo);
-      inbox.push({
-        invoiceNo, client, job, currency, sentDate, dueDate, fullyPaidOn, status,
-        amount: totalExclVAT !== 0 ? totalExclVAT : invoiceAmt,
-        grossAmount: invoiceAmt, vatAmount: vatIncluded,
-        isMissing,
-        detectedRechargedAmount: meta?.rechargedAmountGbp || 0,
-        lineItems: meta?.lineItems || [],
-      });
+      const entry = buildInboxEntry(row, (invNo) => lookupInvFromAppMeta(invMetaIndex, invNo));
+      if (entry) inbox.push(entry);
     }
 
     const payload = { success: true, inbox };

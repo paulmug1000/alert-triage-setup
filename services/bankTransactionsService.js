@@ -40,6 +40,95 @@ function sortReconMonthTabsNewestFirst_(tabs) {
   return [...(tabs || [])].sort((a, b) => String(b).localeCompare(String(a)));
 }
 
+function normalizeReconDateKey_(val) {
+  const s = String(val || "").trim();
+  if (!s) return "";
+  return normalizeDateStr(s) || s;
+}
+
+function toReconCents_(val) {
+  return Math.round(parseAmount(val) * 100);
+}
+
+/**
+ * Compares existing sheet rows (`A3:Q200`) against the serialized values that
+ * `syncReconBankTransactions` would write, so unchanged historical months skip
+ * redundant Google Sheet + Postgres Recon writes and Master comparison rebuilds.
+ */
+export function didPersistedBankTxnsChange(rawTxRows = [], nextBankTxns = []) {
+  const bankOnlyNext = (nextBankTxns || []).filter(
+    (tx) => tx && tx.isReconciled !== false && !tx.unreconRowNum && tx.source !== "unreconciled_pasted"
+  );
+  if (bankOnlyNext.some((tx) => Boolean(tx.isNew))) return true;
+
+  const existingRows = (rawTxRows || []).filter(
+    (r) => Array.isArray(r) && (r[1] || r[0] || r[3] || r[4] || r[8] || r[9])
+  );
+  if (bankOnlyNext.length !== existingRows.length) return true;
+
+  for (let i = 0; i < bankOnlyNext.length; i++) {
+    const tx = bankOnlyNext[i];
+    const r = existingRows[i];
+    const nextInCents = toReconCents_(tx.inAmount);
+    const nextCat = String(
+      tx.category || tx.suggestedCategory || (nextInCents > 0 ? "Revenue" : "Outgoings")
+    ).trim();
+
+    if (normalizeReconDateKey_(tx.date) !== normalizeReconDateKey_(r[1] || r[0])) return true;
+    if (String(tx.accountName || "").trim() !== String(r[2] || "").trim()) return true;
+    if (String(tx.payee || "").trim() !== String(r[3] || r[4] || "").trim()) return true;
+    if (String(tx.particulars || "").trim() !== String(r[4] || "").trim()) return true;
+    if (String(tx.reference || "").trim() !== String(r[6] || r[5] || "").trim()) return true;
+    if (toReconCents_(tx.outAmount) !== toReconCents_(r[8])) return true;
+    if (nextInCents !== toReconCents_(r[9])) return true;
+    if (nextCat !== String(r[16] || "").trim()) return true;
+  }
+
+  return false;
+}
+
+/**
+ * Compares existing sheet unreconciled rows (`CD4:CN60`) against the serialized
+ * values that `syncReconUnreconciledItems` would write.
+ */
+export function didPersistedUnreconItemsChange(rawUnreconRows = [], nextUnreconItems = [], isQbDa1 = false) {
+  const existingRows = (rawUnreconRows || []).filter(
+    (r) => Array.isArray(r) && (r[2] || r[3] || r[5])
+  );
+  const nextList = Array.isArray(nextUnreconItems) ? nextUnreconItems : [];
+  if (nextList.length !== existingRows.length) return true;
+
+  for (let i = 0; i < nextList.length; i++) {
+    const u = nextList[i] || {};
+    const r = existingRows[i];
+
+    const rawCents = Math.abs(toReconCents_(u.amount || u.outAmount || u.inAmount));
+    const isOutflow =
+      u.isNegative !== undefined
+        ? Boolean(u.isNegative)
+        : (toReconCents_(u.outAmount) > 0 || toReconCents_(u.amount) < 0);
+    const nextSignedCents =
+      rawCents === 0 ? 0 : (isQbDa1 ? (isOutflow ? rawCents : -rawCents) : (isOutflow ? -rawCents : rawCents));
+
+    const rawPl = String(u.plCategory || "").trim();
+    const rawCat = String(u.category || u.cashflowCategory || "").trim();
+    let nextCat = rawPl || rawCat || "";
+    if (nextCat === "Outgoings" || nextCat === "Revenue") {
+      nextCat = rawPl && rawPl !== "Outgoings" && rawPl !== "Revenue" ? rawPl : "";
+    }
+    const nextVat = String(u.vatApplies || "No").trim();
+
+    if (normalizeReconDateKey_(u.date) !== normalizeReconDateKey_(r[2])) return true;
+    if (String(u.payee || "").trim() !== String(r[3] || "").trim()) return true;
+    if (String(u.particulars || "").trim() !== String(r[4] || "").trim()) return true;
+    if (nextSignedCents !== toReconCents_(r[5])) return true;
+    if (nextCat !== String(r[9] || "").trim()) return true;
+    if (nextVat !== (String(r[10] || "").trim() || "No")) return true;
+  }
+
+  return false;
+}
+
 const STOP_WORDS = new Set([
   "debit", "credit", "ref", "inv", "invoice", "invoices", "bill", "bills", "voided",
   "payment", "expense", "fee", "fees", "bank", "transfer", "ltd", "limited", "inc",
@@ -2052,17 +2141,48 @@ export async function autoReconcileClientBankTransactions({
       continue;
     }
 
-    // Save updated transactions and unreconciled items sequentially on the same YYMM tab
-    await syncReconBankTransactions({
-      reconSheetId: cleanReconId,
-      tabName,
-      transactions: updateResult.nextBankTxns
-    });
-    await syncReconUnreconciledItems({
-      reconSheetId: cleanReconId,
-      tabName,
-      unreconciledItems: updateResult.nextUnreconItems
-    });
+    const hasCounterMutation = Boolean(
+      updateResult.matchedFromUnreconCount > 0 ||
+      updateResult.matchedNonCashCount > 0 ||
+      updateResult.newAddedCount > 0 ||
+      updateResult.updatedCount > 0 ||
+      updateResult.deletedCount > 0 ||
+      (updateResult.fallbackAddedTxns && updateResult.fallbackAddedTxns.length > 0)
+    );
+    const bankChanged = hasCounterMutation || didPersistedBankTxnsChange(rawTx, updateResult.nextBankTxns);
+    const unreconChanged = hasCounterMutation || didPersistedUnreconItemsChange(rawUnrecon, updateResult.nextUnreconItems, isQbDa1);
+
+    if (!bankChanged && !unreconChanged) {
+      results.push({
+        tabName,
+        monthKey: tabMonthKey,
+        success: true,
+        skippedUnchanged: true,
+        matchedFromUnreconCount: 0,
+        matchedNonCashCount: 0,
+        newAddedCount: 0,
+        updatedCount: 0,
+        deletedCount: 0,
+        remainingUnreconCount: updateResult.nextUnreconItems.length
+      });
+      continue;
+    }
+
+    // Save only sections that actually changed on the YYMM tab to avoid redundant Recon/Master rebuilds
+    if (bankChanged) {
+      await syncReconBankTransactions({
+        reconSheetId: cleanReconId,
+        tabName,
+        transactions: updateResult.nextBankTxns
+      });
+    }
+    if (unreconChanged) {
+      await syncReconUnreconciledItems({
+        reconSheetId: cleanReconId,
+        tabName,
+        unreconciledItems: updateResult.nextUnreconItems
+      });
+    }
 
     results.push({
       tabName,

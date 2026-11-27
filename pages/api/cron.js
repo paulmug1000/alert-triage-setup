@@ -7,10 +7,10 @@
  */
 
 import { waitUntil } from "@vercel/functions";
-import { runBackgroundTriageRefresh, getTriageRefreshStatus } from "../../services/triageEngine";
+import { runBackgroundTriageRefresh, getTriageRefreshStatus, getBaseUrlFromReq } from "../../services/triageEngine";
 import { safeCompareSecret } from "../../services/authService";
 import { getSupabaseAdmin } from "../../services/supabaseClient";
-import { redisClient } from "../../services/redisClient";
+import { redisClient, ensureRedisConnected } from "../../services/redisClient";
 import { getCanonicalAcSheetId } from "../../services/userPermissions";
 import { runDailyAutoBackupSweep } from "../../services/supabaseBackupService";
 import { dispatchDueNativeMasterSyncs } from "../../services/masterSyncEngine";
@@ -18,7 +18,6 @@ import { getSheetsClient } from "../../services/sheetsClient";
 import { sendDailyAlertsSummary, checkAndNotifyTabErrors, checkAndNotifyClientParity } from "../../services/dailyAlertsNotifier";
 import { warmAllClientsPortalHomeCache } from "../../services/portalDataService";
 import { compactAlertMemory } from "../../services/alertMemory";
-import { resolveCanonicalOAuthHost } from "../../utils/helpers";
 import { runScheduledSheetBridgeSweep } from "../../services/clientSheetBridgeService";
 
 export const config = {
@@ -76,12 +75,7 @@ export default async function handler(req, res) {
     forceAll,
   });
 
-  const { host, proto } = resolveCanonicalOAuthHost(req);
-  const cleanUrl = (url) => (url ? (url.startsWith("http") ? url : `https://${url}`) : null);
-  const prodUrl = cleanUrl(process.env.VERCEL_PROJECT_PRODUCTION_URL);
-  const baseUrl = (prodUrl && prodUrl.startsWith("https://") && prodUrl.includes("pulsedashboard.co.uk"))
-    ? prodUrl
-    : `${proto}://${host}`;
+  const baseUrl = getBaseUrlFromReq(req);
   const acId = getCanonicalAcSheetId() || "12B2zv_2GVqFvjCECIPTF-CMzSwTAD3dZU-R5INy0X9M";
   const onlyParityMonitor = Boolean(
     req.body?.onlyParityMonitor === true || req.query?.onlyParityMonitor === "true"
@@ -91,6 +85,7 @@ export default async function handler(req, res) {
     const isolatedParityTask = (async () => {
       try {
         const parityRes = await checkAndNotifyClientParity();
+        await ensureRedisConnected().catch(() => { });
         if (redisClient?.isOpen) {
           await redisClient
             .set(PARITY_MONITOR_CRON_LAST_KEY, new Date().toISOString(), { EX: 3300 })
@@ -102,6 +97,7 @@ export default async function handler(req, res) {
       } catch (err) {
         console.error("❌ CRON (isolated parity monitor) failed:", err.message);
       } finally {
+        await ensureRedisConnected().catch(() => { });
         if (redisClient?.isOpen) {
           await redisClient.del(PARITY_MONITOR_INFLIGHT_KEY).catch(() => { });
         }
@@ -217,7 +213,7 @@ export default async function handler(req, res) {
             await redisClient.set(ACTIVITY_CRON_LAST_KEY, new Date().toISOString(), { EX: 3000 }).catch(() => { });
           }
           console.log("CRON: Refreshing hourly 30-day activity feed cache...");
-          await fetch(`${baseUrl}/api/triage`, {
+          const actRes = await fetch(`${baseUrl}/api/triage`, {
             method: "POST",
             headers: cronHeaders,
             redirect: "manual",
@@ -229,6 +225,9 @@ export default async function handler(req, res) {
               secret: cronSecret,
             }),
           });
+          if (!actRes.ok) {
+            console.warn(`⚠️ CRON: Activity feed refresh returned HTTP ${actRes.status}.`);
+          }
         }
       } catch (actErr) {
         console.warn("⚠️ CRON: Non-fatal error refreshing activity feed:", actErr.message);
@@ -264,7 +263,7 @@ export default async function handler(req, res) {
                 redirect: "manual",
                 body: JSON.stringify({ onlyParityMonitor: true, secret: cronSecret }),
               });
-              if (dispatchRes && dispatchRes.status < 400) {
+              if (dispatchRes && dispatchRes.ok) {
                 dispatchedIsolated = true;
                 console.log("CRON: Dispatched isolated hourly health & parity monitor invocation.");
               } else {
@@ -317,17 +316,20 @@ export default async function handler(req, res) {
               EX: 86400,
             });
             shouldProvisionToday = setRes === "OK";
-          } catch (_) {}
+          } catch (_) { }
         }
         if (shouldProvisionToday) {
           console.log(`CRON: Today is ${currentDay}th (>= 20th) - Running daily Recon tabs auto-provisioning check...`);
           try {
-            await fetch(`${baseUrl}/api/triage`, {
+            const provRes = await fetch(`${baseUrl}/api/triage`, {
               method: "POST",
               headers: cronHeaders,
               redirect: "manual",
               body: JSON.stringify({ action: "auto_provision_recon_tabs", secret: cronSecret, automationCommanderSheetId: acId }),
             });
+            if (!provRes.ok) {
+              console.warn(`⚠️ CRON: Recon auto-provisioning returned HTTP ${provRes.status}.`);
+            }
           } catch (tabErr) {
             console.warn("⚠️ CRON: Non-fatal error in auto_provision_recon_tabs:", tabErr.message);
           }

@@ -1241,6 +1241,7 @@ export default function PortalPage({
       <>
         <Head>
           <title>Sign in to Pulse</title>
+          <link rel="preload" as="image" href="/pulselogo-transparent.png" />
         </Head>
         <AuthGateView
           authStep={auth.authStep}
@@ -1294,6 +1295,7 @@ export default function PortalPage({
       <>
         <Head>
           <title>Select company | Pulse</title>
+          <link rel="preload" as="image" href="/pulselogo-transparent.png" />
         </Head>
         <CompanyChooser
           clients={clients}
@@ -1351,6 +1353,7 @@ export default function PortalPage({
     <>
       <Head>
         <title>{resolvedHeaderClientName ? `Pulse - ${resolvedHeaderClientName}` : "Pulse"}</title>
+        <link rel="preload" as="image" href="/pulselogo-transparent.png" />
       </Head>
 
       <PulseNotesProvider

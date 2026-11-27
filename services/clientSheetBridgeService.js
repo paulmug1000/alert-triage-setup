@@ -1242,9 +1242,28 @@ async function saveBaselineRecord_(
     compacted.noteBoundsVersion = Number(tObj.noteBoundsVersion || noteBoundsVersion || CURRENT_NOTE_BOUNDS_VERSION);
     compactedTabs[tName] = compacted;
   }
+  let prevMasterUpdatedAt = null;
+  if (ctx.clientId) {
+    const { data: curSyncMeta } = await supabase
+      .from("pulse_master_sync_configs")
+      .select("updated_at, baseline_at:sheet_bridge_baseline->>updatedAt, prev_master_at:sheet_bridge_baseline->>prevMasterUpdatedAt")
+      .eq("client_id", ctx.clientId)
+      .maybeSingle();
+    if (curSyncMeta?.updated_at) {
+      const uMs = Date.parse(curSyncMeta.updated_at) || 0;
+      const bMs = curSyncMeta.baseline_at ? (Date.parse(curSyncMeta.baseline_at) || 0) : 0;
+      if (!bMs || Math.abs(uMs - bMs) >= 10000) {
+        prevMasterUpdatedAt = curSyncMeta.updated_at;
+      } else {
+        prevMasterUpdatedAt = curSyncMeta.prev_master_at || null;
+      }
+    }
+  }
+
   const payload = {
     driveVersion: String(driveVersion || ""),
     updatedAt: new Date().toISOString(),
+    ...(prevMasterUpdatedAt ? { prevMasterUpdatedAt } : {}),
     noteBoundsVersion: Number(noteBoundsVersion || CURRENT_NOTE_BOUNDS_VERSION),
     tabs: compactedTabs,
   };
@@ -1257,7 +1276,6 @@ async function saveBaselineRecord_(
           client_id: ctx.clientId,
           client_name: ctx.clientName,
           sheet_bridge_baseline: payload,
-          updated_at: payload.updatedAt,
         },
         { onConflict: "client_id" }
       );

@@ -2118,6 +2118,10 @@ export function PmaTransitionSkeleton({ user = null, targetNav = "home", clientN
           <img
             src="/pulselogo-pma.png"
             alt="Pulse"
+            width={922}
+            height={306}
+            loading="eager"
+            decoding="sync"
             style={{ height: "30px", width: "auto", display: "block", flexShrink: 0 }}
           />
           <span

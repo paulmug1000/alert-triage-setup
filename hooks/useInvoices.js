@@ -96,17 +96,17 @@ export function useInvoices(assignedAppIds, initialClient = null) {
     }
   }, [invoicesClient]);
 
-  const loadInvoicesInbox = useCallback(async (client, bypassCache = false, silent = false) => {
+  const loadInvoicesInbox = useCallback(async (client, bypassCache = false, silent = false, backgroundRefresh = false) => {
     if (!client?.clientSheetId) return;
     const cacheKey = "invoices_inbox";
     const cleanMasterId = client.masterSheetId ? (cleanSheetId ? cleanSheetId(client.masterSheetId) : String(client.masterSheetId).replace(/.*\/d\/([a-zA-Z0-9-_]+).*/, "$1")) : null;
 
-    const cached = (!bypassCache && !silent) ? getCachedClientData(client.clientSheetId, cacheKey) : null;
+    const cached = (!bypassCache && (!silent || backgroundRefresh)) ? getCachedClientData(client.clientSheetId, cacheKey) : null;
     if (cached?.data?.inbox) {
       const pruned = (cached.data.inbox || []).filter(inv => !isInvoiceAssigned(inv.invoiceNo, client));
       setInvoicesInbox(pruned);
       if (!silent) setInvoicesInboxLoading(false);
-      if (!cached.isStale) return;
+      if (!cached.isStale && !backgroundRefresh) return;
     } else if (!silent) {
       setInvoicesInboxLoading(true);
     }
@@ -120,16 +120,17 @@ export function useInvoices(assignedAppIds, initialClient = null) {
           if (fresh?.data?.inbox) {
             setInvoicesInbox((fresh.data.inbox || []).filter(inv => !isInvoiceAssigned(inv.invoiceNo, client)));
             setInvoicesInboxLoading(false);
-            return;
+            if (!backgroundRefresh) return;
           }
         } catch {}
       }
     }
 
+    const requestBypassCache = Boolean(bypassCache || (backgroundRefresh && Boolean(cached?.data?.inbox)));
     try {
       const res = await fetch("/api/triage", {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "get_invoices_inbox", clientSheetId: client.clientSheetId, masterSheetId: client.masterSheetId, bypassCache }),
+        body: JSON.stringify({ action: "get_invoices_inbox", clientSheetId: client.clientSheetId, masterSheetId: client.masterSheetId, bypassCache: requestBypassCache }),
       });
       const data = await res.json();
       if (data.success) {

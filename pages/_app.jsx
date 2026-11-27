@@ -31,6 +31,27 @@ export default function App({ Component, pageProps }) {
     };
   }, [router]);
 
+  // Eagerly preload and pin brand logos in memory so PMA <-> Pulse transitions paint instantaneously
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    if (Array.isArray(window.__PULSE_PRELOADED_LOGOS__) && window.__PULSE_PRELOADED_LOGOS__.length > 0) {
+      return;
+    }
+    const logoPaths = ["/pulselogo-transparent.png", "/pulselogo-pma.png"];
+    window.__PULSE_PRELOADED_LOGOS__ = logoPaths.map((src) => {
+      const img = new window.Image();
+      img.decoding = "async";
+      if ("fetchPriority" in img) {
+        img.fetchPriority = "high";
+      }
+      img.src = src;
+      if (typeof img.decode === "function") {
+        img.decode().catch(() => {});
+      }
+      return img;
+    });
+  }, []);
+
   return (
     <>
       <Head>

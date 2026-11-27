@@ -336,6 +336,10 @@ export default function PortalShell({
               <img
                 src="/pulselogo-transparent.png"
                 alt="Pulse"
+                width={1024}
+                height={410}
+                loading="eager"
+                decoding="sync"
                 className="portal-brand-logo"
                 style={{
                   height: "45px",

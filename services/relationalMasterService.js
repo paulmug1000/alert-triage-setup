@@ -66,7 +66,32 @@ export const ALL_PHASE4_MASTER_TABS = [
 let _cachedMigration0014Sql = null;
 let _schemaReadyCache = { ready: null, checkedAt: 0 };
 const _masterBundleCache = new Map();
+const _inFlightMasterBundle = new Map();
 const MASTER_BUNDLE_TTL_MS = 15000;
+const RELATIONAL_MASTER_SYNC_CFG_COLS = [
+  "client_id",
+  "client_name",
+  "inv_headers",
+  "rev_headers",
+  "jnl_headers",
+  "pl_headers",
+  "year0_pl_headers",
+  "crm_raw_headers",
+  "time_data_headers",
+  "time_projects_headers",
+  "inv_app_list_meta",
+  "inv_comp_controls",
+  "jnl_app_list_meta",
+  "dir_comp_controls",
+  "crm_list_config",
+  "crm_comp_controls",
+  "pl_comp_meta",
+  "time_comp_controls",
+  "master_key_info_grid",
+  "data_chg_alert_grid",
+  "master_pl_adds_grid",
+  "updated_at",
+].join(", ");
 const _pendingMasterReconcileByClient = new Map();
 const _inFlightMasterReconcileByClient = new Map();
 
@@ -90,9 +115,11 @@ export function invalidateClientRelationalMasterCache(clientName) {
   const key = String(clientName || "").trim().toLowerCase();
   if (!key) {
     _masterBundleCache.clear();
+    _inFlightMasterBundle.clear();
     return;
   }
   _masterBundleCache.delete(key);
+  _inFlightMasterBundle.delete(key);
 }
 
 // ============================================================================
@@ -1773,41 +1800,56 @@ export async function preloadClientRelationalMasterBundle(ctxOrClientName, { sou
     return cached.bundle;
   }
 
-  const supabase = getSupabaseAdmin();
-  const [cfgRes, invRows, dirRows, plRows, crmRows, timeRows] = await Promise.all([
-    supabase
-      .from("pulse_master_sync_configs")
-      .select("*")
-      .eq("client_id", ctx.clientId)
-      .maybeSingle(),
-    fetchAllRowsByClientId_(supabase, "accounting_invoices", ctx.clientId, "sheet_row_num"),
-    fetchAllRowsByClientId_(supabase, "accounting_direct_costs", ctx.clientId, "sheet_row_num"),
-    fetchAllRowsByClientId_(supabase, "accounting_pl_lines", ctx.clientId, "sheet_row_num"),
-    fetchAllRowsByClientId_(supabase, "crm_deals_raw", ctx.clientId, "sheet_row_num"),
-    fetchAllRowsByClientId_(supabase, "time_entries_raw", ctx.clientId, "sheet_row_num"),
-  ]);
-  if (cfgRes.error) {
-    throw new Error(`pulse_master_sync_configs load failed (${ctx.clientName}): ${cfgRes.error.message}`);
+  if (_inFlightMasterBundle.has(cacheKey)) {
+    return await _inFlightMasterBundle.get(cacheKey);
   }
 
-  const bundle = {
-    clientId: ctx.clientId,
-    clientName: ctx.clientName,
-    source: "db",
-    config: cfgRes.data || {},
-    accountingInvoices: invRows,
-    accountingDirectCosts: dirRows,
-    accountingPlLines: plRows,
-    crmDeals: crmRows,
-    timeEntries: timeRows,
-    evaluatedTabsCache: new Map(),
-  };
+  const loadPromise = (async () => {
+    const supabase = getSupabaseAdmin();
+    const [cfgRes, invRows, dirRows, plRows, crmRows, timeRows] = await Promise.all([
+      supabase
+        .from("pulse_master_sync_configs")
+        .select(RELATIONAL_MASTER_SYNC_CFG_COLS)
+        .eq("client_id", ctx.clientId)
+        .maybeSingle(),
+      fetchAllRowsByClientId_(supabase, "accounting_invoices", ctx.clientId, "sheet_row_num"),
+      fetchAllRowsByClientId_(supabase, "accounting_direct_costs", ctx.clientId, "sheet_row_num"),
+      fetchAllRowsByClientId_(supabase, "accounting_pl_lines", ctx.clientId, "sheet_row_num"),
+      fetchAllRowsByClientId_(supabase, "crm_deals_raw", ctx.clientId, "sheet_row_num"),
+      fetchAllRowsByClientId_(supabase, "time_entries_raw", ctx.clientId, "sheet_row_num"),
+    ]);
+    if (cfgRes.error) {
+      throw new Error(`pulse_master_sync_configs load failed (${ctx.clientName}): ${cfgRes.error.message}`);
+    }
 
-  _masterBundleCache.set(cacheKey, {
-    bundle,
-    expiresAt: Date.now() + MASTER_BUNDLE_TTL_MS,
-  });
-  return bundle;
+    const bundle = {
+      clientId: ctx.clientId,
+      clientName: ctx.clientName,
+      source: "db",
+      config: cfgRes.data || {},
+      accountingInvoices: invRows,
+      accountingDirectCosts: dirRows,
+      accountingPlLines: plRows,
+      crmDeals: crmRows,
+      timeEntries: timeRows,
+      evaluatedTabsCache: new Map(),
+    };
+
+    _masterBundleCache.set(cacheKey, {
+      bundle,
+      expiresAt: Date.now() + MASTER_BUNDLE_TTL_MS,
+    });
+    return bundle;
+  })();
+
+  _inFlightMasterBundle.set(cacheKey, loadPromise);
+  try {
+    return await loadPromise;
+  } finally {
+    if (_inFlightMasterBundle.get(cacheKey) === loadPromise) {
+      _inFlightMasterBundle.delete(cacheKey);
+    }
+  }
 }
 
 export function buildBaseRawMasterTabsFromBundle(bundle) {

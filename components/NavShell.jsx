@@ -610,6 +610,10 @@ export default function NavShell({
           <img
             src="/pulselogo-pma.png"
             alt="Pulse"
+            width={922}
+            height={306}
+            loading="eager"
+            decoding="sync"
             className="pma-topbar-brand-logo"
           />
           <span className="pma-topbar-title">Management Area</span>

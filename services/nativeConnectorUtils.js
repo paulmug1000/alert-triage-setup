@@ -658,7 +658,7 @@ export async function loadConnectorContextState(ctx, keyInfoOverride = null) {
   if (supabase && ctx?.clientId) {
     const { data, error } = await supabase
       .from("pulse_master_sync_configs")
-      .select("*")
+      .select("master_key_info_grid, data_chg_alert_grid, script_properties")
       .eq("client_id", ctx.clientId)
       .maybeSingle();
     if (error && !/42P01|does not exist/i.test(String(error.message || ""))) {

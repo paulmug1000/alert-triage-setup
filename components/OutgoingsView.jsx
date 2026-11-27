@@ -390,6 +390,7 @@ export default function OutgoingsView({
 
   const prevInitialClientRef = React.useRef(null);
   const prevManagedClientRef = React.useRef(null);
+  const lastTriggeredClientKeyRef = React.useRef("");
   // Auto-select managedClient when in manage mode, or initialClient when passed, or clear when cancelled
   useEffect(() => {
     if (managedClient) {
@@ -403,7 +404,11 @@ export default function OutgoingsView({
         const clientObj = clientWithSheet || (allOutgoingsClients || []).find(c => c.clientName?.toLowerCase() === currentName) || managedClient;
         if (clientObj?.clientSheetId) {
           prevManagedClientRef.current = currentName;
-          loadOutgoings(clientObj);
+          const triggerKey = `${currentName}::${clientObj.clientSheetId}::${clientObj.masterSheetId || ""}`;
+          if (lastTriggeredClientKeyRef.current !== triggerKey) {
+            lastTriggeredClientKeyRef.current = triggerKey;
+            loadOutgoings(clientObj, false, false, Boolean(isModalOverlay));
+          }
         }
       }
     } else if (initialClient && (initialClient !== prevInitialClientRef.current || (!outgoingsClient?.clientSheetId && initialClient.clientSheetId))) {
@@ -414,10 +419,15 @@ export default function OutgoingsView({
         initialClient;
       if (clientObj?.clientSheetId) {
         prevInitialClientRef.current = initialClient;
-        loadOutgoings(clientObj);
+        const triggerKey = `${currentName}::${clientObj.clientSheetId}::${clientObj.masterSheetId || ""}`;
+        if (lastTriggeredClientKeyRef.current !== triggerKey) {
+          lastTriggeredClientKeyRef.current = triggerKey;
+          loadOutgoings(clientObj, false, false, Boolean(isModalOverlay));
+        }
       }
     } else if (prevManagedClientRef.current && !managedClient) {
       prevManagedClientRef.current = null;
+      lastTriggeredClientKeyRef.current = "";
       setOutgoingsData(null);
       setOutgoingsClient(null);
       setOutgoingsInbox([]);
@@ -508,6 +518,33 @@ export default function OutgoingsView({
   const pendingContractorUpdatesRef = useRef(new Map()); // `${sheetRow}_${colLetter}` -> { sheetRow, colLetter, contractorName, blocks, topNote }
   const contractorSaveTimeoutRef = useRef(null);
   const contractorTableScrollRef = useRef(null);
+  const contractorSearchSectionRef = useRef(null);
+  const contractorSearchFocusedRef = useRef(false);
+  const directCostsSearchSectionRef = useRef(null);
+  const directCostsSearchFocusedRef = useRef(false);
+
+  const scrollSearchIntoViewOnMobile = React.useCallback((sectionRef) => {
+    if (typeof window === "undefined" || window.innerWidth > 768) return;
+    const el = sectionRef?.current;
+    if (!el) return;
+    window.setTimeout(() => {
+      if (sectionRef.current) {
+        sectionRef.current.scrollIntoView({ block: "start", behavior: "smooth" });
+      }
+    }, 180);
+  }, []);
+
+  useEffect(() => {
+    if (contractorSearchFocusedRef.current) {
+      scrollSearchIntoViewOnMobile(contractorSearchSectionRef);
+    }
+  }, [contractorSearch, scrollSearchIntoViewOnMobile]);
+
+  useEffect(() => {
+    if (directCostsSearchFocusedRef.current) {
+      scrollSearchIntoViewOnMobile(directCostsSearchSectionRef);
+    }
+  }, [directCostsJobSearch, scrollSearchIntoViewOnMobile]);
 
   const filteredContractors = React.useMemo(() => {
     const list = outgoingsData?.contractors || [];
@@ -2404,6 +2441,20 @@ export default function OutgoingsView({
         );
       })()}
 
+      <style>{`
+        @media (max-width: 768px) {
+          .pma-outgoings-inbox-grid {
+            max-height: 185px;
+            overflow-y: auto;
+            -webkit-overflow-scrolling: touch;
+            padding-right: 2px;
+          }
+          .pma-outgoings-search-input {
+            font-size: 16px !important;
+          }
+        }
+      `}</style>
+
       {(selectedInboxAppIds.size > 0 || outgoingsPlacing) && (() => {
         const selectedList = selectedInboxAppIds.size > 0
           ? displayedInbox.filter(e => selectedInboxAppIds.has(e.appId))
@@ -2697,7 +2748,7 @@ export default function OutgoingsView({
             </div>
             {displayedInbox.length > 0 && (
               <>
-                <div style={{ display: "flex", flexWrap: "wrap", gap: "8px" }}>
+                <div className="pma-outgoings-inbox-grid" style={{ display: "flex", flexWrap: "wrap", gap: "8px" }}>
                   {displayedInbox.map((exp, i) => {
                     const isSelected = selectedInboxAppIds.has(exp.appId);
                     const { vendor, description } = parseVendorAndDescription(exp);
@@ -2902,16 +2953,35 @@ export default function OutgoingsView({
 
         {!noClient && outgoingsData && effectiveSubTab === "contractors" && (
           <>
-            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: "10px", marginBottom: "10px" }}>
+            <div
+              ref={contractorSearchSectionRef}
+              style={{
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+                flexWrap: "wrap",
+                gap: "10px",
+                marginBottom: "10px",
+                scrollMarginTop: (selectedInboxAppIds.size > 0 || outgoingsPlacing) ? "68px" : "10px",
+              }}
+            >
               <div style={{ display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap", flex: 1, minWidth: "260px" }}>
                 <div style={{ position: "relative", width: "100%", maxWidth: "340px" }}>
                   <span style={{ position: "absolute", left: "10px", top: "50%", transform: "translateY(-50%)", color: "#94a3b8", fontSize: "14px", pointerEvents: "none" }}>🔍</span>
                   <DeferredSearchInput
                     bare
+                    className="pma-outgoings-search-input"
                     type="text"
                     placeholder="Search vendors..."
                     value={contractorSearch}
                     onChange={e => setContractorSearch(e.target.value)}
+                    onFocus={() => {
+                      contractorSearchFocusedRef.current = true;
+                      scrollSearchIntoViewOnMobile(contractorSearchSectionRef);
+                    }}
+                    onBlur={() => {
+                      contractorSearchFocusedRef.current = false;
+                    }}
                     showClearButton
                     spinnerSize={12}
                     spinnerRight="8px"
@@ -3892,15 +3962,29 @@ export default function OutgoingsView({
                 </div>
 
                 {/* Search Bar for Direct Costs Jobs */}
-                <div style={{ marginBottom: "12px" }}>
+                <div
+                  ref={directCostsSearchSectionRef}
+                  style={{
+                    marginBottom: "12px",
+                    scrollMarginTop: (selectedInboxAppIds.size > 0 || outgoingsPlacing) ? "68px" : "10px",
+                  }}
+                >
                   <div style={{ position: "relative", maxWidth: "340px" }}>
                     <span style={{ position: "absolute", left: "10px", top: "50%", transform: "translateY(-50%)", color: "#94a3b8", fontSize: "14px", pointerEvents: "none" }}>🔍</span>
                     <DeferredSearchInput
                       bare
+                      className="pma-outgoings-search-input"
                       type="text"
                       placeholder="Search jobs..."
                       value={directCostsJobSearch}
                       onChange={e => setDirectCostsJobSearch(e.target.value)}
+                      onFocus={() => {
+                        directCostsSearchFocusedRef.current = true;
+                        scrollSearchIntoViewOnMobile(directCostsSearchSectionRef);
+                      }}
+                      onBlur={() => {
+                        directCostsSearchFocusedRef.current = false;
+                      }}
                       showClearButton
                       spinnerSize={12}
                       spinnerRight="8px"

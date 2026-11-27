@@ -56,8 +56,12 @@ export default function CompanyChooser({
         >
           {/* eslint-disable-next-line @next/next/no-img-element */}
           <img
-            src="/pulselogo.png"
+            src="/pulselogo-transparent.png"
             alt="Pulse"
+            width={1024}
+            height={410}
+            loading="eager"
+            decoding="sync"
             style={{
               display: "block",
               margin: "0 auto 1.25rem auto",

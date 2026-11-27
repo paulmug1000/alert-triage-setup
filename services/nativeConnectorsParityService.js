@@ -388,9 +388,13 @@ export async function verifyNativeConnectorsStateParity({
     const mode = String(c.connector_pull_mode || c.metadata?.connector_pull_mode || "grid_gas").toLowerCase();
     try {
       const ctx = await resolveSupabaseSheetContext({ clientName: c.client_name });
+      const syncCols =
+        mode === "native"
+          ? "client_id"
+          : "client_id, crm_google_bridge_grid, crm_excel_bridge_grid, crm_excel_copy_grid, script_properties";
       const { data: cfg } = await supabase
         .from("pulse_master_sync_configs")
-        .select("*")
+        .select(syncCols)
         .eq("client_id", c.id)
         .maybeSingle();
 

@@ -265,9 +265,8 @@ export async function verifyZeroGridReadiness({ clientName = null } = {}) {
   const { data: clients, error: cErr } = await clientQuery;
   if (cErr) throw new Error(`verifyZeroGridReadiness clients query failed: ${cErr.message}`);
 
-  const syncSelect = schema.schemaReady
-    ? "client_id, client_name, sync_orchestrator_backfilled_at, sheet_bridge_baseline"
-    : "client_id, client_name, sync_orchestrator_backfilled_at";
+  // Never select the full sheet_bridge_baseline JSONB blob across all tenants; use relBaselineRes below instead
+  const syncSelect = "client_id, client_name, sync_orchestrator_backfilled_at";
 
   const clientIds = (clients || []).map((c) => c.id).filter(Boolean);
   const filterByClient = Boolean(clientName && clientIds.length > 0);
@@ -286,7 +285,7 @@ export async function verifyZeroGridReadiness({ clientName = null } = {}) {
     return { data: all, error: null };
   };
 
-  const [bpRes, finRes, syncRes, gridMetaRows, bridgeRes] = await Promise.all([
+  const [bpRes, finRes, syncRes, gridMetaRows, bridgeRes, relBaselineRes] = await Promise.all([
     fetchPagedQuery_(
       () => {
         let q = supabase.from("pulse_client_tab_blueprints").select("client_id");
@@ -345,17 +344,33 @@ export async function verifyZeroGridReadiness({ clientName = null } = {}) {
       "id",
       "bridge baseline"
     ),
+    schema.schemaReady
+      ? fetchPagedQuery_(
+          () => {
+            let q = supabase
+              .from("pulse_master_sync_configs")
+              .select("client_id")
+              .not("sheet_bridge_baseline->tabs", "is", null);
+            if (filterByClient) q = q.in("client_id", clientIds);
+            return q;
+          },
+          "client_id",
+          "relational bridge baseline"
+        )
+      : Promise.resolve({ data: [], error: null }),
   ]);
 
   if (bpRes.error) throw new Error(`verifyZeroGridReadiness blueprints query failed: ${bpRes.error.message}`);
   if (finRes.error) throw new Error(`verifyZeroGridReadiness financials query failed: ${finRes.error.message}`);
   if (syncRes.error) throw new Error(`verifyZeroGridReadiness sync configs query failed: ${syncRes.error.message}`);
   if (bridgeRes.error) throw new Error(`verifyZeroGridReadiness bridge baseline query failed: ${bridgeRes.error.message}`);
+  if (relBaselineRes.error) throw new Error(`verifyZeroGridReadiness relational bridge baseline query failed: ${relBaselineRes.error.message}`);
 
   const bpRows = bpRes.data;
   const finRows = finRes.data;
   const syncRows = syncRes.data;
   const bridgeRows = bridgeRes.data;
+  const relBaselineSet = new Set((relBaselineRes.data || []).map((r) => r.client_id).filter(Boolean));
 
   const bpCountByClient = new Map();
   for (const r of bpRows || []) {
@@ -407,7 +422,7 @@ export async function verifyZeroGridReadiness({ clientName = null } = {}) {
     }
 
     const hasGridBaseline = gridBaselineSet.has(c.client_name);
-    const hasRelationalBaseline = Boolean(syncCfg?.sheet_bridge_baseline?.tabs);
+    const hasRelationalBaseline = relBaselineSet.has(c.id);
     const bridgeMode = String(c.metadata?.sheet_bridge_mode || "off").trim().toLowerCase();
     if (schema.schemaReady && (hasGridBaseline || bridgeMode !== "off") && !hasRelationalBaseline) {
       blockers.push("SheetBridgeBaseline not yet migrated to pulse_master_sync_configs");

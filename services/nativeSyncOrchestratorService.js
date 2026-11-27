@@ -862,9 +862,13 @@ export async function verifyNativeSyncStateParity({
     const mode = String(c.sync_orchestrator_mode || c.metadata?.sync_orchestrator_mode || "grid_gas").toLowerCase();
     try {
       const ctx = await resolveSupabaseSheetContext({ clientName: c.client_name });
+      const syncCols =
+        mode === "native"
+          ? "client_id, sync_orchestrator_backfilled_at"
+          : "client_id, sync_orchestrator_backfilled_at, master_year0_data_grid, master_rev_comp_grid, master_starter_pl_grid, master_starter_inv_grid, master_mgmt_rep_grid";
       const { data: cfg } = await supabase
         .from("pulse_master_sync_configs")
-        .select("*")
+        .select(syncCols)
         .eq("client_id", c.id)
         .maybeSingle();
 

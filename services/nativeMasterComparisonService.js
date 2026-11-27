@@ -79,9 +79,14 @@ export const MASTER_COMP_TYPE_BY_TAB = {
 };
 
 export const MASTER_COMP_TABS = Object.keys(MASTER_COMP_TYPE_BY_TAB);
+const MASTER_TAB_BY_COMP_TYPE = Object.fromEntries(
+  Object.entries(MASTER_COMP_TYPE_BY_TAB).map(([tab, compType]) => [compType, tab])
+);
 
 const _masterCompCache = new Map();
 const MASTER_COMP_TTL_MS = 15000;
+const _inFlightMasterCompCompute = new Map();
+const _inFlightMasterCompLoad = new Map();
 
 export function invalidateClientNativeMasterCompCache(clientName) {
   const key = String(clientName || "").trim().toLowerCase();
@@ -406,140 +411,162 @@ export async function computeAndPersistNativeMasterComparisons(
       : await resolveSupabaseSheetContext({ clientName: String(ctxOrClientName || "") });
   if (!ctx?.clientId) throw new Error("Valid client context is required.");
 
-  const schema = await checkPhase6NativeComputeSchemaStatus();
-  if (!schema.schemaReady) {
-    throw new Error("Migration 0017 must be applied in Supabase SQL Editor first.");
+  const clientKey = String(ctx.clientName || "").trim().toLowerCase();
+  const canDedup = !requestedCrmMode && !updateBackfillTimestamp;
+  if (canDedup && _inFlightMasterCompCompute.has(clientKey)) {
+    return _inFlightMasterCompCompute.get(clientKey);
   }
 
-  const evalRes = await evaluateNativeMasterComparisonsInMemory(ctx, {
-    source,
-    requestedCrmMode,
-  });
-
-  const supabase = getSupabaseAdmin();
-  const nowIso = new Date().toISOString();
-  const summary = evalRes.summary;
-
-  if (requestedCrmMode) {
-    const { data: cfgRow, error: cfgErr } = await supabase
-      .from("pulse_master_sync_configs")
-      .select("crm_comp_controls")
-      .eq("client_id", ctx.clientId)
-      .maybeSingle();
-    if (cfgErr) {
-      throw new Error(`Failed reading pulse_master_sync_configs (${ctx.clientName}): ${cfgErr.message}`);
+  const runCompute = async () => {
+    const schema = await checkPhase6NativeComputeSchemaStatus();
+    if (!schema.schemaReady) {
+      throw new Error("Migration 0017 must be applied in Supabase SQL Editor first.");
     }
-    const prevCtrl = cfgRow?.crm_comp_controls || {};
-    const nextHdrs = Array.isArray(prevCtrl.headerRows) ? clone2D_(prevCtrl.headerRows) : [[], []];
-    while (nextHdrs.length <= 1) nextHdrs.push([]);
-    while (nextHdrs[1].length <= 1) nextHdrs[1].push("");
-    nextHdrs[1][1] = requestedCrmMode;
-    const { error: cfgUpdErr } = await supabase
-      .from("pulse_master_sync_configs")
-      .update({
-        crm_comp_controls: { ...prevCtrl, headerRows: nextHdrs },
+
+    const evalRes = await evaluateNativeMasterComparisonsInMemory(ctx, {
+      source,
+      requestedCrmMode,
+    });
+
+    const supabase = getSupabaseAdmin();
+    const nowIso = new Date().toISOString();
+    const summary = evalRes.summary;
+
+    if (requestedCrmMode) {
+      const { data: cfgRow, error: cfgErr } = await supabase
+        .from("pulse_master_sync_configs")
+        .select("crm_comp_controls")
+        .eq("client_id", ctx.clientId)
+        .maybeSingle();
+      if (cfgErr) {
+        throw new Error(`Failed reading pulse_master_sync_configs (${ctx.clientName}): ${cfgErr.message}`);
+      }
+      const prevCtrl = cfgRow?.crm_comp_controls || {};
+      const nextHdrs = Array.isArray(prevCtrl.headerRows) ? clone2D_(prevCtrl.headerRows) : [[], []];
+      while (nextHdrs.length <= 1) nextHdrs.push([]);
+      while (nextHdrs[1].length <= 1) nextHdrs[1].push("");
+      nextHdrs[1][1] = requestedCrmMode;
+      const { error: cfgUpdErr } = await supabase
+        .from("pulse_master_sync_configs")
+        .update({
+          crm_comp_controls: { ...prevCtrl, headerRows: nextHdrs },
+          updated_at: nowIso,
+        })
+        .eq("client_id", ctx.clientId);
+      if (cfgUpdErr) {
+        throw new Error(`Failed updating crm_comp_controls (${ctx.clientName}): ${cfgUpdErr.message}`);
+      }
+    }
+
+    const upsertRows = MASTER_COMP_TABS.map((tabName) => {
+      const compType = MASTER_COMP_TYPE_BY_TAB[tabName];
+      const grid = compactGrid2D(evalRes.grids[tabName] || []);
+      let discrepancyCount = 0;
+      let secondaryDiscrepancyCount = 0;
+      let scannedCount = 0;
+      let modeLabel = "";
+
+      if (tabName === "InvComp") {
+        discrepancyCount = summary.invDiscrepancyCount;
+        scannedCount = summary.confirmedInvoicesScanned;
+      } else if (tabName === "DirComp") {
+        discrepancyCount = summary.dirDiscrepancyCount;
+        scannedCount = summary.confirmedDirectCostsScanned;
+      } else if (tabName === "CRMComp") {
+        discrepancyCount = summary.crmDashDiscrepancyCount;
+        secondaryDiscrepancyCount = summary.crmAppDiscrepancyCount;
+        scannedCount = evalRes.sheetJobsCount;
+        modeLabel = evalRes.crmMode;
+      }
+
+      return {
+        client_id: ctx.clientId,
+        client_name: ctx.clientName,
+        comparison_type: compType,
+        mode_label: modeLabel,
+        discrepancy_count: discrepancyCount,
+        secondary_discrepancy_count: secondaryDiscrepancyCount,
+        scanned_count: scannedCount,
+        rows_grid: grid,
+        summary_meta: tabName === "InvComp" || tabName === "DirComp" || tabName === "CRMComp" ? summary : {},
+        computed_at: nowIso,
         updated_at: nowIso,
-      })
-      .eq("client_id", ctx.clientId);
-    if (cfgUpdErr) {
-      throw new Error(`Failed updating crm_comp_controls (${ctx.clientName}): ${cfgUpdErr.message}`);
+      };
+    });
+
+    const { error: uErr } = await supabase
+      .from("pulse_master_comparisons")
+      .upsert(upsertRows, { onConflict: "client_id,comparison_type" });
+    if (uErr) {
+      throw new Error(`pulse_master_comparisons upsert failed (${ctx.clientName}): ${uErr.message}`);
     }
-  }
 
-  const upsertRows = MASTER_COMP_TABS.map((tabName) => {
-    const compType = MASTER_COMP_TYPE_BY_TAB[tabName];
-    const grid = compactGrid2D(evalRes.grids[tabName] || []);
-    let discrepancyCount = 0;
-    let secondaryDiscrepancyCount = 0;
-    let scannedCount = 0;
-    let modeLabel = "";
+    const byTab = {};
+    for (const tabName of MASTER_COMP_TABS) {
+      byTab[tabName] = evalRes.grids[tabName] || [];
+    }
+    _masterCompCache.set(clientKey, {
+      expiresAt: Date.now() + MASTER_COMP_TTL_MS,
+      computedAtMs: Date.now(),
+      byTab,
+      summary,
+    });
 
-    if (tabName === "InvComp") {
-      discrepancyCount = summary.invDiscrepancyCount;
-      scannedCount = summary.confirmedInvoicesScanned;
-    } else if (tabName === "DirComp") {
-      discrepancyCount = summary.dirDiscrepancyCount;
-      scannedCount = summary.confirmedDirectCostsScanned;
-    } else if (tabName === "CRMComp") {
-      discrepancyCount = summary.crmDashDiscrepancyCount;
-      secondaryDiscrepancyCount = summary.crmAppDiscrepancyCount;
-      scannedCount = evalRes.sheetJobsCount;
-      modeLabel = evalRes.crmMode;
+    const { data: clRow, error: clErr } = await supabase
+      .from("clients")
+      .select("metadata")
+      .eq("id", ctx.clientId)
+      .maybeSingle();
+    if (!clErr && clRow) {
+      const prevMeta = clRow.metadata && typeof clRow.metadata === "object" ? clRow.metadata : {};
+      const nextState = {
+        ...(prevMeta.native_master_comp_state || {}),
+        lastComputedAt: nowIso,
+        ...(updateBackfillTimestamp ? { lastBackfilledAt: nowIso } : {}),
+        invDiscrepancyCount: summary.invDiscrepancyCount,
+        dirDiscrepancyCount: summary.dirDiscrepancyCount,
+        crmDiscrepancyCount: summary.crmDiscrepancyCount,
+      };
+      const { error: metaUpdErr } = await supabase
+        .from("clients")
+        .update({
+          metadata: {
+            ...prevMeta,
+            native_master_comp_state: nextState,
+          },
+        })
+        .eq("id", ctx.clientId);
+      if (metaUpdErr) {
+        throw new Error(`clients metadata update failed (${ctx.clientName}): ${metaUpdErr.message}`);
+      }
     }
 
     return {
-      client_id: ctx.clientId,
-      client_name: ctx.clientName,
-      comparison_type: compType,
-      mode_label: modeLabel,
-      discrepancy_count: discrepancyCount,
-      secondary_discrepancy_count: secondaryDiscrepancyCount,
-      scanned_count: scannedCount,
-      rows_grid: grid,
-      summary_meta: tabName === "InvComp" || tabName === "DirComp" || tabName === "CRMComp" ? summary : {},
-      computed_at: nowIso,
-      updated_at: nowIso,
+      ...evalRes,
+      persistedRowsCount: upsertRows.length,
+      computedAt: nowIso,
     };
-  });
+  };
 
-  const { error: uErr } = await supabase
-    .from("pulse_master_comparisons")
-    .upsert(upsertRows, { onConflict: "client_id,comparison_type" });
-  if (uErr) {
-    throw new Error(`pulse_master_comparisons upsert failed (${ctx.clientName}): ${uErr.message}`);
+  if (!canDedup) {
+    return runCompute();
   }
 
-  const byTab = {};
-  for (const tabName of MASTER_COMP_TABS) {
-    byTab[tabName] = evalRes.grids[tabName] || [];
-  }
-  _masterCompCache.set(String(ctx.clientName).trim().toLowerCase(), {
-    expiresAt: Date.now() + MASTER_COMP_TTL_MS,
-    computedAtMs: Date.now(),
-    byTab,
-    summary,
-  });
-
-  const { data: clRow, error: clErr } = await supabase
-    .from("clients")
-    .select("metadata")
-    .eq("id", ctx.clientId)
-    .maybeSingle();
-  if (!clErr && clRow) {
-    const prevMeta = clRow.metadata && typeof clRow.metadata === "object" ? clRow.metadata : {};
-    const nextState = {
-      ...(prevMeta.native_master_comp_state || {}),
-      lastComputedAt: nowIso,
-      ...(updateBackfillTimestamp ? { lastBackfilledAt: nowIso } : {}),
-      invDiscrepancyCount: summary.invDiscrepancyCount,
-      dirDiscrepancyCount: summary.dirDiscrepancyCount,
-      crmDiscrepancyCount: summary.crmDiscrepancyCount,
-    };
-    const { error: metaUpdErr } = await supabase
-      .from("clients")
-      .update({
-        metadata: {
-          ...prevMeta,
-          native_master_comp_state: nextState,
-        },
-      })
-      .eq("id", ctx.clientId);
-    if (metaUpdErr) {
-      throw new Error(`clients metadata update failed (${ctx.clientName}): ${metaUpdErr.message}`);
+  const computePromise = runCompute();
+  _inFlightMasterCompCompute.set(clientKey, computePromise);
+  try {
+    return await computePromise;
+  } finally {
+    if (_inFlightMasterCompCompute.get(clientKey) === computePromise) {
+      _inFlightMasterCompCompute.delete(clientKey);
     }
   }
-
-  return {
-    ...evalRes,
-    persistedRowsCount: upsertRows.length,
-    computedAt: nowIso,
-  };
 }
 
 export async function loadPersistedOrEvaluateMasterComparisonTab(
   ctxOrClientName,
   tabName,
-  { maxAgeMs = 15000 } = {}
+  { maxAgeMs = 0 } = {}
 ) {
   const ctx =
     ctxOrClientName && typeof ctxOrClientName === "object" && ctxOrClientName.clientId
@@ -562,27 +589,30 @@ export async function loadPersistedOrEvaluateMasterComparisonTab(
     return clone2D_(cached.byTab[tabName]);
   }
 
-  const schema = await checkPhase6NativeComputeSchemaStatus();
-  if (!schema.schemaReady) {
-    const ev = await evaluateNativeMasterComparisonsInMemory(ctx, { source: "in_memory" });
-    return clone2D_(ev.grids[tabName] || []);
+  const normalizedMaxAgeMs = maxAgeMs > 0 ? maxAgeMs : 0;
+  const loadKey = `${clientKey}::${normalizedMaxAgeMs}`;
+  if (_inFlightMasterCompLoad.has(loadKey)) {
+    const sharedByTab = await _inFlightMasterCompLoad.get(loadKey);
+    return clone2D_(sharedByTab?.[tabName] || []);
   }
 
-  const supabase = getSupabaseAdmin();
-  const { data: rows, error } = await supabase
-    .from("pulse_master_comparisons")
-    .select("comparison_type, rows_grid, computed_at")
-    .eq("client_id", ctx.clientId);
+  const loadPromise = (async () => {
+    const schema = await checkPhase6NativeComputeSchemaStatus();
+    if (!schema.schemaReady) {
+      const ev = await evaluateNativeMasterComparisonsInMemory(ctx, { source: "in_memory" });
+      return ev.grids || {};
+    }
 
-  if (!error && Array.isArray(rows) && rows.length >= MASTER_COMP_TABS.length) {
-    const newestMs = rows.reduce((m, r) => {
-      const t = r.computed_at ? Date.parse(r.computed_at) : 0;
-      return t > m ? t : m;
-    }, 0);
-    const [mSyncRes, rCfgRes, bpRes] = await Promise.all([
+    const supabase = getSupabaseAdmin();
+    // Metadata-first staleness check avoids fetching 1+ MB of JSONB across all 11 tabs when stale
+    const [metaRes, mSyncRes, rCfgRes, bpRes] = await Promise.all([
+      supabase
+        .from("pulse_master_comparisons")
+        .select("comparison_type, computed_at")
+        .eq("client_id", ctx.clientId),
       supabase
         .from("pulse_master_sync_configs")
-        .select("updated_at")
+        .select("updated_at, baseline_at:sheet_bridge_baseline->>updatedAt, prev_master_at:sheet_bridge_baseline->>prevMasterUpdatedAt")
         .eq("client_id", ctx.clientId)
         .maybeSingle(),
       supabase
@@ -596,35 +626,77 @@ export async function loadPersistedOrEvaluateMasterComparisonTab(
         .eq("client_id", ctx.clientId)
         .in("tab_name", ["Confirmed", "Pipeline", "Outgoings", "OutgNotes"]),
     ]);
-    let dbMaxUpdatedMs = 0;
-    for (const u of [mSyncRes?.data?.updated_at, rCfgRes?.data?.updated_at]) {
-      const t = u ? Date.parse(u) : 0;
-      if (t > dbMaxUpdatedMs) dbMaxUpdatedMs = t;
-    }
-    for (const row of bpRes?.data || []) {
-      const t = row?.updated_at ? Date.parse(row.updated_at) : 0;
-      if (t > dbMaxUpdatedMs) dbMaxUpdatedMs = t;
-    }
-    const effectiveLastEditMs = Math.max(lastEditMs, dbMaxUpdatedMs);
-    const staleByClientEdit = effectiveLastEditMs > 0 && newestMs < effectiveLastEditMs;
-    const staleByAge = maxAgeMs > 0 && Date.now() - newestMs > maxAgeMs;
-    if (!staleByClientEdit && !staleByAge) {
-      const byTab = {};
-      for (const [t, cType] of Object.entries(MASTER_COMP_TYPE_BY_TAB)) {
-        const found = rows.find((r) => r.comparison_type === cType);
-        byTab[t] = Array.isArray(found?.rows_grid) ? found.rows_grid : [];
+
+    const metaRows = metaRes?.data;
+    if (!metaRes?.error && Array.isArray(metaRows) && metaRows.length >= MASTER_COMP_TABS.length) {
+      const newestMs = metaRows.reduce((m, r) => {
+        const t = r.computed_at ? Date.parse(r.computed_at) : 0;
+        return t > m ? t : m;
+      }, 0);
+
+      let effectiveMasterSyncUpdatedMs = 0;
+      if (mSyncRes?.data?.updated_at) {
+        const syncU = Date.parse(mSyncRes.data.updated_at) || 0;
+        const baseU = mSyncRes.data.baseline_at ? (Date.parse(mSyncRes.data.baseline_at) || 0) : 0;
+        if (baseU > 0 && Math.abs(syncU - baseU) < 10000) {
+          effectiveMasterSyncUpdatedMs = mSyncRes.data.prev_master_at
+            ? (Date.parse(mSyncRes.data.prev_master_at) || 0)
+            : 0;
+        } else {
+          effectiveMasterSyncUpdatedMs = syncU;
+        }
       }
-      _masterCompCache.set(clientKey, {
-        expiresAt: Date.now() + MASTER_COMP_TTL_MS,
-        computedAtMs: newestMs,
-        byTab,
-      });
-      return clone2D_(byTab[tabName] || []);
+
+      let dbMaxUpdatedMs = effectiveMasterSyncUpdatedMs;
+      if (rCfgRes?.data?.updated_at) {
+        const t = Date.parse(rCfgRes.data.updated_at) || 0;
+        if (t > dbMaxUpdatedMs) dbMaxUpdatedMs = t;
+      }
+      for (const row of bpRes?.data || []) {
+        const t = row?.updated_at ? Date.parse(row.updated_at) : 0;
+        if (t > dbMaxUpdatedMs) dbMaxUpdatedMs = t;
+      }
+      const effectiveLastEditMs = Math.max(lastEditMs, dbMaxUpdatedMs);
+      const staleByClientEdit = effectiveLastEditMs > 0 && newestMs < effectiveLastEditMs;
+      const staleByAge = normalizedMaxAgeMs > 0 && Date.now() - newestMs > normalizedMaxAgeMs;
+      if (!staleByClientEdit && !staleByAge) {
+        const { data: allRows, error: allErr } = await supabase
+          .from("pulse_master_comparisons")
+          .select("comparison_type, rows_grid, computed_at")
+          .eq("client_id", ctx.clientId);
+        if (!allErr && Array.isArray(allRows) && allRows.length > 0) {
+          const byTab = {};
+          for (const row of allRows) {
+            const mappedTab = MASTER_TAB_BY_COMP_TYPE[row.comparison_type];
+            if (mappedTab && Array.isArray(row.rows_grid)) {
+              byTab[mappedTab] = row.rows_grid;
+            }
+          }
+          if (Array.isArray(byTab[tabName])) {
+            _masterCompCache.set(clientKey, {
+              expiresAt: Date.now() + MASTER_COMP_TTL_MS,
+              computedAtMs: newestMs,
+              byTab,
+            });
+            return byTab;
+          }
+        }
+      }
+    }
+
+    const persisted = await computeAndPersistNativeMasterComparisons(ctx, { source: "db" });
+    return persisted.grids || {};
+  })();
+
+  _inFlightMasterCompLoad.set(loadKey, loadPromise);
+  try {
+    const byTab = await loadPromise;
+    return clone2D_(byTab?.[tabName] || []);
+  } finally {
+    if (_inFlightMasterCompLoad.get(loadKey) === loadPromise) {
+      _inFlightMasterCompLoad.delete(loadKey);
     }
   }
-
-  const persisted = await computeAndPersistNativeMasterComparisons(ctx, { source: "db" });
-  return clone2D_(persisted.grids[tabName] || []);
 }
 
 export async function loadMasterContextTabFromConfig(ctxOrClientName, tabName) {

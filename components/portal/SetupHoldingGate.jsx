@@ -283,6 +283,7 @@ export default function SetupHoldingGate({
     <>
       <Head>
         <title>{clientName ? `Pulse - ${clientName}` : "Pulse"}</title>
+        <link rel="preload" as="image" href="/pulselogo-transparent.png" />
       </Head>
 
       <div
@@ -367,6 +368,10 @@ export default function SetupHoldingGate({
                 <img
                   src="/pulselogo-transparent.png"
                   alt="Pulse"
+                  width={1024}
+                  height={410}
+                  loading="eager"
+                  decoding="sync"
                   style={{
                     height: "45px",
                     width: "auto",
@@ -722,6 +727,10 @@ export default function SetupHoldingGate({
               <img
                 src="/pulselogo-transparent.png"
                 alt="Pulse"
+                width={1024}
+                height={410}
+                loading="eager"
+                decoding="sync"
                 style={{
                   height: "36px",
                   width: "auto",

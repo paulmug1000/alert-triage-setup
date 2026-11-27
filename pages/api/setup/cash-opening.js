@@ -98,6 +98,9 @@ export default async function handler(req, res) {
             accounts: Array.isArray(data?.accounts)
               ? data.accounts.map(({ targetRow, targetCol0, targetColLetter, targetCellRef, ...rest }) => rest)
               : data?.accounts,
+            entries: Array.isArray(data?.entries)
+              ? data.entries.map(({ targetRow, targetCol0, targetColLetter, targetCellRef, ...rest }) => rest)
+              : data?.entries,
           };
       return res.status(200).json({ success: true, ...safeData });
     }

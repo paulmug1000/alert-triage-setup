@@ -226,9 +226,9 @@ export function parseReconPeriodTab({
     directCosts: extractRangeSlice(47, 74, 45, 62),
   };
 
-  // 4. P&L Adds CZ3:DA60 (rows 2..59, cols 103..104)
+  // 4. P&L Adds CZ3:DA120 (rows 2..119, cols 103..104)
   const plAddsJson = [];
-  for (let r = 2; r <= 59 && r < grid.length; r++) {
+  for (let r = 2; r <= 119 && r < grid.length; r++) {
     const row = grid[r] || [];
     const acc = str_(row[103]);
     const amt = row[104] ?? "";
@@ -627,6 +627,136 @@ export async function getPhase4ReconOverviewStats() {
 // 4. IDEMPOTENT RECONCILE, BACKFILL & DELETE HELPERS
 // ============================================================================
 
+function headerCellToMonthKey_(val) {
+  if (val === null || val === undefined || val === "") return "";
+  if (typeof val === "number" && Number.isFinite(val) && val >= 25000 && val <= 80000) {
+    const dt = new Date(Date.UTC(1899, 11, 30) + Math.round(val) * 86400000);
+    if (!Number.isNaN(dt.getTime())) {
+      return `${String(dt.getUTCFullYear()).slice(-2)}${String(dt.getUTCMonth() + 1).padStart(2, "0")}`;
+    }
+  }
+  const s = String(val).trim();
+  if (!s) return "";
+  if (/^\d{4}$/.test(s)) return s;
+  const iso = s.match(/^(\d{4})[-/](\d{1,2})/);
+  if (iso) return `${iso[1].slice(-2)}${String(iso[2]).padStart(2, "0")}`;
+  const monthNames3 = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"];
+  const m = s.match(/^([A-Za-z]{3})[a-z]*[\s\-']*(\d{2,4})$/);
+  if (m) {
+    const mi = monthNames3.indexOf(m[1].toLowerCase());
+    if (mi >= 0) {
+      let yr = parseInt(m[2], 10);
+      if (yr >= 2000) yr -= 2000;
+      else if (yr >= 100) yr %= 100;
+      return `${String(yr).padStart(2, "0")}${String(mi + 1).padStart(2, "0")}`;
+    }
+  }
+  return "";
+}
+
+/**
+ * Rebuilds the `PLAdds` summary grid from `bank_recon_periods.pl_adds_json` (`CZ3:DA120`).
+ * Only overwrites month columns whose period row has populated `pl_adds_json` or `col_count >= 104`,
+ * preserving legacy pre-CZ:DA (`col_count < 104` with `pl_adds_json = []`) columns intact.
+ */
+export function rebuildReconPlAddsGridFromPeriods({
+  plAddsGrid = [],
+  dataGrid = [],
+  periods = [],
+} = {}) {
+  const baseGrid = Array.isArray(plAddsGrid) ? plAddsGrid.map((r) => (Array.isArray(r) ? [...r] : [])) : [];
+  if (baseGrid.length === 0) return [];
+
+  const periodByMonth = new Map();
+  for (const p of periods || []) {
+    const mk = str_(p?.month_key);
+    if (mk) periodByMonth.set(mk, p);
+  }
+
+  const headerRow = baseGrid[0] || [];
+  const colToMonth = new Map();
+  for (let c = 1; c < headerRow.length; c++) {
+    const mk = headerCellToMonthKey_(headerRow[c]);
+    if (mk) colToMonth.set(c, mk);
+  }
+  if (colToMonth.size === 0) return compactGrid2D(baseGrid);
+
+  let totalRowIdx = -1;
+  const existingCatRows = new Set();
+  for (let r = 1; r < baseGrid.length; r++) {
+    const cat = str_(baseGrid[r]?.[0]);
+    if (!cat) continue;
+    const low = cat.toLowerCase();
+    if (low === "[total for month]") {
+      totalRowIdx = r;
+    } else {
+      existingCatRows.add(low);
+    }
+  }
+
+  const extraCatsToAdd = [];
+  for (const [, p] of periodByMonth.entries()) {
+    const hasModernPlAdds =
+      (Array.isArray(p?.pl_adds_json) && p.pl_adds_json.length > 0) ||
+      Number(p?.col_count || 0) >= 104;
+    if (!hasModernPlAdds) continue;
+    for (const entry of p?.pl_adds_json || []) {
+      const cat = str_(entry?.accountName);
+      if (!cat) continue;
+      const low = cat.toLowerCase();
+      if (low === "[total for month]" || existingCatRows.has(low)) continue;
+      if (Math.abs(num_(entry?.amount)) > 1e-9) {
+        existingCatRows.add(low);
+        extraCatsToAdd.push(cat);
+      }
+    }
+  }
+  for (const cat of extraCatsToAdd) {
+    const newRow = new Array(headerRow.length).fill("");
+    newRow[0] = cat;
+    if (totalRowIdx >= 0) {
+      baseGrid.splice(totalRowIdx, 0, newRow);
+      totalRowIdx++;
+    } else {
+      baseGrid.push(newRow);
+    }
+  }
+  void dataGrid;
+
+  for (const [colIdx, mKey] of colToMonth.entries()) {
+    const period = periodByMonth.get(mKey);
+    if (!period) continue;
+    const hasModernPlAdds =
+      (Array.isArray(period.pl_adds_json) && period.pl_adds_json.length > 0) ||
+      Number(period.col_count || 0) >= 104;
+    if (!hasModernPlAdds) continue;
+
+    const amtByCatLower = new Map();
+    for (const entry of period.pl_adds_json || []) {
+      const accLower = str_(entry?.accountName).toLowerCase();
+      if (!accLower) continue;
+      amtByCatLower.set(accLower, (amtByCatLower.get(accLower) || 0) + num_(entry?.amount));
+    }
+
+    let colSum = 0;
+    for (let r = 1; r < baseGrid.length; r++) {
+      if (r === totalRowIdx) continue;
+      const cat = str_(baseGrid[r]?.[0]);
+      if (!cat) continue;
+      const val = Math.round((amtByCatLower.get(cat.toLowerCase()) || 0) * 100) / 100;
+      while (baseGrid[r].length <= colIdx) baseGrid[r].push("");
+      baseGrid[r][colIdx] = val;
+      colSum += val;
+    }
+    if (totalRowIdx >= 0) {
+      while (baseGrid[totalRowIdx].length <= colIdx) baseGrid[totalRowIdx].push("");
+      baseGrid[totalRowIdx][colIdx] = Math.round(colSum * 100) / 100;
+    }
+  }
+
+  return compactGrid2D(baseGrid);
+}
+
 async function runSingleReconReconcilePass_(ctx, tabNames = null, options = {}) {
   const schema = await checkPhase4ReconSchemaStatus();
   if (!schema.schemaReady) return null;
@@ -640,9 +770,11 @@ async function runSingleReconReconcilePass_(ctx, tabNames = null, options = {}) 
       : null;
   const byTab = new Map();
   let reconRows = [];
+  let loadedBundle = null;
 
   if (recordsOverride || ctx.syncOrchestratorMode === "native") {
     const bundle = await preloadClientRelationalReconBundle(ctx, { source: "db" });
+    loadedBundle = bundle;
     if (bundle) {
       for (const mKey of bundle.periodByMonth?.keys?.() || []) {
         const rec = reconstructRelationalReconTabFromBundle(bundle, mKey);
@@ -695,46 +827,7 @@ async function runSingleReconReconcilePass_(ctx, tabNames = null, options = {}) 
     tabNames === null || tabNames === undefined || Boolean(options.forceFullUpsert);
   const requestedSet = new Set(Array.isArray(tabNames) ? tabNames : []);
 
-  // 1. Always refresh pulse_recon_configs when configs changed or full upsert
-  const shouldSyncConfig =
-    targetAllMonths ||
-    RECON_CONFIG_TABS.some((t) => requestedSet.has(t)) ||
-    reconRows.some((r) => isReconMonthTab(r.tab_name) && requestedSet.has(r.tab_name));
-
-  if (shouldSyncConfig) {
-    const plAddsRec = byTab.get("PLAdds");
-    const dataRec = byTab.get("Data");
-    const kiRec = byTab.get("KeyInfo");
-    const tplRec = byTab.get("Template");
-    const cfgPayload = {
-      client_id: ctx.clientId,
-      client_name: ctx.clientName,
-      pl_adds_grid: Array.isArray(plAddsRec?.values_grid) ? compactGrid2D(plAddsRec.values_grid) : [],
-      data_grid: Array.isArray(dataRec?.values_grid) ? compactGrid2D(dataRec.values_grid) : [],
-      key_info_grid: Array.isArray(kiRec?.values_grid) ? compactGrid2D(kiRec.values_grid) : [],
-      template_meta: tplRec
-        ? {
-          row_count: tplRec.row_count || 0,
-          col_count: tplRec.col_count || 0,
-          values_grid: Array.isArray(tplRec.values_grid) ? compactGrid2D(tplRec.values_grid) : [],
-          formulas_grid: Array.isArray(tplRec.formulas_grid) ? compactGrid2D(tplRec.formulas_grid) : [],
-          notes_grid: tplRec.notes_grid || {},
-        }
-        : {},
-      tab_list: reconRows.map((r) => ({
-        tab_name: r.tab_name,
-        row_count: r.row_count || 0,
-        col_count: r.col_count || 0,
-      })),
-      updated_at: new Date().toISOString(),
-    };
-    const { error: cfgErr } = await supabase
-      .from("pulse_recon_configs")
-      .upsert(cfgPayload, { onConflict: "client_id" });
-    if (cfgErr) throw new Error(`pulse_recon_configs upsert failed: ${cfgErr.message}`);
-  }
-
-  // 2. Sync targeted (or all) YYMM periods and items
+  // 1. Sync targeted (or all) YYMM periods and items FIRST so pl_adds_json is fresh before rebuilding PLAdds
   const allMonthTabs = reconRows.map((r) => r.tab_name).filter((t) => isReconMonthTab(t));
   const targetMonths = targetAllMonths
     ? allMonthTabs
@@ -742,6 +835,10 @@ async function runSingleReconReconcilePass_(ctx, tabNames = null, options = {}) 
 
   let totalReconciled = 0;
   let totalUnreconciled = 0;
+  const updatedPeriodByMonth = new Map();
+  for (const p of loadedBundle?.periods || []) {
+    if (p?.month_key) updatedPeriodByMonth.set(p.month_key, p);
+  }
 
   if (targetMonths.length > 0) {
     const periodRows = [];
@@ -756,6 +853,7 @@ async function runSingleReconReconcilePass_(ctx, tabNames = null, options = {}) 
         notesGrid: rec?.notes_grid || {},
       });
       periodRows.push(parsed.periodRow);
+      updatedPeriodByMonth.set(mKey, parsed.periodRow);
       parsedByMonth.set(mKey, parsed.items);
     }
 
@@ -812,6 +910,79 @@ async function runSingleReconReconcilePass_(ctx, tabNames = null, options = {}) 
         .delete()
         .in("id", staleItemIds.slice(i, i + 200));
       if (delErr) throw new Error(`bank_recon_items delete failed: ${delErr.message}`);
+    }
+  }
+
+  // 2. Refresh pulse_recon_configs when configs or any YYMM period changed (recomputing PLAdds from updated periods)
+  const shouldSyncConfig =
+    targetAllMonths ||
+    RECON_CONFIG_TABS.some((t) => requestedSet.has(t)) ||
+    reconRows.some((r) => isReconMonthTab(r.tab_name) && requestedSet.has(r.tab_name));
+
+  if (shouldSyncConfig) {
+    if (!loadedBundle) {
+      const dbPeriods = await fetchAllRowsByClientId_(supabase, "bank_recon_periods", ctx.clientId, "month_key").catch(() => []);
+      for (const p of dbPeriods) {
+        if (p?.month_key && !updatedPeriodByMonth.has(p.month_key)) {
+          updatedPeriodByMonth.set(p.month_key, p);
+        }
+      }
+    }
+    const plAddsRec = byTab.get("PLAdds");
+    const dataRec = byTab.get("Data");
+    const kiRec = byTab.get("KeyInfo");
+    const tplRec = byTab.get("Template");
+    const rawPlAddsGrid = Array.isArray(plAddsRec?.values_grid)
+      ? plAddsRec.values_grid
+      : Array.isArray(loadedBundle?.config?.pl_adds_grid)
+        ? loadedBundle.config.pl_adds_grid
+        : [];
+    const dataGrid = Array.isArray(dataRec?.values_grid) ? compactGrid2D(dataRec.values_grid) : [];
+    const rebuiltPlAddsGrid = rebuildReconPlAddsGridFromPeriods({
+      plAddsGrid: rawPlAddsGrid,
+      dataGrid,
+      periods: [...updatedPeriodByMonth.values()],
+    });
+    const cfgPayload = {
+      client_id: ctx.clientId,
+      client_name: ctx.clientName,
+      pl_adds_grid: rebuiltPlAddsGrid,
+      data_grid: dataGrid,
+      key_info_grid: Array.isArray(kiRec?.values_grid) ? compactGrid2D(kiRec.values_grid) : [],
+      template_meta: tplRec
+        ? {
+          row_count: tplRec.row_count || 0,
+          col_count: tplRec.col_count || 0,
+          values_grid: Array.isArray(tplRec.values_grid) ? compactGrid2D(tplRec.values_grid) : [],
+          formulas_grid: Array.isArray(tplRec.formulas_grid) ? compactGrid2D(tplRec.formulas_grid) : [],
+          notes_grid: tplRec.notes_grid || {},
+        }
+        : {},
+      tab_list: reconRows.map((r) => ({
+        tab_name: r.tab_name,
+        row_count: r.row_count || 0,
+        col_count: r.col_count || 0,
+      })),
+      updated_at: new Date().toISOString(),
+    };
+    const { error: cfgErr } = await supabase
+      .from("pulse_recon_configs")
+      .upsert(cfgPayload, { onConflict: "client_id" });
+    if (cfgErr) throw new Error(`pulse_recon_configs upsert failed: ${cfgErr.message}`);
+
+    if (ctx.masterComputeMode === "native" && rebuiltPlAddsGrid.length > 0 && !options.skipNativeCompRefresh) {
+      try {
+        const {
+          syncMasterContextGridsToConfig,
+          invalidateClientNativeMasterCompCache,
+          computeAndPersistNativeMasterComparisons,
+        } = await import("./nativeMasterComparisonService.js");
+        await syncMasterContextGridsToConfig(ctx, { PLAdds: rebuiltPlAddsGrid });
+        invalidateClientNativeMasterCompCache(ctx.clientName);
+        await computeAndPersistNativeMasterComparisons(ctx, { source: "db" });
+      } catch (compErr) {
+        console.warn(`[relationalReconService] Native comparison refresh warning (${ctx.clientName}):`, compErr?.message);
+      }
     }
   }
 
@@ -1270,7 +1441,15 @@ export function reconstructRelationalReconTabFromBundle(bundle, tabName) {
       updated_at: period.updated_at || cfg.updated_at || null,
     };
   } else if (cleanTab === "PLAdds") {
-    const g = Array.isArray(cfg.pl_adds_grid) ? compactGrid2D(cfg.pl_adds_grid) : [];
+    const rawPlAdds = Array.isArray(cfg.pl_adds_grid) ? cfg.pl_adds_grid : [];
+    const g =
+      rawPlAdds.length > 0
+        ? rebuildReconPlAddsGridFromPeriods({
+          plAddsGrid: rawPlAdds,
+          dataGrid: Array.isArray(cfg.data_grid) ? cfg.data_grid : [],
+          periods: Array.isArray(bundle.periods) ? bundle.periods : [],
+        })
+        : [];
     const hasTab = (cfg.tab_list || []).some((t) => t.tab_name === "PLAdds") || g.length > 0;
     if (hasTab) {
       out = {
@@ -1566,22 +1745,22 @@ export async function verifyRelationalReconParity({
         syncMode === "native"
           ? Promise.resolve([])
           : (async () => {
-              const all = [];
-              for (let from = 0; ; from += 500) {
-                const { data, error: gErr } = await supabase
-                  .from("master_sheet_grids")
-                  .select("tab_name, values_grid, notes_grid")
-                  .eq("client_name", cl.client_name)
-                  .eq("sheet_role", "recon")
-                  .order("tab_name", { ascending: true })
-                  .range(from, from + 499);
-                if (gErr) throw new Error(`Recon grids load error: ${gErr.message}`);
-                if (!Array.isArray(data) || data.length === 0) break;
-                all.push(...data);
-                if (data.length < 500) break;
-              }
-              return all;
-            })(),
+            const all = [];
+            for (let from = 0; ; from += 500) {
+              const { data, error: gErr } = await supabase
+                .from("master_sheet_grids")
+                .select("tab_name, values_grid, notes_grid")
+                .eq("client_name", cl.client_name)
+                .eq("sheet_role", "recon")
+                .order("tab_name", { ascending: true })
+                .range(from, from + 499);
+              if (gErr) throw new Error(`Recon grids load error: ${gErr.message}`);
+              if (!Array.isArray(data) || data.length === 0) break;
+              all.push(...data);
+              if (data.length < 500) break;
+            }
+            return all;
+          })(),
       ]);
 
       const managedGridRows = gridRows.filter((g) => isManagedReconTab(g.tab_name));
@@ -1760,22 +1939,22 @@ export async function verifyRelationalReconReadParity({
         syncMode === "native"
           ? Promise.resolve([])
           : (async () => {
-              const all = [];
-              for (let from = 0; ; from += 500) {
-                const { data, error: gErr } = await supabase
-                  .from("master_sheet_grids")
-                  .select("tab_name, values_grid, notes_grid")
-                  .eq("client_name", cl.client_name)
-                  .eq("sheet_role", "recon")
-                  .order("tab_name", { ascending: true })
-                  .range(from, from + 499);
-                if (gErr) throw new Error(`Recon grids load error: ${gErr.message}`);
-                if (!Array.isArray(data) || data.length === 0) break;
-                all.push(...data);
-                if (data.length < 500) break;
-              }
-              return all;
-            })(),
+            const all = [];
+            for (let from = 0; ; from += 500) {
+              const { data, error: gErr } = await supabase
+                .from("master_sheet_grids")
+                .select("tab_name, values_grid, notes_grid")
+                .eq("client_name", cl.client_name)
+                .eq("sheet_role", "recon")
+                .order("tab_name", { ascending: true })
+                .range(from, from + 499);
+              if (gErr) throw new Error(`Recon grids load error: ${gErr.message}`);
+              if (!Array.isArray(data) || data.length === 0) break;
+              all.push(...data);
+              if (data.length < 500) break;
+            }
+            return all;
+          })(),
       ]);
 
       const managedTabs = rawRows.filter((r) => isManagedReconTab(r.tab_name));

@@ -271,7 +271,11 @@ export default async function handler(req, res) {
         setDateConf: true,
       });
       if (!varRes.success) {
-        return res.status(400).json({ success: false, error: varRes.error || "Failed to confirm variable retainer" });
+        const rawErr = varRes.error || "Failed to confirm variable retainer";
+        return res.status(400).json({
+          success: false,
+          error: sessionUser.isAdmin ? rawErr : sanitizeSpreadsheetTerms(rawErr),
+        });
       }
       let likelihoodCol = "AN";
       let copiedStatusCol = "DD";
@@ -300,8 +304,9 @@ export default async function handler(req, res) {
           },
         })
       );
+      const confirmSbCtx = await resolveMasterSheetIdForClient_(sheets, clientSheetId, verifiedClientName || clientName || "").catch(() => null);
       await flushImmediateAndScheduleBackgroundClientRecomputes(sheets, verifiedClientName || clientName || "").catch(() => { });
-      await invalidatePmaClientCache(clientSheetId, null, ["jobs", "invoices", "outgoings", "retainers", "cash", "views"]).catch(() => { });
+      await invalidatePmaClientCache(clientSheetId, confirmSbCtx || null, ["jobs", "invoices", "outgoings", "retainers", "cash", "views"]).catch(() => { });
       return res.status(200).json({
         success: true,
         confirmedRow: varRes.firstRowNum,
@@ -672,7 +677,8 @@ export default async function handler(req, res) {
 
     // 10. Invalidate In-Memory and Redis caches across both Portal and PMA
     try {
-      await invalidatePmaClientCache(clientSheetId, null, ["jobs", "invoices", "outgoings", "retainers", "cash", "views"]);
+      const confirmMasterId = await resolveMasterSheetIdForClient_(sheets, clientSheetId, verifiedClientName || clientName || "").catch(() => null);
+      await invalidatePmaClientCache(clientSheetId, confirmMasterId || null, ["jobs", "invoices", "outgoings", "retainers", "cash", "views"]);
     } catch (cacheErr) {
       console.warn("⚠️ Cache invalidation warning:", cacheErr.message);
     }

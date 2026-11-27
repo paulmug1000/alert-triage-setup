@@ -9,12 +9,61 @@ import {
   assertSetupClientSheetBinding,
   canAccessPma,
   isReadOnlySession,
+  installSheetIdBoundary,
 } from "../../../services/userPermissions.js";
 import { getSheetsClient } from "../../../services/sheetsClient.js";
 import { scanBlankCodePipelineMatches, applyBlankCodePipelineMatches } from "../../../services/crmPipelineMatchService.js";
 import { runNativeMasterAmdAction } from "../../../services/masterSyncEngine.js";
 import { resolveSupabaseSheetContext } from "../../../services/masterEngineService.js";
 import { assertTrustedOrigin, sanitizeSpreadsheetTerms } from "../../../utils/helpers.js";
+
+function scrubMatchItemRow_(item) {
+  if (!item || typeof item !== "object") return item;
+  const { rowNum, ...rest } = item;
+  return {
+    ...rest,
+    ...(rowNum !== undefined ? { lineId: rowNum } : {}),
+  };
+}
+
+function redactMatchScanForUser_(resObj, isAdmin) {
+  if (isAdmin || !resObj || typeof resObj !== "object") return resObj;
+  const out = { ...resObj };
+  if (Array.isArray(out.clearMatches)) {
+    out.clearMatches = out.clearMatches.map((m) => ({
+      ...m,
+      pipelineRow: scrubMatchItemRow_(m?.pipelineRow),
+      crmDeal: scrubMatchItemRow_(m?.crmDeal),
+    }));
+  }
+  if (Array.isArray(out.possibleMatches)) {
+    out.possibleMatches = out.possibleMatches.map((m) => ({
+      ...m,
+      crmDeal: scrubMatchItemRow_(m?.crmDeal),
+      candidateOptions: Array.isArray(m?.candidateOptions)
+        ? m.candidateOptions.map(scrubMatchItemRow_)
+        : m?.candidateOptions,
+    }));
+  }
+  if (Array.isArray(out.blankCodePipelineRows)) {
+    out.blankCodePipelineRows = out.blankCodePipelineRows.map(scrubMatchItemRow_);
+  }
+  if (Array.isArray(out.unmatchedDeals)) {
+    out.unmatchedDeals = out.unmatchedDeals.map(scrubMatchItemRow_);
+  }
+  if (Array.isArray(out.skipped)) {
+    out.skipped = out.skipped.map((s) => ({
+      ...(s || {}),
+      ...(s?.rowNum !== undefined ? { lineId: s.rowNum } : {}),
+      rowNum: undefined,
+      reason: s?.reason ? sanitizeSpreadsheetTerms(s.reason) : s?.reason,
+    }));
+  }
+  if (typeof out.message === "string") {
+    out.message = sanitizeSpreadsheetTerms(out.message);
+  }
+  return out;
+}
 
 export const config = {
   maxDuration: 120,
@@ -28,6 +77,8 @@ export default async function handler(req, res) {
   if (!canAccessPma(sessionUser)) {
     return res.status(403).json({ success: false, error: "Access denied: PMA configuration requires staff privileges." });
   }
+  installSheetIdBoundary(req, res, sessionUser);
+  const isSysAdmin = Boolean(!sessionUser.isReadOnly && (sessionUser.isAdmin || sessionUser.role === "Admin"));
 
   const rl = await checkRateLimit("setup-match-crm-pipeline", sessionUser.email || getTrustedClientIp(req), 20, 60);
   if (!rl.allowed) {
@@ -58,7 +109,7 @@ export default async function handler(req, res) {
   if (req.method === "GET") {
     try {
       const scanResult = await scanBlankCodePipelineMatches({ clientName, masterSheetId });
-      return res.status(200).json(scanResult);
+      return res.status(200).json(redactMatchScanForUser_(scanResult, isSysAdmin));
     } catch (err) {
       console.error("GET /api/setup/match-crm-pipeline error:", err);
       return res.status(500).json({ success: false, error: sessionUser.isAdmin ? err.message : sanitizeSpreadsheetTerms(err.message || "Request failed.") });
@@ -86,7 +137,9 @@ export default async function handler(req, res) {
           });
         }
         const scanResult = await scanBlankCodePipelineMatches({ clientName, masterSheetId });
-        return res.status(200).json({ ...scanResult, pulledFresh: supaCtx?.masterMode === "supabase" });
+        return res.status(200).json(
+          redactMatchScanForUser_({ ...scanResult, pulledFresh: supaCtx?.masterMode === "supabase" }, isSysAdmin)
+        );
       }
 
       const result = await applyBlankCodePipelineMatches({
@@ -95,7 +148,7 @@ export default async function handler(req, res) {
         matches,
         userEmail: sessionUser.email || "Admin",
       });
-      return res.status(200).json(result);
+      return res.status(200).json(redactMatchScanForUser_(result, isSysAdmin));
     } catch (err) {
       console.error("POST /api/setup/match-crm-pipeline error:", err);
       return res.status(500).json({ success: false, error: sessionUser.isAdmin ? err.message : sanitizeSpreadsheetTerms(err.message || "Request failed.") });

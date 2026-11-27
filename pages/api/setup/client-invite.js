@@ -21,6 +21,7 @@ import {
   canAccessPma,
   isUserAuthorizedForClient,
   assertSetupClientSheetBinding,
+  installSheetIdBoundary,
 } from "../../../services/userPermissions.js";
 import {
   updateClientChecklistTask,
@@ -91,6 +92,7 @@ export default async function handler(req, res) {
   if (!canAccessPma(sessionUser)) {
     return res.status(403).json({ success: false, error: "Access denied: Staff privileges required." });
   }
+  installSheetIdBoundary(req, res, sessionUser);
 
   const isSysAdmin = Boolean(!sessionUser.isReadOnly && (sessionUser.isAdmin || sessionUser.role === "Admin"));
   const rlBucket = req.method === "GET" ? "setup-client-invite-get" : "setup-client-invite";

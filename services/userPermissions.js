@@ -600,7 +600,7 @@ export async function verifyUserAuthorizedForSheet(arg1, arg2, arg3, arg4, _igno
   }
 
   // 2. Ensure clientName claim (if supplied) matches the actual sheet for BOTH admins and non-admins
-  if (clientNameClaim && clientNameClaim !== "Admin" && !matchesClientName(clientNameClaim, resolvedClient)) {
+  if (clientNameClaim && (clientNameClaim !== "Admin" || !isFullAdmin) && !matchesClientName(clientNameClaim, resolvedClient)) {
     return { authorized: false, status: 403, error: "Forbidden: Client identifier mismatch for requested spreadsheet" };
   }
 

@@ -388,7 +388,7 @@ async function writePayrollDataToSheet_(sheets, clientSheetId, extractedData, ta
           const colLet = columnIndexToLetter_(startColIdx0 + 1 + offset);
           return `=SUM(${colLet}4:${colLet}53)`;
         });
-        withRetry(() => sheets.spreadsheets.values.update({
+        await withRetry(() => sheets.spreadsheets.values.update({
           spreadsheetId: clientSheetId,
           range: `Salaries!${startColLetter}55:${endColLetter}55`,
           valueInputOption: "USER_ENTERED",
@@ -957,7 +957,7 @@ export async function handleResolvePayrollImportForecast(req, res, sheets) {
       (await resolveSupabaseSheetContext({ spreadsheetId: clientSheetId || masterSheetId }).catch(() => null))?.clientName ||
       "";
     if (flushTarget) {
-      await flushImmediateAndScheduleBackgroundClientRecomputes(sheets, flushTarget).catch(() => {});
+      await flushImmediateAndScheduleBackgroundClientRecomputes(sheets, flushTarget).catch(() => { });
     }
     let taskCompleted = false;
     if (completeTask && acId && clientName) {

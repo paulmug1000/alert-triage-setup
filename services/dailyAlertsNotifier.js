@@ -393,7 +393,7 @@ export async function sendDailyAlertsSummary(sheetsOrOptions, maybeAcId) {
 
     const textBody = `Hello ${user.name || "there"},\n\n` +
       `Here is your Pulse Management Area daily summary for ${formattedDate}:\n` +
-      `Total active alerts: ${userAlerts.length} across ${clientSummaries.length} clients.\n\n` +
+      `Total active alerts: ${totalItems} across ${clientSummaries.length} clients.\n\n` +
       clientSummaries.map(cs => `• ${cs.clientName}: ${cs.totalClientAlerts} alert(s)`).join("\n") +
       `\n\nOpen Pulse Management Area: ${appUrl}/pma\n\n` +
       `To opt out of daily summaries, update your notification preferences in PMA > Settings.`;
@@ -407,14 +407,14 @@ export async function sendDailyAlertsSummary(sheetsOrOptions, maybeAcId) {
           text: textBody,
           html: htmlBody
         });
-        console.log(`  ✅ Daily digest sent to ${user.email} (${userAlerts.length} alerts).`);
-        results.sent.push({ email: user.email, alertsCount: userAlerts.length });
+        console.log(`  ✅ Daily digest sent to ${user.email} (${totalItems} alerts).`);
+        results.sent.push({ email: user.email, alertsCount: totalItems });
 
         await logPmaActivity(sheets, {
           automationCommanderSheetId: acId,
           user: "Pulse System",
           action: "Daily Digest Sent",
-          summary: `Daily alert digest sent to ${user.email} (${userAlerts.length} alerts across ${clientSummaries.length} clients)`
+          summary: `Daily alert digest sent to ${user.email} (${totalItems} alerts across ${clientSummaries.length} clients)`
         }).catch(() => { });
 
       } catch (sendErr) {
@@ -422,8 +422,8 @@ export async function sendDailyAlertsSummary(sheetsOrOptions, maybeAcId) {
         results.errors.push({ email: user.email, error: sendErr.message });
       }
     } else {
-      console.log(`  [SIMULATED] Would send daily digest to ${user.email} (${userAlerts.length} alerts).`);
-      results.sent.push({ email: user.email, alertsCount: userAlerts.length, simulated: true });
+      console.log(`  [SIMULATED] Would send daily digest to ${user.email} (${totalItems} alerts).`);
+      results.sent.push({ email: user.email, alertsCount: totalItems, simulated: true });
     }
   }
 
@@ -880,7 +880,7 @@ async function collectZeroGridHealthAndMetrics_(sb, activeClients = [], suiteFai
         .order("id", { ascending: false })
         .limit(200),
       sb.from("tenant_integrations").select("client_id, tool, status"),
-      sb.from("master_sheet_grids").select("client_name").limit(200),
+      fetchAllRowsForHealth_(sb, "master_sheet_grids", "client_name"),
       sb
         .from("system_config")
         .select("value")
@@ -1072,18 +1072,18 @@ async function runFullActiveClientsParityCheck_() {
   ] = await Promise.all([
     sb
       ? sb
-          .from("clients")
-          .select("id, client_name, status, grid_storage_retired, metadata")
-          .order("client_name", { ascending: true })
-          .then(async (res) => {
-            if (res.error && String(res.error.message || "").includes("grid_storage_retired")) {
-              return sb
-                .from("clients")
-                .select("id, client_name, status, metadata")
-                .order("client_name", { ascending: true });
-            }
-            return res;
-          })
+        .from("clients")
+        .select("id, client_name, status, grid_storage_retired, metadata")
+        .order("client_name", { ascending: true })
+        .then(async (res) => {
+          if (res.error && String(res.error.message || "").includes("grid_storage_retired")) {
+            return sb
+              .from("clients")
+              .select("id, client_name, status, metadata")
+              .order("client_name", { ascending: true });
+          }
+          return res;
+        })
       : Promise.resolve({ data: [] }),
     checkPhase4MasterSchemaStatus().catch(() => ({ schemaReady: false })),
     checkPhase4ReconSchemaStatus().catch(() => ({ schemaReady: false })),
@@ -1147,56 +1147,56 @@ async function runFullActiveClientsParityCheck_() {
       : noopSuite,
     phase4Ready
       ? runSuiteSafe_("Master DB", suiteFailures, () =>
-          verifyRelationalMasterParity({ source: "db", onlyIngestionEnabled: true })
-        )
+        verifyRelationalMasterParity({ source: "db", onlyIngestionEnabled: true })
+      )
       : noopSuite,
     hasUnretiredClients && phase4Ready
       ? runSuiteSafe_("Master SQL read", suiteFailures, () =>
-          verifyRelationalMasterReadParity({ source: "db", onlyReadEnabled: true })
-        )
+        verifyRelationalMasterReadParity({ source: "db", onlyReadEnabled: true })
+      )
       : noopSuite,
     phase4ReconReady
       ? runSuiteSafe_("Recon DB", suiteFailures, () =>
-          verifyRelationalReconParity({ source: "db", onlyReconEnabled: true })
-        )
+        verifyRelationalReconParity({ source: "db", onlyReconEnabled: true })
+      )
       : noopSuite,
     hasUnretiredClients && phase4ReconReady
       ? runSuiteSafe_("Recon SQL read", suiteFailures, () =>
-          verifyRelationalReconReadParity({ source: "db", onlyReadEnabled: true })
-        )
+        verifyRelationalReconReadParity({ source: "db", onlyReadEnabled: true })
+      )
       : noopSuite,
     hasUnretiredClients && phase5FinReady
       ? runSuiteSafe_("Financials DB", suiteFailures, () =>
-          verifyRelationalFinancialsParity({ source: "db", onlyFinancialsEnabled: true })
-        )
+        verifyRelationalFinancialsParity({ source: "db", onlyFinancialsEnabled: true })
+      )
       : noopSuite,
     hasUnretiredClients && phase5FinReady
       ? runSuiteSafe_("Financials SQL read", suiteFailures, () =>
-          verifyRelationalFinancialsReadParity({ source: "db", onlyReadEnabled: true })
-        )
+        verifyRelationalFinancialsReadParity({ source: "db", onlyReadEnabled: true })
+      )
       : noopSuite,
     phase6Ready
       ? runSuiteSafe_("Native master comp", suiteFailures, () =>
-          verifyNativeMasterComparisonParity({ source: "db", onlyActiveOrShadow: true })
-        )
+        verifyNativeMasterComparisonParity({ source: "db", onlyActiveOrShadow: true })
+      )
       : noopSuite,
     phase6cReady
       ? runSuiteSafe_("Native connectors", suiteFailures, () =>
-          verifyNativeConnectorsStateParity({ onlyActiveOrShadow: true })
-        )
+        verifyNativeConnectorsStateParity({ onlyActiveOrShadow: true })
+      )
       : noopSuite,
     phase6dReady
       ? runSuiteSafe_("Native sync & logs", suiteFailures, () =>
-          verifyNativeSyncStateParity({ onlyActiveOrShadow: true })
-        )
+        verifyNativeSyncStateParity({ onlyActiveOrShadow: true })
+      )
       : noopSuite,
     collectZeroGridHealthAndMetrics_(sb, activeClients, suiteFailures),
   ]);
 
   const natClientRep = phase6Ready
     ? await runSuiteSafe_("Native client calc", suiteFailures, () =>
-        verifyNativeClientCalcParity({ source: "db", onlyActiveOrShadow: true, onlyActive: true })
-      )
+      verifyNativeClientCalcParity({ source: "db", onlyActiveOrShadow: true, onlyActive: true })
+    )
     : await noopSuite;
 
   const invariantsRep = await runSuiteSafe_("Accounting invariants", suiteFailures, () =>
@@ -1720,11 +1720,11 @@ export async function checkAndNotifyClientParity({
 
     const enrichedRow = anomalyDiffs.length > 0
       ? {
-          ...row,
-          relationalMismatchCount: (row.relationalMismatchCount || 0) + anomalyDiffs.length,
-          totalMismatchCount: (row.totalMismatchCount || 0) + anomalyDiffs.length,
-          sampleMismatches: [...anomalyDiffs, ...(row.sampleMismatches || [])].slice(0, 12),
-        }
+        ...row,
+        relationalMismatchCount: (row.relationalMismatchCount || 0) + anomalyDiffs.length,
+        totalMismatchCount: (row.totalMismatchCount || 0) + anomalyDiffs.length,
+        sampleMismatches: [...anomalyDiffs, ...(row.sampleMismatches || [])].slice(0, 12),
+      }
       : row;
     evalResults.push(enrichedRow);
 

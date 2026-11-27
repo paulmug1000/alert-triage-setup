@@ -2214,6 +2214,9 @@ export async function createGasEnvironment({
       kiSheet.valuesGrid[27][23] = ctx.clientSheetId; // X28
     }
     if (ctx.reconSheetId) {
+      if (!kiSheet.valuesGrid[0][6]) {
+        kiSheet.valuesGrid[0][6] = `https://docs.google.com/spreadsheets/d/${ctx.reconSheetId}/edit`; // G1
+      }
       if (!kiSheet.valuesGrid[31]) kiSheet.valuesGrid[31] = [];
       if (!kiSheet.valuesGrid[31][23]) {
         kiSheet.valuesGrid[31][23] = `https://docs.google.com/spreadsheets/d/${ctx.reconSheetId}/edit`; // X32

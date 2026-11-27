@@ -148,7 +148,7 @@ async function fetchClientCashAndKeyInfo(sb, sheets, clientRow) {
   }
 
   const sheetId = clientRow.client_sheet_id;
-  if (!sheetId || String(sheetId).startsWith("sb-")) return { cashVals: [], cashForms: [], kiVals: [] };
+  if (!sheetId) return { cashVals: [], cashForms: [], kiVals: [] };
   const [valResp, formResp] = await Promise.all([
     withRetry(() =>
       sheets.spreadsheets.values.batchGet({
@@ -353,9 +353,9 @@ async function main() {
   if (args.help) {
     console.log(
       "Usage:\n" +
-        "  node --env-file=.env.local scripts/backfill-cash-bank-breakdowns.mjs --dry-run\n" +
-        '  node --env-file=.env.local scripts/backfill-cash-bank-breakdowns.mjs --dry-run --client="Eleven"\n' +
-        "  node --env-file=.env.local scripts/backfill-cash-bank-breakdowns.mjs --apply\n"
+      "  node --env-file=.env.local scripts/backfill-cash-bank-breakdowns.mjs --dry-run\n" +
+      '  node --env-file=.env.local scripts/backfill-cash-bank-breakdowns.mjs --dry-run --client="Eleven"\n' +
+      "  node --env-file=.env.local scripts/backfill-cash-bank-breakdowns.mjs --apply\n"
     );
     return;
   }
@@ -552,7 +552,7 @@ async function main() {
     }
 
     if (args.apply && clientUpdated && clientRow.client_sheet_id) {
-      await invalidatePmaClientCache(clientRow.client_sheet_id, clientName, ["cash"]).catch(() => {});
+      await invalidatePmaClientCache(clientRow.client_sheet_id, clientRow.master_sheet_id || null, ["cash"]).catch(() => { });
     }
   }
 

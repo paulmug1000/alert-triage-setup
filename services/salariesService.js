@@ -25,7 +25,7 @@ import { memoryCache, resolvePortalCache, invalidatePmaClientCache } from "./cac
 import { redisClient } from "./redisClient.js";
 import { scheduleWaitUntil_ } from "./alertState.js";
 import { parseSheetDate, toInputDateFormat, toSheetDateFormat } from "../utils/helpers.js";
-import { resolveSupabaseSheetContext } from "./masterEngineService.js";
+import { resolveSupabaseSheetContext, flushImmediateAndScheduleBackgroundClientRecomputes } from "./masterEngineService.js";
 import {
   getClientRelationalInputsLookup,
   preloadClientRelationalInputsBundle,
@@ -569,11 +569,21 @@ export async function invalidateSalariesCache(masterSheetId, clientSheetId) {
   );
   const cacheKey = `salaries_data:${cleanClientId}`;
   try {
+    const sbCtx = await resolveSupabaseSheetContext({
+      spreadsheetId: clientSheetId || masterSheetId,
+    }).catch(() => null);
+    if (sbCtx?.clientName) {
+      await flushImmediateAndScheduleBackgroundClientRecomputes(null, sbCtx.clientName).catch(() => { });
+    }
     memoryCache.del(cacheKey);
     if (redisClient && redisClient.isOpen) {
       await redisClient.del(cacheKey);
     }
-    await invalidatePmaClientCache(clientSheetId || cleanClientId, masterSheetId, ["outgoings", "views", "cash"]);
+    await invalidatePmaClientCache(
+      clientSheetId || cleanClientId,
+      masterSheetId || sbCtx?.masterSheetId || null,
+      ["outgoings", "views", "cash"]
+    );
   } catch (e) {
     console.warn("Failed to invalidate salaries cache:", e?.message);
   }

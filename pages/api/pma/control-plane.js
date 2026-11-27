@@ -4,10 +4,11 @@ import { getSupabaseAdmin, isSupabaseConfigured, setControlPlaneSource } from ".
 import { redisClient } from "../../../services/redisClient.js";
 import { getControlPlaneStatus, syncControlPlaneToSupabase } from "../../../services/controlPlaneMigrationService.js";
 import { logPmaActivity } from "../../../services/pmaLogger.js";
-import { getAllUsers, createOrUpdateUser, deleteUserByEmail, getCanonicalAcSheetId } from "../../../services/userPermissions.js";
+import { getAllUsers, createOrUpdateUser, deleteUserByEmail, getCanonicalAcSheetId, clearClientMappingCaches, invalidateUsersCache } from "../../../services/userPermissions.js";
 import { getAllClients, clearAllClientsMemoryCache } from "../../../services/workspaces.js";
 import { clearSsrClientsMemoryCache } from "../../../services/ssrSession.js";
 import { memoryCache } from "../../../services/cacheService.js";
+import { invalidateTasksCache } from "../../../services/tasksController.js";
 import { flushAllAlertMemoryCaches, searchAlertMemoryEntries, deleteAlertMemoryEntryByHash, archiveClientAlertMemory } from "../../../services/alertMemory.js";
 import { invalidatePrecomputedMemoryCache, handleStorePrecomputed } from "../../../services/triageEngine.js";
 import { syncProvisioningTemplateSnapshots, getProvisioningTemplateSnapshotsMeta } from "../../../services/masterEngineService.js";
@@ -275,6 +276,7 @@ async function upsertClientRegistryRecord_(sb, rawRow) {
 async function invalidateClientsCache_(acId, extraExcludedNames = []) {
   clearAllClientsMemoryCache();
   clearSsrClientsMemoryCache();
+  clearClientMappingCaches();
   invalidatePrecomputedMemoryCache();
   await import("../../../services/masterEngineService.js")
     .then((m) => m.invalidateSheetContextCache?.())
@@ -717,6 +719,42 @@ export default async function handler(req, res) {
         if (cfgDelErr) {
           console.warn("cash_bank_breakdowns delete cleanup warning:", cfgDelErr.message);
         }
+        const { error: tiDelErr } = await sb
+          .from("tenant_integrations")
+          .delete()
+          .eq("client_key", resolvedNormKey);
+        if (tiDelErr) {
+          console.warn("tenant_integrations delete cleanup warning:", tiDelErr.message);
+        }
+        if (redisClient?.isOpen) {
+          try {
+            const vKeys = [];
+            for await (const k of redisClient.scanIterator({ MATCH: `pulse:vault:*:${resolvedNormKey}:*` })) {
+              vKeys.push(k);
+            }
+            if (vKeys.length > 0) await redisClient.del(vKeys);
+          } catch { }
+        }
+      }
+
+      if (resolvedClientName) {
+        await Promise.all([
+          sb.from("pma_tasks").delete().eq("client_name", resolvedClientName).then((r) => {
+            if (r?.error) console.warn("pma_tasks delete cleanup warning:", r.error.message);
+          }),
+          sb.from("alert_memory").delete().eq("client_name", resolvedClientName).then((r) => {
+            if (r?.error) console.warn("alert_memory delete cleanup warning:", r.error.message);
+          }),
+        ]);
+        const targetLower = resolvedClientName.trim().toLowerCase();
+        const { data: usersWithClient } = await sb.from("users").select("id, assigned_clients");
+        for (const u of usersWithClient || []) {
+          if (!Array.isArray(u.assigned_clients)) continue;
+          const filtered = u.assigned_clients.filter((c) => String(c || "").trim().toLowerCase() !== targetLower);
+          if (filtered.length !== u.assigned_clients.length) {
+            await sb.from("users").update({ assigned_clients: filtered }).eq("id", u.id);
+          }
+        }
       }
 
       const acId = automationCommanderSheetId || getCanonicalAcSheetId();
@@ -727,6 +765,8 @@ export default async function handler(req, res) {
         });
       }
       await invalidateClientsCache_(acId, resolvedClientName ? [resolvedClientName] : []);
+      await invalidateTasksCache().catch(() => { });
+      await invalidateUsersCache().catch(() => { });
       await logPmaActivity(sheets, {
         automationCommanderSheetId: acId,
         clientName: resolvedClientName || "Global",

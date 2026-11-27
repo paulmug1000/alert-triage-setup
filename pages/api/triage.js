@@ -168,7 +168,7 @@ async function checkTriageClientAuth(sheets, sessionUser, clientNameClaim, sheet
         const auth = await verifyUserAuthorizedForSheet(sessionUser, sid, boundClient, sheets);
         if (!auth.authorized) return false;
         if (auth.clientName) {
-          if (boundClient && boundClient !== "Admin" && !matchesClientName(boundClient, auth.clientName)) return false;
+          if (boundClient && (boundClient !== "Admin" || !isFullAdmin) && !matchesClientName(boundClient, auth.clientName)) return false;
           boundClient = auth.clientName;
         }
       } catch (_) {
@@ -353,7 +353,7 @@ export default async function handler(req, res) {
         const rawCId = req.body?.clientSheetId || req.body?.payrollClientSheetId || "";
         const rawMId = req.body?.masterSheetId || req.body?.timeMasterSheetId || "";
         const fallbackClientName = req.body?.clientName || "";
-        (async () => {
+        const invPromise = (async () => {
           let cId = rawCId;
           let mId = rawMId;
           if (!cId && fallbackClientName) {
@@ -369,6 +369,7 @@ export default async function handler(req, res) {
         })().catch(err => {
           console.warn(`[PMA Invalidation] Error for ${action}:`, err?.message);
         });
+        try { waitUntil(invPromise); } catch (_) { }
       }
       return originalJson(data);
     };
@@ -622,13 +623,11 @@ export default async function handler(req, res) {
         return res.status(403).json({ success: false, error: "Forbidden: Admin privileges required for this action." });
       }
 
-      // Universal Multi-Tenant Pre-Dispatch Guard for non-admin sessions
-      if (!sessionUser.isAdmin) {
+      // Universal Multi-Tenant Pre-Dispatch & Dual-Sheet Binding Guard (enforced for BOTH admins and non-admins)
+      {
         const b = req.body || {};
         const q = req.query || {};
         const rawClientClaim = b.clientName || q.clientName || b.alert?.clientName || "";
-        // Aggregated activity feed queries pass clientName: "ALL" to fetch across all user's assigned clients.
-        // handleGetActivity explicitly restricts and sanitizes events to the non-admin's assigned clients.
         const isActivityAll = action === "get_activity" && (!rawClientClaim || String(rawClientClaim).trim().toUpperCase() === "ALL");
         const targetClientClaim = isActivityAll ? "" : rawClientClaim;
         const targetSheetIds = [
@@ -645,7 +644,7 @@ export default async function handler(req, res) {
           b.alert?.masterSheetId, b.alert?.masterId, b.alert?.reconId, b.alert?.clientSheetId, b.alert?.clientId
         ].filter(Boolean);
 
-        if (targetSheetIds.length > 0 || targetClientClaim) {
+        if (targetSheetIds.length > 0 || (targetClientClaim && !sessionUser.isAdmin)) {
           const isTenantAllowed = await checkTriageClientAuth(sheets, sessionUser, targetClientClaim, targetSheetIds);
           if (!isTenantAllowed) {
             return res.status(403).json({
@@ -663,14 +662,17 @@ export default async function handler(req, res) {
           }
           for (const item of b.alerts) {
             if (!item) continue;
-            const itemAllowed = await checkTriageClientAuth(
-              sheets,
-              sessionUser,
-              item.clientName || targetClientClaim,
-              [item.clientSheetId, item.masterSheetId, item.masterId, item.reconId, item.clientId].filter(Boolean)
-            );
-            if (!itemAllowed) {
-              return res.status(403).json({ success: false, error: "Forbidden: Access denied to one or more client alerts in batch." });
+            const itemSheets = [item.clientSheetId, item.masterSheetId, item.masterId, item.reconId, item.clientId].filter(Boolean);
+            if (!sessionUser.isAdmin || itemSheets.length > 0) {
+              const itemAllowed = await checkTriageClientAuth(
+                sheets,
+                sessionUser,
+                item.clientName || targetClientClaim,
+                itemSheets
+              );
+              if (!itemAllowed) {
+                return res.status(403).json({ success: false, error: "Forbidden: Access denied to one or more client alerts in batch." });
+              }
             }
           }
         }
@@ -680,9 +682,18 @@ export default async function handler(req, res) {
             return res.status(400).json({ success: false, error: "Too many update items in batch (max 500)." });
           }
           for (const item of b.updates) {
-            if (!item || !item.clientName) continue;
-            if (!isUserAuthorizedForClient(sessionUser, item.clientName)) {
-              return res.status(403).json({ success: false, error: "Forbidden: Access denied to one or more clients in batch update." });
+            if (!item) continue;
+            const updSheets = [item.clientSheetId, item.masterSheetId, item.masterId, item.reconId, item.clientId].filter(Boolean);
+            if ((!sessionUser.isAdmin && item.clientName) || updSheets.length > 0) {
+              const updAllowed = await checkTriageClientAuth(
+                sheets,
+                sessionUser,
+                item.clientName || targetClientClaim,
+                updSheets
+              );
+              if (!updAllowed) {
+                return res.status(403).json({ success: false, error: "Forbidden: Access denied to one or more clients in batch update." });
+              }
             }
           }
         }

@@ -4070,6 +4070,7 @@ export async function handleUpdatePartPaidDate(sheets, {
       });
     }, 25);
 
+    await flushImmediateAndScheduleBackgroundClientRecomputes(sheets, clientName).catch(() => { });
     await invalidatePmaClientCache(
       clientSheetId || null,
       masterSheetId || null,
@@ -4190,6 +4191,7 @@ export async function handleUpdatePartPaidDate(sheets, {
       })
       , 25);
 
+    await flushImmediateAndScheduleBackgroundClientRecomputes(sheets, clientName).catch(() => { });
     await invalidatePmaClientCache(
       clientSheetId || null,
       masterSheetId || null,

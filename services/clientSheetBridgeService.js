@@ -49,7 +49,7 @@ export const BRIDGE_BIDIRECTIONAL_TABS = [
   "NBtoFind",
   "Cash",
 ];
-export const BRIDGE_OUTBOUND_ONLY_TABS = ["KeyInfo"];
+export const BRIDGE_OUTBOUND_ONLY_TABS = ["KeyInfo", "Delivered"];
 export const BRIDGE_ALL_SYNCED_TABS = [...BRIDGE_BIDIRECTIONAL_TABS, ...BRIDGE_OUTBOUND_ONLY_TABS];
 export const BRIDGE_NOTE_TABS = new Set([
   "Confirmed",
@@ -90,43 +90,56 @@ function getLastNonEmptyRowCount_(grid = []) {
   return 0;
 }
 
-const CURRENT_NOTE_BOUNDS_VERSION = 2;
+const CURRENT_NOTE_BOUNDS_VERSION = 3;
 
-function isNewlyAddedV2NoteCoord_(tabName, r0, _c0) {
-  if (tabName === "Outgoings") return r0 >= 112;
-  return tabName === "Salaries" || tabName === "NBtoFind" || tabName === "Budget";
+function isNewlyAddedNoteCoordForMigration_(tabName, r0, c0, fromVer = 1) {
+  const v = Number(fromVer || 1);
+  if (v < 2) {
+    if (tabName === "Outgoings" && r0 >= 112) return true;
+    if (tabName === "Salaries" && c0 <= 8) return true;
+    if (tabName === "NBtoFind" && r0 >= 2 && c0 >= 6 && c0 <= 47) return true;
+    if (tabName === "Budget" && r0 <= 249 && c0 <= 47) return true;
+  }
+  if (v < 3) {
+    if (tabName === "Confirmed" && (c0 === 0 || r0 >= 1000)) return true;
+    if (tabName === "Pipeline" && (c0 === 0 || r0 >= 600)) return true;
+    if (tabName === "Salaries" && c0 >= 9 && c0 <= 60) return true;
+    if (tabName === "NBtoFind" && (r0 < 2 || c0 < 6 || (c0 >= 48 && c0 <= 49))) return true;
+    if (tabName === "Budget" && (r0 === 250 || (c0 >= 48 && c0 <= 49))) return true;
+  }
+  return false;
 }
 
 function isCoordWithinFetchedNoteBounds_(tabName, r0, c0, fetchedNoteBounds = null) {
   const custom = fetchedNoteBounds && typeof fetchedNoteBounds === "object" ? fetchedNoteBounds[tabName] : null;
   if (custom) {
-    return (
-      r0 >= Number(custom.startRow0 ?? 0) &&
-      r0 <= Number(custom.endRow0 ?? 100000) &&
-      c0 >= Number(custom.startCol0 ?? 0) &&
-      c0 <= Number(custom.endCol0 ?? 1000)
-    );
+    const inRow = r0 >= Number(custom.startRow0 ?? 0) && r0 <= Number(custom.endRow0 ?? 100000);
+    if (!inRow) return false;
+    if (Array.isArray(custom.cols)) {
+      return custom.cols.some(([sc, ec]) => c0 >= Number(sc) && c0 <= Number(ec));
+    }
+    return c0 >= Number(custom.startCol0 ?? 0) && c0 <= Number(custom.endCol0 ?? 1000);
   }
   if (tabName === "Outgoings") {
     return r0 >= 12 && r0 <= 239 && c0 >= 6 && c0 <= 47;
   }
   if (tabName === "Confirmed") {
-    return r0 >= 1 && r0 <= 999 && c0 >= 41 && c0 <= 95;
+    return r0 >= 1 && r0 <= 4999 && (c0 === 0 || (c0 >= 41 && c0 <= 95));
   }
   if (tabName === "Pipeline") {
-    return r0 >= 1 && r0 <= 599 && c0 >= 41 && c0 <= 95;
+    return r0 >= 1 && r0 <= 1499 && (c0 === 0 || (c0 >= 41 && c0 <= 95));
   }
   if (tabName === "Cash") {
     return r0 >= 0 && r0 <= 75 && c0 >= 1 && c0 <= 36;
   }
   if (tabName === "Salaries") {
-    return r0 >= 3 && r0 <= 59 && c0 >= 0 && c0 <= 8;
+    return r0 >= 3 && r0 <= 59 && c0 >= 0 && c0 <= 60;
   }
   if (tabName === "NBtoFind") {
-    return r0 >= 2 && r0 <= 29 && c0 >= 6 && c0 <= 47;
+    return r0 >= 0 && r0 <= 29 && c0 >= 0 && c0 <= 49;
   }
   if (tabName === "Budget") {
-    return r0 >= 0 && r0 <= 249 && c0 >= 0 && c0 <= 47;
+    return r0 >= 0 && r0 <= 250 && c0 >= 0 && c0 <= 49;
   }
   return true;
 }
@@ -156,12 +169,12 @@ function isOverridableJobCostingDefaultFormula_(tabName, col0, formulaStr, isJob
 
 const NOTE_FETCH_RANGES = {
   Outgoings: { range: "Outgoings!G13:AV240", startRow0: 12, endRow0: 239, startCol0: 6, endCol0: 47 },
-  Confirmed: { range: "Confirmed!AP2:CR500", startRow0: 1, endRow0: 499, startCol0: 41, endCol0: 95 },
-  Pipeline: { range: "Pipeline!AP2:CR300", startRow0: 1, endRow0: 299, startCol0: 41, endCol0: 95 },
+  Confirmed: { range: "Confirmed!AP2:CR1000", startRow0: 1, endRow0: 999, cols: [[0, 0], [41, 95]] },
+  Pipeline: { range: "Pipeline!AP2:CR600", startRow0: 1, endRow0: 599, cols: [[0, 0], [41, 95]] },
   Cash: { range: "Cash!B1:AK76", startRow0: 0, endRow0: 75, startCol0: 1, endCol0: 36 },
-  Salaries: { range: "Salaries!A4:I60", startRow0: 3, endRow0: 59, startCol0: 0, endCol0: 8 },
-  NBtoFind: { range: "NBtoFind!G3:AV30", startRow0: 2, endRow0: 29, startCol0: 6, endCol0: 47 },
-  Budget: { range: "Budget!A1:AV250", startRow0: 0, endRow0: 249, startCol0: 0, endCol0: 47 },
+  Salaries: { range: "Salaries!A4:BI60", startRow0: 3, endRow0: 59, startCol0: 0, endCol0: 60 },
+  NBtoFind: { range: "NBtoFind!A1:AX30", startRow0: 0, endRow0: 29, startCol0: 0, endCol0: 49 },
+  Budget: { range: "Budget!A1:AX251", startRow0: 0, endRow0: 250, startCol0: 0, endCol0: 49 },
 };
 
 const _lastReadCheckByClient = new Map();
@@ -415,6 +428,10 @@ export function isCellInEditableBridgePosition(tabName, row0, col0, options = {}
       return col0 === 0 || col0 === 4 || isThreeYearMonthCol;
     }
     return false;
+  }
+
+  if (tabName === "Delivered") {
+    return row0 === 80 && col0 === 3;
   }
 
   return false;
@@ -790,14 +807,17 @@ export function computeThreeWayTabMerge({
         if (safeSupaNotes[k]) nextBaselineNotes[k] = safeSupaNotes[k];
         continue;
       }
-      // One-time v1 -> v2 note-bounds migration: treat previously un-fetched note ranges as blank baseline so existing PMA notes push outbound without false deletions
-      const bN =
-        baselineNoteBoundsVersion < CURRENT_NOTE_BOUNDS_VERSION &&
-        isNewlyAddedV2NoteCoord_(tabName, coords.r0, coords.c0)
-          ? ""
-          : (safeBaseNotes[k] || "");
+      // One-time note-bounds migration (v1 -> v2 -> v3): treat previously un-fetched note ranges as blank baseline so existing PMA notes push outbound without false deletions, while preserving genuine deletions when baseline already matches sheet
+      const rawBaseNote = safeBaseNotes[k] || "";
       const sN = safeSheetNotes[k] || "";
       const uN = safeSupaNotes[k] || "";
+      const isMigCoord =
+        baselineNoteBoundsVersion < CURRENT_NOTE_BOUNDS_VERSION &&
+        isNewlyAddedNoteCoordForMigration_(tabName, coords.r0, coords.c0, baselineNoteBoundsVersion);
+      const bN =
+        isMigCoord && (rawBaseNote === "" || (sN === "" && uN !== ""))
+          ? ""
+          : rawBaseNote;
       const unpulledNoteEdit = !allowInbound && sN !== bN && uN === bN;
       const inNoteChanged = !isOutboundOnly && sN !== bN;
       const outNoteChanged =
@@ -820,9 +840,14 @@ export function computeThreeWayTabMerge({
         if (sN) nextBaselineNotes[k] = sN;
         inboundNoteChanges.push({ tabName, row0: coords.r0, col0: coords.c0, cellA1, from: bN, to: sN });
       } else if (outNoteChanged) {
-        outboundNoteChanges.push({ tabName, row0: coords.r0, col0: coords.c0, cellA1, from: sN, to: uN });
-        const keptNote = applyOutboundToBaseline ? uN : bN;
-        if (keptNote) nextBaselineNotes[k] = keptNote;
+        if (uN === sN) {
+          const keptNote = applyOutboundToBaseline ? uN : bN;
+          if (keptNote) nextBaselineNotes[k] = keptNote;
+        } else {
+          outboundNoteChanges.push({ tabName, row0: coords.r0, col0: coords.c0, cellA1, from: sN, to: uN });
+          const keptNote = applyOutboundToBaseline ? uN : bN;
+          if (keptNote) nextBaselineNotes[k] = keptNote;
+        }
       } else if (bN) {
         nextBaselineNotes[k] = bN;
       }
@@ -1184,6 +1209,7 @@ async function loadBaselineRecord_(supabase, ctx) {
   }
 
   const ng = baselinePayload && typeof baselinePayload === "object" ? baselinePayload : {};
+  const topNoteBoundsVer = Number(ng.noteBoundsVersion || 1);
   const tabsOut = createSafeMap_();
   if (ng.tabs && typeof ng.tabs === "object") {
     for (const [k, v] of Object.entries(ng.tabs)) {
@@ -1191,28 +1217,35 @@ async function loadBaselineRecord_(supabase, ctx) {
       tabsOut[k] = {
         values: Array.isArray(v.values) ? v.values : [],
         notes: cloneSafeNotes_(v.notes),
+        noteBoundsVersion: Number(v.noteBoundsVersion || topNoteBoundsVer),
       };
     }
   }
   return {
     driveVersion: String(ng.driveVersion || ""),
     updatedAt: ng.updatedAt || updatedAt || null,
-    noteBoundsVersion: Number(ng.noteBoundsVersion || 1),
+    noteBoundsVersion: topNoteBoundsVer,
     tabs: tabsOut,
   };
 }
 
-async function saveBaselineRecord_(supabase, ctx, { driveVersion = "", tabs = {}, noteBoundsVersion = 1 }) {
+async function saveBaselineRecord_(
+  supabase,
+  ctx,
+  { driveVersion = "", tabs = {}, noteBoundsVersion = CURRENT_NOTE_BOUNDS_VERSION }
+) {
   if (!supabase || !ctx?.clientName) return;
   const compactedTabs = createSafeMap_();
   for (const [tName, tObj] of Object.entries(tabs || {})) {
     if (PROTOTYPE_KEYS.has(tName) || !tObj) continue;
-    compactedTabs[tName] = compactBaselineTab_(tObj.values || [], tObj.notes || {});
+    const compacted = compactBaselineTab_(tObj.values || [], tObj.notes || {});
+    compacted.noteBoundsVersion = Number(tObj.noteBoundsVersion || noteBoundsVersion || CURRENT_NOTE_BOUNDS_VERSION);
+    compactedTabs[tName] = compacted;
   }
   const payload = {
     driveVersion: String(driveVersion || ""),
     updatedAt: new Date().toISOString(),
-    noteBoundsVersion: Number(noteBoundsVersion || 1),
+    noteBoundsVersion: Number(noteBoundsVersion || CURRENT_NOTE_BOUNDS_VERSION),
     tabs: compactedTabs,
   };
 
@@ -1410,45 +1443,49 @@ async function fetchRealSheetTabsAndNotes_(
 
   const noteTabsPresent = existingTabs.filter((t) => Boolean(NOTE_FETCH_RANGES[t]));
   const fetchedNoteBoundsByTab = createSafeMap_();
-  const noteRangesToFetch = noteTabsPresent.map((t) => {
+  const noteRangesToFetch = [];
+  for (const t of noteTabsPresent) {
     const rowCap = Number(sheetPropsByTitle[t]?.rowCount || 0) || 10000;
-    if (t === "Confirmed" && boundedLimitByTab.Confirmed) {
-      const endRow1 = Math.min(boundedLimitByTab.Confirmed, 1000, rowCap);
-      fetchedNoteBoundsByTab.Confirmed = { startRow0: 1, endRow0: endRow1 - 1, startCol0: 41, endCol0: 95 };
-      return `Confirmed!AP2:CR${endRow1}`;
-    }
-    if (t === "Pipeline" && boundedLimitByTab.Pipeline) {
-      const endRow1 = Math.min(boundedLimitByTab.Pipeline, 600, rowCap);
-      fetchedNoteBoundsByTab.Pipeline = { startRow0: 1, endRow0: endRow1 - 1, startCol0: 41, endCol0: 95 };
-      return `Pipeline!AP2:CR${endRow1}`;
-    }
-    if (t === "Outgoings") {
+    if (t === "Confirmed") {
+      const endRow1 = Math.min(boundedLimitByTab.Confirmed || 1000, rowCap);
+      fetchedNoteBoundsByTab.Confirmed = {
+        startRow0: 1,
+        endRow0: endRow1 - 1,
+        cols: [[0, 0], [41, 95]],
+      };
+      noteRangesToFetch.push(`'Confirmed'!A2:A${endRow1}`, `'Confirmed'!AP2:CR${endRow1}`);
+    } else if (t === "Pipeline") {
+      const endRow1 = Math.min(boundedLimitByTab.Pipeline || 600, rowCap);
+      fetchedNoteBoundsByTab.Pipeline = {
+        startRow0: 1,
+        endRow0: endRow1 - 1,
+        cols: [[0, 0], [41, 95]],
+      };
+      noteRangesToFetch.push(`'Pipeline'!A2:A${endRow1}`, `'Pipeline'!AP2:CR${endRow1}`);
+    } else if (t === "Outgoings") {
       const endRow1 = Math.min(240, rowCap);
       fetchedNoteBoundsByTab.Outgoings = { startRow0: 12, endRow0: endRow1 - 1, startCol0: 6, endCol0: 47 };
-      return `Outgoings!G13:AV${endRow1}`;
+      noteRangesToFetch.push(`'Outgoings'!G13:AV${endRow1}`);
     } else if (t === "Cash") {
       const endRow1 = Math.min(76, rowCap);
       fetchedNoteBoundsByTab.Cash = { startRow0: 0, endRow0: endRow1 - 1, startCol0: 1, endCol0: 36 };
-      return `Cash!B1:AK${endRow1}`;
+      noteRangesToFetch.push(`'Cash'!B1:AK${endRow1}`);
     } else if (t === "Salaries") {
       const endRow1 = Math.min(60, rowCap);
-      fetchedNoteBoundsByTab.Salaries = { startRow0: 3, endRow0: endRow1 - 1, startCol0: 0, endCol0: 8 };
-      return `Salaries!A4:I${endRow1}`;
+      fetchedNoteBoundsByTab.Salaries = { startRow0: 3, endRow0: endRow1 - 1, startCol0: 0, endCol0: 60 };
+      noteRangesToFetch.push(`'Salaries'!A4:BI${endRow1}`);
     } else if (t === "NBtoFind") {
       const endRow1 = Math.min(30, rowCap);
-      fetchedNoteBoundsByTab.NBtoFind = { startRow0: 2, endRow0: endRow1 - 1, startCol0: 6, endCol0: 47 };
-      return `NBtoFind!G3:AV${endRow1}`;
+      fetchedNoteBoundsByTab.NBtoFind = { startRow0: 0, endRow0: endRow1 - 1, startCol0: 0, endCol0: 49 };
+      noteRangesToFetch.push(`'NBtoFind'!A1:AX${endRow1}`);
     } else if (t === "Budget") {
-      const endRow1 = Math.min(250, rowCap);
-      fetchedNoteBoundsByTab.Budget = { startRow0: 0, endRow0: endRow1 - 1, startCol0: 0, endCol0: 47 };
-      return `Budget!A1:AV${endRow1}`;
-    } else if (t === "Confirmed") {
-      fetchedNoteBoundsByTab.Confirmed = { startRow0: 1, endRow0: 499, startCol0: 41, endCol0: 95 };
-    } else if (t === "Pipeline") {
-      fetchedNoteBoundsByTab.Pipeline = { startRow0: 1, endRow0: 299, startCol0: 41, endCol0: 95 };
+      const endRow1 = Math.min(251, rowCap);
+      fetchedNoteBoundsByTab.Budget = { startRow0: 0, endRow0: endRow1 - 1, startCol0: 0, endCol0: 49 };
+      noteRangesToFetch.push(`'Budget'!A1:AX${endRow1}`);
+    } else {
+      noteRangesToFetch.push(NOTE_FETCH_RANGES[t].range);
     }
-    return NOTE_FETCH_RANGES[t].range;
-  });
+  }
 
   let notesFetchFailed = false;
   const [batchPairResults, noteResp] = await Promise.all([
@@ -1507,17 +1544,18 @@ async function fetchRealSheetTabsAndNotes_(
     const tName = sheetObj?.properties?.title;
     const cfg = NOTE_FETCH_RANGES[tName];
     if (!tName || !cfg || !resultByTab[tName]) continue;
-    const gridData = sheetObj?.data?.[0];
-    const sR = Number(gridData?.startRow ?? cfg.startRow0);
-    const sC = Number(gridData?.startColumn ?? cfg.startCol0);
-    const notesOut = createSafeMap_();
-    (gridData?.rowData || []).forEach((rowObj, rOff) => {
-      (rowObj?.values || []).forEach((cellObj, cOff) => {
-        if (cellObj?.note) {
-          notesOut[`${sR + rOff}:${sC + cOff}`] = String(cellObj.note);
-        }
+    const notesOut = resultByTab[tName].notes || createSafeMap_();
+    for (const gridData of sheetObj?.data || []) {
+      const sR = Number(gridData?.startRow ?? cfg.startRow0 ?? 0);
+      const sC = Number(gridData?.startColumn ?? cfg.startCol0 ?? 0);
+      (gridData?.rowData || []).forEach((rowObj, rOff) => {
+        (rowObj?.values || []).forEach((cellObj, cOff) => {
+          if (cellObj?.note) {
+            notesOut[`${sR + rOff}:${sC + cOff}`] = String(cellObj.note);
+          }
+        });
       });
-    });
+    }
     resultByTab[tName].notes = notesOut;
   }
 
@@ -1550,9 +1588,14 @@ export async function seedSheetBridgeBaselineFromSheetSeed(ctx, gridsByTab = {})
       baselineTabs[tName] = {
         values: g.values || [],
         notes: g.notes || {},
+        noteBoundsVersion: CURRENT_NOTE_BOUNDS_VERSION,
       };
     }
-    await saveBaselineRecord_(supabase, ctx, { driveVersion, tabs: baselineTabs });
+    await saveBaselineRecord_(supabase, ctx, {
+      driveVersion,
+      tabs: baselineTabs,
+      noteBoundsVersion: CURRENT_NOTE_BOUNDS_VERSION,
+    });
     await updateClientBridgeState_(supabase, ctx.clientName, {
       lastSyncedDriveVersion: driveVersion,
       lastSyncedModifiedTime: modifiedTime,
@@ -1834,13 +1877,21 @@ export async function checkAndSyncClientSheetBridge(
         !isRecentSaWrite
       );
 
+      const hasUnmigratedNoteTabs = BRIDGE_BIDIRECTIONAL_TABS.some(
+        (t) =>
+          BRIDGE_NOTE_TABS.has(t) &&
+          Number(baseline.tabs?.[t]?.noteBoundsVersion || baseline.noteBoundsVersion || 1) <
+          CURRENT_NOTE_BOUNDS_VERSION
+      );
       const wantsInbound =
         direction === "inbound" ||
         direction === "inbound_check" ||
         direction === "both";
       const wantsOutbound = direction === "outbound" || direction === "both";
       const forceInboundFetch = direction === "inbound" || force;
-      const canPullInbound = Boolean(wantsInbound && (driveVersionChanged || forceInboundFetch));
+      const canPullInbound = Boolean(
+        wantsInbound && (driveVersionChanged || forceInboundFetch || (direction !== "inbound_check" && hasUnmigratedNoteTabs))
+      );
 
       // Fast-path exit on pure inbound read check (~60ms Drive metadata check only!)
       if (direction === "inbound_check" && !driveVersionChanged && !force) {
@@ -1949,7 +2000,8 @@ export async function checkAndSyncClientSheetBridge(
           sheetValues: sheetTab.values || [],
         };
 
-        const baseTab = baseline.tabs?.[tabName] || { values: [], notes: createSafeMap_() };
+        const baseTab = baseline.tabs?.[tabName] || { values: [], notes: createSafeMap_(), noteBoundsVersion: baseline.noteBoundsVersion || 1 };
+        const tabNoteBoundsVer = Number(baseTab.noteBoundsVersion || baseline.noteBoundsVersion || 1);
         const merge = computeThreeWayTabMerge({
           tabName,
           baselineValues: baseTab.values,
@@ -1965,7 +2017,7 @@ export async function checkAndSyncClientSheetBridge(
           supportsNotesOverride: sheetBundle?.notesFetchFailed ? false : null,
           fetchedNoteBounds: sheetBundle?.fetchedNoteBoundsByTab || null,
           maxRowBound: sheetTab.scannedRowLimit || null,
-          baselineNoteBoundsVersion: baseline.noteBoundsVersion || 1,
+          baselineNoteBoundsVersion: tabNoteBoundsVer,
         });
         mergeResults.push({ tabName, merge, supaRec, sheetTab });
 
@@ -2008,9 +2060,16 @@ export async function checkAndSyncClientSheetBridge(
           }
         }
 
+        const tabUpgradedNotes =
+          BRIDGE_NOTE_TABS.has(tabName) &&
+          !sheetBundle?.notesFetchFailed &&
+          (canPullInbound || (wantsOutbound && effectiveMode === "live"));
         nextBaselineTabs[tabName] = {
           values: merge.nextBaselineValues,
           notes: merge.nextBaselineNotes,
+          noteBoundsVersion: tabUpgradedNotes
+            ? CURRENT_NOTE_BOUNDS_VERSION
+            : Number(baseTab.noteBoundsVersion || baseline.noteBoundsVersion || 1),
         };
       }
 
@@ -2035,12 +2094,14 @@ export async function checkAndSyncClientSheetBridge(
       if (shouldApplyInboundNow) {
         _suppressOutboundByClient.add(key);
         try {
+          const allowClearAllNotesTabs = [];
           for (const item of mergeResults) {
             if (!inboundAppliedTabs.includes(item.tabName)) continue;
             const allowClearAllNotes =
               BRIDGE_NOTE_TABS.has(item.tabName) &&
               item.merge.inboundNoteChanges.length > 0 &&
               !sheetBundle?.notesFetchFailed;
+            if (allowClearAllNotes) allowClearAllNotesTabs.push(item.tabName);
             await saveVirtualTabGrid_(
               ctx,
               "client",
@@ -2051,7 +2112,9 @@ export async function checkAndSyncClientSheetBridge(
               { markPersistedImmediate: true, markPersistedToDbImmediate: true, allowClearAllNotes }
             );
           }
-          await recomputeClientFormulasForBridge(ctx.clientName, inboundAppliedTabs).catch((e) =>
+          await recomputeClientFormulasForBridge(ctx.clientName, inboundAppliedTabs, {
+            allowClearAllNotesTabs,
+          }).catch((e) =>
             console.warn(`[clientSheetBridge] Post-inbound recompute warning (${ctx.clientName}):`, e.message)
           );
           invalidateMasterEngineCache(ctx.clientName, "client");
@@ -2195,18 +2258,32 @@ export async function checkAndSyncClientSheetBridge(
         redisClient.sRem(`pulse:sheet_bridge_dirty:${key}`, cleanSyncedTabs).catch(() => { });
       }
 
-      // Persist updated baseline whenever inbound applied in live/manual mode, outbound committed in live mode, or baseline was missing
+      const tabsMigratedNotesThisPass =
+        !sheetBundle?.notesFetchFailed &&
+        tabsToProcess.some(
+          (t) =>
+            BRIDGE_NOTE_TABS.has(t) &&
+            Number(baseline.tabs?.[t]?.noteBoundsVersion || baseline.noteBoundsVersion || 1) <
+            CURRENT_NOTE_BOUNDS_VERSION &&
+            Number(nextBaselineTabs[t]?.noteBoundsVersion || 1) >= CURRENT_NOTE_BOUNDS_VERSION
+        );
+
+      // Persist updated baseline whenever inbound applied in live/manual mode, outbound committed in live mode, note bounds migrated, or baseline was missing
       const shouldSaveBaseline =
         !baseline.driveVersion ||
         shouldApplyInboundNow ||
         (wantsOutbound && effectiveMode === "live" && hasOutboundWork) ||
-        (effectiveMode === "live" && driveVersionChanged);
+        (effectiveMode === "live" && (driveVersionChanged || tabsMigratedNotesThisPass));
 
       if (shouldSaveBaseline) {
-        const nextNoteBoundsVer =
-          !canScopeToDirtyTabsOnly && !sheetBundle?.notesFetchFailed
-            ? CURRENT_NOTE_BOUNDS_VERSION
-            : (baseline.noteBoundsVersion || 1);
+        const minBidirectionalNoteVer = Math.min(
+          ...BRIDGE_BIDIRECTIONAL_TABS.filter((t) => BRIDGE_NOTE_TABS.has(t)).map((t) =>
+            Number(nextBaselineTabs?.[t]?.noteBoundsVersion || baseline.noteBoundsVersion || 1)
+          )
+        );
+        const nextNoteBoundsVer = Number.isFinite(minBidirectionalNoteVer)
+          ? minBidirectionalNoteVer
+          : CURRENT_NOTE_BOUNDS_VERSION;
         // In dry_run when inbound wasn't forced, avoid overwriting baseline with un-applied outbound changes
         if (effectiveMode === "dry_run" && !allowDryRunApplyInbound) {
           await saveBaselineRecord_(supabase, ctx, {
@@ -2422,11 +2499,11 @@ export async function setClientSheetBridgeMode(sheets, clientName, targetMode) {
           includeNotes: true,
         }).catch(() => null);
         if (rec) {
-          tabs[tName] = { values: rec.values_grid || [], notes: rec.notes_grid || {} };
+          tabs[tName] = { values: rec.values_grid || [], notes: rec.notes_grid || {}, noteBoundsVersion: 1 };
         }
       }
-      // Leave driveVersion empty so the first bridge run pulls any pre-existing sheet edits instead of masking them
-      await saveBaselineRecord_(supabase, ctx, { driveVersion: "", tabs });
+      // Leave driveVersion empty and noteBoundsVersion=1 so the first bridge run pulls any pre-existing sheet edits instead of masking them
+      await saveBaselineRecord_(supabase, ctx, { driveVersion: "", tabs, noteBoundsVersion: 1 });
       await updateClientBridgeState_(
         supabase,
         clientRow.client_name,
@@ -2652,6 +2729,7 @@ export async function pushSupabaseClientToSheet(clientName) {
       nextBaselineTabs[tabName] = {
         values: merge.nextBaselineValues,
         notes: merge.nextBaselineNotes,
+        noteBoundsVersion: sheetBundle?.notesFetchFailed ? 1 : CURRENT_NOTE_BOUNDS_VERSION,
       };
     }
 
@@ -2660,25 +2738,25 @@ export async function pushSupabaseClientToSheet(clientName) {
       redisClient.del(`pulse:sheet_bridge_dirty:${key}`).catch(() => { });
     }
 
-      // Expand grid rows where Supabase grew beyond the Google Sheet grid height
-      const structuralBatch = [];
-      for (const [tName, reqMaxRow] of Object.entries(maxTargetRowByTab)) {
-        if (PROTOTYPE_KEYS.has(tName)) continue;
-        const props = sheetBundle?.sheetPropsByTitle?.[tName];
-        if (props && reqMaxRow > props.rowCount) {
-          structuralBatch.push({
-            insertDimension: {
-              range: {
-                sheetId: props.sheetId,
-                dimension: "ROWS",
-                startIndex: props.rowCount,
-                endIndex: reqMaxRow + 15,
-              },
-              inheritFromBefore: true,
+    // Expand grid rows where Supabase grew beyond the Google Sheet grid height
+    const structuralBatch = [];
+    for (const [tName, reqMaxRow] of Object.entries(maxTargetRowByTab)) {
+      if (PROTOTYPE_KEYS.has(tName)) continue;
+      const props = sheetBundle?.sheetPropsByTitle?.[tName];
+      if (props && reqMaxRow > props.rowCount) {
+        structuralBatch.push({
+          insertDimension: {
+            range: {
+              sheetId: props.sheetId,
+              dimension: "ROWS",
+              startIndex: props.rowCount,
+              endIndex: reqMaxRow + 15,
             },
-          });
-        }
+            inheritFromBefore: true,
+          },
+        });
       }
+    }
     if (structuralBatch.length > 0) {
       await withRetry(() =>
         rawSheets.spreadsheets.batchUpdate({
@@ -2719,6 +2797,7 @@ export async function pushSupabaseClientToSheet(clientName) {
     await saveBaselineRecord_(supabase, ctx, {
       driveVersion: finalDriveMeta.version,
       tabs: nextBaselineTabs,
+      noteBoundsVersion: sheetBundle?.notesFetchFailed ? 1 : CURRENT_NOTE_BOUNDS_VERSION,
     });
 
     const nowIso = new Date().toISOString();
@@ -2795,9 +2874,11 @@ export async function pushSupabaseClientToSheet(clientName) {
     ).catch(() => { });
     throw err;
   } finally {
-    if (lockOk) await releaseRedisBridgeLock_(key);
+    if (lockOk) await releaseRedisBridgeLock_(key, lockOk);
   }
 }
+
+export const forceOverwriteSheetFromSupabase = pushSupabaseClientToSheet;
 
 function formatParityMonthHeader_(rawHdr, col0) {
   const numHdr = typeof rawHdr === "number"

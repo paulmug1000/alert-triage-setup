@@ -915,8 +915,13 @@ export async function getIntegrationTokens(arg1, arg2, arg3) {
 export async function updateRefreshedTokens({ clientKey, masterSheetId = "", tool, tokens, newTenantId = null }) {
   const cleanClient = normalizeKey(clientKey);
   const cleanTool = normalizeKey(tool);
-  const redisKey = getVaultRedisKey(cleanClient, cleanTool);
-  let rawJson = await redisClient.get(redisKey);
+  const cleanMasterId = normalizeVaultMasterSheetId_(masterSheetId);
+  let redisKey = cleanClient ? getVaultRedisKey(cleanClient, cleanTool) : null;
+  if (!redisKey && cleanMasterId) {
+    const sheetIndexKey = getSheetIndexRedisKey(cleanMasterId, cleanTool);
+    redisKey = await redisClient.get(sheetIndexKey);
+  }
+  let rawJson = redisKey ? await redisClient.get(redisKey) : null;
 
   // If no client-specific record in Redis, fall back to Supabase before giving up:
   if (!rawJson) {
@@ -925,17 +930,19 @@ export async function updateRefreshedTokens({ clientKey, masterSheetId = "", too
     }
     const sbRecord = await loadVaultRecordFromSupabase_({
       clientKey: cleanClient,
-      masterSheetId: String(masterSheetId || "").trim(),
+      masterSheetId: cleanMasterId,
       tool: cleanTool,
     });
     if (sbRecord) {
       rawJson = JSON.stringify(sbRecord);
     } else {
-      throw new Error(`Cannot update tokens: No existing integration record found for ${cleanClient}:${cleanTool}`);
+      throw new Error(`Cannot update tokens: No existing integration record found for ${cleanClient || cleanMasterId}:${cleanTool}`);
     }
   }
 
   const record = JSON.parse(rawJson);
+  const effectiveClient = cleanClient || normalizeKey(record.clientKey);
+  const effectiveRedisKey = effectiveClient ? getVaultRedisKey(effectiveClient, cleanTool) : redisKey;
 
   // CRITICAL ISOLATION RULE:
   // ONLY update the Central Shared Advisor Grant if this specific client record is EXPLICITLY marked as isSharedGrant!
@@ -958,8 +965,8 @@ export async function updateRefreshedTokens({ clientKey, masterSheetId = "", too
     record.tenantId = newTenantId;
   }
 
-  if (!record.isSharedGrant && record.encryptedTokens) {
-    const aad = `${cleanClient}:${cleanTool}`;
+  if (!record.isSharedGrant && record.encryptedTokens && effectiveClient) {
+    const aad = `${effectiveClient}:${cleanTool}`;
     let existingBundle = {};
     try {
       existingBundle = decryptPayload(record.encryptedTokens, aad);
@@ -975,13 +982,17 @@ export async function updateRefreshedTokens({ clientKey, masterSheetId = "", too
   }
 
   const recordJson = JSON.stringify(record);
-  await redisClient.set(redisKey, recordJson);
-  setVaultL1_(redisKey, recordJson);
-  await syncVaultRecordToSupabase(cleanClient, cleanTool, record);
+  if (effectiveRedisKey) {
+    await redisClient.set(effectiveRedisKey, recordJson);
+    setVaultL1_(effectiveRedisKey, recordJson);
+  }
+  if (effectiveClient) {
+    await syncVaultRecordToSupabase(effectiveClient, cleanTool, record);
+  }
   if (!wasConnected) {
     await invalidateIntegrationsCache();
   }
-  console.log(`🔄 Vault: Refreshed tokens persisted for ${cleanClient} [${cleanTool}]. Dedicated: ${!record.isSharedGrant}, Expires in ${Math.round(expiresInMs / 60000)}m.`);
+  console.log(`🔄 Vault: Refreshed tokens persisted for ${effectiveClient || cleanMasterId} [${cleanTool}]. Dedicated: ${!record.isSharedGrant}, Expires in ${Math.round(expiresInMs / 60000)}m.`);
   return record;
 }
 
@@ -1208,26 +1219,51 @@ export async function markIntegrationReconnectRequired({ clientKey, masterSheetI
     if (rawJson) {
       try {
         record = JSON.parse(rawJson);
-        record.status = "reconnect_required";
-        record.reconnectRequired = true;
-        record.lastError = String(error || "");
-        record.updatedAt = new Date().toISOString();
-        await redisClient.set(redisKey, JSON.stringify(record));
-        clearVaultL1_(redisKey);
-        await syncVaultRecordToSupabase(record.clientKey, cleanTool, record);
-        console.log(`⚠️ Vault: Marked ${record.clientKey} [${cleanTool}] as reconnect_required.`);
       } catch (err) {
-        console.error(`Failed to mark reconnect_required for ${redisKey}:`, err);
+        console.error(`Failed to parse cached vault record for ${redisKey}:`, err);
       }
+    }
+  }
+  if (!record) {
+    record = await loadVaultRecordFromSupabase_({
+      clientKey: clientKey ? normalizeKey(clientKey) : "",
+      masterSheetId: cleanMasterId,
+      tool: cleanTool,
+    }).catch(() => null);
+  }
+
+  if (record) {
+    try {
+      const effectiveKey = record.clientKey ? normalizeKey(record.clientKey) : normalizeKey(clientKey || "");
+      const targetRedisKey = redisKey || (effectiveKey ? getVaultRedisKey(effectiveKey, cleanTool) : null);
+      record.status = "reconnect_required";
+      record.reconnectRequired = true;
+      record.lastError = String(error || "");
+      record.updatedAt = new Date().toISOString();
+      if (targetRedisKey) {
+        await redisClient.set(targetRedisKey, JSON.stringify(record));
+        clearVaultL1_(targetRedisKey);
+      }
+      if (effectiveKey) {
+        await syncVaultRecordToSupabase(effectiveKey, cleanTool, record);
+      }
+      console.log(`⚠️ Vault: Marked ${effectiveKey || cleanMasterId} [${cleanTool}] as reconnect_required.`);
+    } catch (err) {
+      console.error(`Failed to mark reconnect_required for ${redisKey || cleanMasterId}:`, err);
     }
   }
 
   // ONLY mark shared grant as reconnect_required if the failing connection was explicitly using the shared grant!
   if (cleanTool === "xero" && (isSharedGrant || record?.isSharedGrant)) {
     const rawShared = await redisClient.get(SHARED_XERO_KEY);
+    let sharedRec = null;
     if (rawShared) {
+      try { sharedRec = JSON.parse(rawShared); } catch { }
+    } else {
+      sharedRec = await loadVaultRecordFromSupabase_({ clientKey: "__shared_xero__", tool: "xero" }).catch(() => null);
+    }
+    if (sharedRec) {
       try {
-        const sharedRec = JSON.parse(rawShared);
         sharedRec.status = "reconnect_required";
         sharedRec.reconnectRequired = true;
         sharedRec.lastError = String(error || "");

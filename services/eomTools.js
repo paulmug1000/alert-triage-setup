@@ -2043,8 +2043,11 @@ export async function handleEomSaveCashBalance(req, res, sheets) {
     return res.status(400).json({ success: false, error: "Missing required fields" });
   }
   const sessionUser = getSessionUser(req);
-  if (sessionUser && !sessionUser.isAdmin && !isUserAuthorizedForClient(sessionUser, cashClientName)) {
-    return res.status(403).json({ success: false, error: "Forbidden: Not authorized for this client." });
+  if (sessionUser) {
+    const auth = await verifyUserAuthorizedForSheet(sessionUser, cashClientSheetId, cashClientName, sheets);
+    if (!auth.authorized) {
+      return res.status(auth.status || 403).json({ success: false, error: auth.error || "Forbidden: Not authorized for this client." });
+    }
   }
   const numericAmounts = amounts.map(a => parseFloat(a)).filter(a => !isNaN(a) && a !== 0);
   const cleanBreakdown = Array.isArray(bankBreakdown) ? sanitizeBreakdownAccounts(bankBreakdown) : [];
@@ -2098,12 +2101,12 @@ export async function handleEomSaveCashBalance(req, res, sheets) {
       clientName: cashClientName,
       spreadsheetId: cashClientSheetId,
     }).catch(() => null);
-    await flushImmediateAndScheduleBackgroundClientRecomputes(sheets, cashCtx?.clientName || cashClientName).catch(() => {});
+    await flushImmediateAndScheduleBackgroundClientRecomputes(sheets, cashCtx?.clientName || cashClientName).catch(() => { });
     await invalidatePmaClientCache(
       cashClientSheetId,
       cashCtx?.masterSheetId || req.body?.masterSheetId || null,
       ["cash", "views", "dashboard"]
-    ).catch(() => {});
+    ).catch(() => { });
 
     const cashWorkMonthKey = eomTargetMonthToWorkMonth_(cashTargetMonthKey);
     const completedTaskId = await autoCompleteLinkedEomTask_(sheets, automationCommanderSheetId, cashClientName, "cash_balance", cashWorkMonthKey);
@@ -2133,7 +2136,7 @@ export async function handleEomCreateDashboardBackup(req, res, sheets) {
   const automationCommanderSheetId = getCanonicalAcSheetId();
   if (!automationCommanderSheetId || !clientSheetId || !backupClientName || !backupWorkMonthKey) return res.status(400).json({ success: false, error: "Missing required fields" });
   const sessionUser = getSessionUser(req);
-  if (sessionUser && !sessionUser.isAdmin) {
+  if (sessionUser) {
     const auth = await verifyUserAuthorizedForSheet(sessionUser, clientSheetId, backupClientName, sheets);
     if (!auth.authorized) {
       return res.status(auth.status || 403).json({ success: false, error: auth.error || "Access denied to this client." });
@@ -2142,10 +2145,31 @@ export async function handleEomCreateDashboardBackup(req, res, sheets) {
   try {
     const routing = await resolveClientRoutingRow_(sheets, automationCommanderSheetId, backupClientName);
     const backupSheetId = routing?.backupSheetId || "";
-    if (!backupSheetId) return res.status(400).json({ success: false, error: "No backup destination is configured for this client." });
-
     const clientCtx = await resolveSupabaseSheetContext({ spreadsheetId: clientSheetId, clientName: backupClientName }).catch(() => null);
     const isVirtualClient = Boolean(clientCtx?.sheetRole === "client" && clientCtx?.clientMode === "supabase");
+
+    if (!backupSheetId) {
+      if (!isVirtualClient) {
+        return res.status(400).json({ success: false, error: "No backup destination is configured for this client." });
+      }
+      const { createClientSnapshot } = await import("./supabaseBackupService.js");
+      const snap = await createClientSnapshot({
+        clientName: clientCtx?.clientName || backupClientName,
+        triggerType: "manual",
+        label: `EOM backup (${backupWorkMonthKey})`,
+        createdBy: sessionUser?.email || "EOM",
+      });
+      await autoCompleteLinkedEomTask_(sheets, automationCommanderSheetId, backupClientName, "create_backup", backupWorkMonthKey);
+      logPmaActivity(sheets, {
+        automationCommanderSheetId,
+        clientName: backupClientName,
+        category: "EOM",
+        action: "Dashboard Backup Created",
+        summary: `Created cloud workspace backup snapshot for ${backupClientName}`,
+        details: { clientName: backupClientName, cloudSnapshot: true, snapshotId: snap?.id || null }
+      }).catch(e => console.error("PMA log failed:", e));
+      return res.status(200).json({ success: true, cloudSnapshot: true, snapshotId: snap?.id || null });
+    }
 
     const now = new Date();
     const yy = String(now.getFullYear()).slice(2);
@@ -2222,6 +2246,13 @@ export async function handleEomCreateDashboardBackup(req, res, sheets) {
 export async function handleEomMarkMonthActual(req, res, sheets) {
   const { automationCommanderSheetId, clientSheetId: perfClientSheetId, clientName: perfClientName, workMonthKey: perfWorkMonthKey } = req.body;
   if (!automationCommanderSheetId || !perfClientSheetId || !perfClientName || !perfWorkMonthKey) return res.status(400).json({ success: false, error: "Missing required fields" });
+  const sessionUser = getSessionUser(req);
+  if (sessionUser) {
+    const auth = await verifyUserAuthorizedForSheet(sessionUser, perfClientSheetId, perfClientName, sheets);
+    if (!auth.authorized) {
+      return res.status(auth.status || 403).json({ success: false, error: auth.error || "Forbidden: Not authorized for this client." });
+    }
+  }
   try {
     const targetMonthKey = eomWorkMonthToTargetMonth_(perfWorkMonthKey);
     const monthLabel = eomKeyToMonthStr_(targetMonthKey);
@@ -2240,7 +2271,7 @@ export async function handleEomMarkMonthActual(req, res, sheets) {
       valueInputOption: "USER_ENTERED", requestBody: { values: [["Actual"]] },
     });
 
-    await invalidatePmaClientCache(perfClientSheetId, null, ["views", "dashboard", "jobs"]).catch(() => {});
+    await invalidatePmaClientCache(perfClientSheetId, null, ["views", "dashboard", "jobs"]).catch(() => { });
 
     await autoCompleteLinkedEomTask_(sheets, automationCommanderSheetId, perfClientName, "mark_actual", perfWorkMonthKey);
 
@@ -2298,6 +2329,13 @@ export async function handleEomMarkNbExclude(req, res, sheets) {
   const { automationCommanderSheetId, clientSheetId, clientName, workMonthKey, mode } = req.body;
   if (!automationCommanderSheetId || !clientSheetId || !clientName || !workMonthKey) {
     return res.status(400).json({ success: false, error: "Missing required fields" });
+  }
+  const sessionUser = getSessionUser(req);
+  if (sessionUser) {
+    const auth = await verifyUserAuthorizedForSheet(sessionUser, clientSheetId, clientName, sheets);
+    if (!auth.authorized) {
+      return res.status(auth.status || 403).json({ success: false, error: auth.error || "Forbidden: Not authorized for this client." });
+    }
   }
   try {
     const targetMonthKey = eomWorkMonthToTargetMonth_(workMonthKey);
@@ -2366,7 +2404,7 @@ export async function handleEomMarkNbExclude(req, res, sheets) {
     } catch (e) {
       console.warn("NBtoFind cache invalidate error:", e?.message);
     }
-    await invalidatePmaClientCache(cleanNbClientId, null, ["nbtofind", "views", "dashboard"]).catch(() => {});
+    await invalidatePmaClientCache(cleanNbClientId, null, ["nbtofind", "views", "dashboard"]).catch(() => { });
 
     await autoCompleteLinkedEomTask_(sheets, automationCommanderSheetId, clientName, "mark_nb_exclude", workMonthKey);
 
@@ -5513,12 +5551,9 @@ export async function handleEomRunReportingAction(req, res, sheets) {
           mgmtGrid = computed.mgmtGrid;
         }
 
-        // 2. Update Recon Sheet tab if GENERATE on first batch (skip legacy Google Recon sheet duplication when native recon/retired)
+        // 2. Update Recon Sheet tab (creating YYMM period in relational bank_recon_periods or Google Recon Sheet)
         if (mode === "GENERATE" && isFirstBatch && reconSheetId) {
-          const reconCtx = await resolveSupabaseSheetContext({ clientName: cName, spreadsheetId: reconSheetId }).catch(() => null);
-          if (!(reconCtx?.reconMode === "native" || reconCtx?.gridStorageRetired)) {
-            await updateReconTabNative_(sheets, reconSheetId, effectiveReportMonth);
-          }
+          await updateReconTabNative_(sheets, reconSheetId, effectiveReportMonth);
         }
 
         // 3. Resolve or create target presentation
@@ -6383,6 +6418,17 @@ export async function handleEomAddZeroBudgetCategory(req, res, sheets) {
     }
     if (!targetBudgetSheetId) {
       return res.status(400).json({ success: false, error: "Client workspace sheet ID could not be resolved." });
+    }
+    const sessionUser = getSessionUser(req);
+    if (sessionUser) {
+      const mAuth = await verifyUserAuthorizedForSheet(sessionUser, mId, clientName, sheets);
+      if (!mAuth.authorized) {
+        return res.status(mAuth.status || 403).json({ success: false, error: mAuth.error || "Forbidden: Not authorized for this client." });
+      }
+      const cAuth = await verifyUserAuthorizedForSheet(sessionUser, targetBudgetSheetId, clientName || mAuth.clientName, sheets);
+      if (!cAuth.authorized) {
+        return res.status(cAuth.status || 403).json({ success: false, error: cAuth.error || "Forbidden: Not authorized for this client." });
+      }
     }
 
     const catsToAdd = Array.isArray(categories)

@@ -114,6 +114,7 @@ export default function ContractorExpenseModal({
   const isLocked = !isNew && !isPlaceholder && Boolean(currentAppId && String(currentAppId).trim() !== "");
   const isPaid = !isNew && String(item?.status || "").toLowerCase() === "paid";
   const isFieldLocked = isLocked || isAutoLocked;
+  const isSaveBlocked = isAutoLocked || (isLocked && isPaid);
 
   const lockTooltip = isAutoLocked
     ? "Automatic placeholder. Convert to manual placeholder to edit."
@@ -121,9 +122,11 @@ export default function ContractorExpenseModal({
       ? "Synced from accounting software. To modify description, amount, VAT, or date, update directly in your accounting software."
       : undefined;
 
+  const isSameBlock = (b) => (item?.appId ? b.appId === item.appId : b === item);
+
   const handleSave = async (e) => {
     if (e && typeof e.preventDefault === "function") e.preventDefault();
-    if (isSaving || isDeleting || isFieldLocked) return;
+    if (isSaving || isDeleting || isSaveBlocked) return;
 
     const parsedAmt = parseFloat(String(amount).replace(/[£$€,\s]/g, ""));
     if (isNaN(parsedAmt) || parsedAmt <= 0) {
@@ -163,7 +166,7 @@ export default function ContractorExpenseModal({
       updatedBlocks = [...allBlocks, newBlock];
     } else {
       updatedBlocks = allBlocks.map((b) => {
-        if (b.appId === item.appId) {
+        if (isSameBlock(b)) {
           return {
             ...b,
             appId: currentAppId || b.appId,
@@ -215,7 +218,7 @@ export default function ContractorExpenseModal({
     setIsDeleting(true);
     setError(null);
 
-    const updatedBlocks = allBlocks.filter((b) => b.appId !== item.appId);
+    const updatedBlocks = allBlocks.filter((b) => !isSameBlock(b));
 
     try {
       const res = await fetch("/api/portal/update-outgoing-note", {
@@ -603,16 +606,16 @@ export default function ContractorExpenseModal({
               </button>
               <button
                 type="submit"
-                disabled={isSaving || isDeleting || isFieldLocked}
+                disabled={isSaving || isDeleting || isSaveBlocked}
                 style={{
-                  background: isFieldLocked ? "#94a3b8" : "#0047AB",
+                  background: isSaveBlocked ? "#94a3b8" : "#0047AB",
                   border: "none",
                   borderRadius: "6px",
                   padding: "6px 16px",
                   fontSize: "12.5px",
                   fontWeight: 700,
                   color: "#ffffff",
-                  cursor: isFieldLocked ? "not-allowed" : isSaving ? "wait" : "pointer",
+                  cursor: isSaveBlocked ? "not-allowed" : isSaving ? "wait" : "pointer",
                   display: "flex",
                   alignItems: "center",
                   gap: "6px",

@@ -846,7 +846,7 @@ export default function OnboardingChecklistView({
             <form onSubmit={handleSaveDeploymentUrl} style={{ display: "flex", gap: "10px" }}>
               <input
                 type="text"
-                placeholder="https://script.google.com/macros/s/.../exec"
+                placeholder="https://app.pulsedashboard.co.uk/pulse"
                 value={deploymentUrl}
                 onChange={(e) => setDeploymentUrl(e.target.value)}
                 style={{ flex: 1, padding: "8px 12px", borderRadius: "6px", border: "1px solid #CBD5E1", fontSize: "13px" }}

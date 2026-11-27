@@ -1,3 +1,4 @@
+import { waitUntil } from "@vercel/functions";
 import { resolveLiveSessionUser, checkRateLimit, getTrustedClientIp } from "../../../services/authService.js";
 import { getSheetsClient, withRetry } from "../../../services/sheetsClient.js";
 import { verifyUserAuthorizedForSheet, isReadOnlySession } from "../../../services/userPermissions.js";
@@ -16,7 +17,7 @@ import {
   rowHasJobSlotData,
   isContiguousJobChildRow,
 } from "../../../utils/helpers.js";
-import { flushImmediateAndScheduleBackgroundClientRecomputes } from "../../../services/masterEngineService.js";
+import { flushImmediateAndScheduleBackgroundClientRecomputes, resolveSupabaseSheetContext } from "../../../services/masterEngineService.js";
 import { resolveAuthoritativeJobAnchor } from "../../../services/relationalJobsService.js";
 
 function normalizeNameKey(val) {
@@ -297,8 +298,20 @@ export default async function handler(req, res) {
       const newSigs = allSeriesRowsToClear.map((r) => `${Number(r)}:${targetClientLower}:${normalizeNameKey(seriesName || jobName)}`);
       memoryCache.set(delCacheKey, Array.from(new Set([...prevDel, ...newSigs])), 15);
 
+      const delVarSbCtx = await resolveSupabaseSheetContext({
+        clientName: verifiedClientName || clientName || "",
+        spreadsheetId: clientSheetId,
+      }).catch(() => null);
       await flushImmediateAndScheduleBackgroundClientRecomputes(sheets, verifiedClientName || clientName || "").catch(() => { });
-      await invalidatePmaClientCache(clientSheetId, null, ["jobs", "invoices", "outgoings", "retainers", "cash", "views"]).catch(() => { });
+      await invalidatePmaClientCache(clientSheetId, delVarSbCtx?.masterSheetId || null, ["jobs", "invoices", "outgoings", "retainers", "cash", "views"]).catch(() => { });
+      if (expectedTabCanonical === "Confirmed" && (verifiedClientName || clientName)) {
+        const compPromise = import("../../../services/masterSyncEngine.js")
+          .then(({ recomputeClientComparisonsInSupabase }) =>
+            recomputeClientComparisonsInSupabase(sheets, verifiedClientName || clientName)
+          )
+          .catch(() => { });
+        try { waitUntil(compPromise); } catch (_) { }
+      }
 
       logPulseActivity(sheets, {
         clientName: verifiedClientName || clientName || anchorRow[0] || "Client",
@@ -528,8 +541,20 @@ export default async function handler(req, res) {
     const newSigs = rowsToClear.map((r) => `${Number(r)}:${normalizeNameKey(actualClient)}:${normalizeNameKey(actualJobName)}`);
     memoryCache.set(delCacheKey, Array.from(new Set([...prevDel, ...newSigs])), 15);
 
+    const delSbCtx = await resolveSupabaseSheetContext({
+      clientName: verifiedClientName || clientName || "",
+      spreadsheetId: clientSheetId,
+    }).catch(() => null);
     await flushImmediateAndScheduleBackgroundClientRecomputes(sheets, verifiedClientName || clientName || "").catch(() => { });
-    await invalidatePmaClientCache(clientSheetId, null, ["jobs", "invoices", "outgoings", "retainers", "cash", "views"]).catch(() => { });
+    await invalidatePmaClientCache(clientSheetId, delSbCtx?.masterSheetId || null, ["jobs", "invoices", "outgoings", "retainers", "cash", "views"]).catch(() => { });
+    if (expectedTabCanonical === "Confirmed" && (verifiedClientName || clientName)) {
+      const compPromise = import("../../../services/masterSyncEngine.js")
+        .then(({ recomputeClientComparisonsInSupabase }) =>
+          recomputeClientComparisonsInSupabase(sheets, verifiedClientName || clientName)
+        )
+        .catch(() => { });
+      try { waitUntil(compPromise); } catch (_) { }
+    }
 
     logPulseActivity(sheets, {
       clientName: verifiedClientName || clientName || actualClient || "Client",

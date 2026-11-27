@@ -1011,7 +1011,7 @@ export default async function handler(req, res) {
           const isChildEmptyRevDc =
             isJobCosting && rRev.startsWith("=")
               ? String(r[cols.jobRevenue] ?? "").trim() === "" &&
-                String(r[cols.jobStartDate] ?? "").trim() === ""
+              String(r[cols.jobStartDate] ?? "").trim() === ""
               : rRev === "" && rDc === "";
           const isMatched =
             (explicitChildSet.has(candidateRowNum) && isChildEmptyRevDc) ||
@@ -1090,7 +1090,11 @@ export default async function handler(req, res) {
         setDateConf: true,
       });
       if (!varRes.success) {
-        return res.status(400).json({ success: false, error: varRes.error || "Failed to create variable retainer" });
+        const rawErr = varRes.error || "Failed to create variable retainer";
+        return res.status(400).json({
+          success: false,
+          error: sessionUser.isAdmin ? rawErr : sanitizeSpreadsheetTerms(rawErr),
+        });
       }
       if (deferredClearRanges.length > 0) {
         await withRetry(() =>
@@ -1105,8 +1109,9 @@ export default async function handler(req, res) {
           );
         }
       }
+      const saveVarMasterId = await resolveMasterSheetIdForClient_(sheets, clientSheetId, verifiedClientName || clientName || "").catch(() => null);
       await flushImmediateAndScheduleBackgroundClientRecomputes(sheets, verifiedClientName || clientName || "").catch(() => { });
-      await invalidatePmaClientCache(clientSheetId, null, ["jobs", "invoices", "outgoings", "retainers", "cash", "views"]).catch(() => { });
+      await invalidatePmaClientCache(clientSheetId, saveVarMasterId || null, ["jobs", "invoices", "outgoings", "retainers", "cash", "views"]).catch(() => { });
       return res.status(200).json({
         success: true,
         rowNumber: varRes.firstRowNum,
@@ -1843,7 +1848,8 @@ export default async function handler(req, res) {
     await flushImmediateAndScheduleBackgroundClientRecomputes(sheets, verifiedClientName || clientName || "").catch(() => { });
 
     try {
-      await invalidatePmaClientCache(clientSheetId, null, ["jobs", "invoices", "outgoings", "retainers", "cash", "views"]);
+      const saveMasterId = await resolveMasterSheetIdForClient_(sheets, clientSheetId, verifiedClientName || clientName || "").catch(() => null);
+      await invalidatePmaClientCache(clientSheetId, saveMasterId || null, ["jobs", "invoices", "outgoings", "retainers", "cash", "views"]);
     } catch (cacheErr) {
       console.warn("⚠️ Cache invalidation warning:", cacheErr.message);
     }

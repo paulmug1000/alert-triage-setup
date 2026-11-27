@@ -24,7 +24,7 @@ export default function MatchCrmPipelineModal({
     const nextMap = {};
     for (const m of data?.clearMatches || []) {
       const code = m?.crmDeal?.projectCode;
-      const rowNum = m?.pipelineRow?.rowNum;
+      const rowNum = m?.pipelineRow?.rowNum ?? m?.pipelineRow?.lineId;
       if (code && rowNum) nextMap[code] = rowNum;
     }
     setSelectedMap(nextMap);
@@ -322,7 +322,7 @@ export default function MatchCrmPipelineModal({
                                 <input
                                   type="checkbox"
                                   checked={checked}
-                                  onChange={() => toggleMatch(code, m.pipelineRow.rowNum)}
+                                  onChange={() => toggleMatch(code, m.pipelineRow?.rowNum ?? m.pipelineRow?.lineId)}
                                 />
                               </td>
                               <td style={{ padding: "10px 12px", verticalAlign: "top" }}>
@@ -389,11 +389,14 @@ export default function MatchCrmPipelineModal({
                                   style={{ width: "100%", padding: "6px 8px", borderRadius: "6px", border: "1px solid #CBD5E1", fontSize: "12px" }}
                                 >
                                   <option value="">Do not link (add as new on next sync)</option>
-                                  {blankOptions.map((opt) => (
-                                    <option key={opt.rowNum} value={opt.rowNum}>
-                                      {opt.client} — {opt.job} ({formatDealMeta(opt)}){isAdmin ? ` [Row ${opt.rowNum}]` : ""}
-                                    </option>
-                                  ))}
+                                  {blankOptions.map((opt) => {
+                                    const optRowId = opt.rowNum ?? opt.lineId;
+                                    return (
+                                      <option key={optRowId} value={optRowId}>
+                                        {opt.client} — {opt.job} ({formatDealMeta(opt)}){isAdmin && opt.rowNum ? ` [Row ${opt.rowNum}]` : ""}
+                                      </option>
+                                    );
+                                  })}
                                 </select>
                               </td>
                               <td style={{ padding: "10px 12px", verticalAlign: "top", color: "#B45309" }}>

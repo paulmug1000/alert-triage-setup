@@ -1150,7 +1150,7 @@ export async function refreshAccountingCatalogSource({
     };
   }
 
-  await ensureRedisConnected(500).catch(() => {});
+  await ensureRedisConnected(500).catch(() => { });
 
   const clientKey = supaCtx.clientName || resolvedClientName || cleanClientSheetId;
   const cooldownKey = `pulse:acct_cat_cd:${clientKey}:${itemType}`;
@@ -1261,11 +1261,11 @@ export async function refreshAccountingCatalogSource({
     const sinceIso = prevPreflight?.baselineSinceIso || prevPreflight?.fullSyncedAt || null;
     const probe = !force && sinceIso
       ? await probeExternalAccountingFingerprint({
-          ctx: supaCtx,
-          keyInfoGrid,
-          sequence: seq,
-          sinceIso,
-        })
+        ctx: supaCtx,
+        keyInfoGrid,
+        sequence: seq,
+        sinceIso,
+      })
       : { ok: false, reason: force ? "forced" : "no_since_baseline" };
 
     if (probe.ok && prevPreflight?.fingerprint && probe.fingerprint === prevPreflight.fingerprint) {
@@ -1273,7 +1273,7 @@ export async function refreshAccountingCatalogSource({
       const cdVal = { checkedAt, tool: probe.tool };
       memoryCache.set(cooldownKey, cdVal, cooldownSecs);
       if (redisClient?.isOpen) {
-        await redisClient.set(cooldownKey, JSON.stringify(cdVal), { EX: cooldownSecs }).catch(() => {});
+        await redisClient.set(cooldownKey, JSON.stringify(cdVal), { EX: cooldownSecs }).catch(() => { });
       }
       return {
         success: true,
@@ -1329,12 +1329,12 @@ export async function refreshAccountingCatalogSource({
       cleanClientSheetId,
       cleanMasterSheetId || null,
       itemType === "invoice" ? ["invoices"] : ["outgoings"]
-    ).catch(() => {});
+    ).catch(() => { });
 
     const cdVal = { checkedAt: completedAtIso, tool: probe?.tool || null };
     memoryCache.set(cooldownKey, cdVal, cooldownSecs);
     if (redisClient?.isOpen) {
-      await redisClient.set(cooldownKey, JSON.stringify(cdVal), { EX: cooldownSecs }).catch(() => {});
+      await redisClient.set(cooldownKey, JSON.stringify(cdVal), { EX: cooldownSecs }).catch(() => { });
     }
 
     return {
@@ -1347,7 +1347,7 @@ export async function refreshAccountingCatalogSource({
     };
   } finally {
     if (redisClient?.isOpen) {
-      await redisClient.del(lockKey).catch(() => {});
+      await redisClient.del(lockKey).catch(() => { });
     }
   }
 }
@@ -1649,7 +1649,7 @@ function buildRevenueOrBudgetWrites_(group, itemType, { updateJobRevenue, newJob
 }
 
 async function invalidatePortalAndPmaCaches_(cleanClientSheetId, cleanMasterSheetId, scopes) {
-  await invalidatePmaClientCache(cleanClientSheetId, cleanMasterSheetId || null, scopes).catch(() => {});
+  await invalidatePmaClientCache(cleanClientSheetId, cleanMasterSheetId || null, scopes).catch(() => { });
   if (redisClient?.isOpen) {
     await redisClient
       .del([
@@ -1657,7 +1657,7 @@ async function invalidatePortalAndPmaCaches_(cleanClientSheetId, cleanMasterShee
         `pulse:portal:performance:${cleanClientSheetId}`,
         `pulse:portal:cash:${cleanClientSheetId}`,
       ])
-      .catch(() => {});
+      .catch(() => { });
   }
 }
 
@@ -1819,11 +1819,11 @@ export async function batchAssignOrUnassignJobItems({
     const values =
       itemType === "invoice"
         ? buildInvoiceWriteValues_({
-            ...authItem,
-            ...(typeof reqItem === "object" && reqItem?.ofWhichRechgd !== undefined
-              ? { ofWhichRechgd: reqItem.ofWhichRechgd, costMonth: reqItem.costMonth || "" }
-              : {}),
-          })
+          ...authItem,
+          ...(typeof reqItem === "object" && reqItem?.ofWhichRechgd !== undefined
+            ? { ofWhichRechgd: reqItem.ofWhichRechgd, costMonth: reqItem.costMonth || "" }
+            : {}),
+        })
         : buildExpenseWriteValues_(authItem);
 
     const w = applySlotWriteToGroup_(group, itemType, allocated.rowNum, allocated.slotNum, values);
@@ -1913,30 +1913,38 @@ export async function batchAssignOrUnassignJobItems({
     isSysAdmin
   );
 
+  if (normRes.relocations?.length > 0) {
+    await applySlotNoteAndFormattingRelocations_(
+      sheets,
+      cleanClientSheetId,
+      "Confirmed",
+      group,
+      slotKind,
+      normRes.relocations
+    );
+  }
+  const tenantClient =
+    resolvedClientName ||
+    (await resolveClientNameBySheetId(sheets, cleanClientSheetId, automationCommanderSheetId));
+  if (tenantClient) {
+    await flushImmediateAndScheduleBackgroundClientRecomputes(sheets, tenantClient).catch(() => { });
+  }
+  await invalidatePortalAndPmaCaches_(cleanClientSheetId, cleanMasterSheetId, [
+    "invoices",
+    "outgoings",
+    "jobs",
+    "retainers",
+    "cash",
+  ]);
+
   const bgTasks = (async () => {
-    if (normRes.relocations?.length > 0) {
-      await applySlotNoteAndFormattingRelocations_(
-        sheets,
-        cleanClientSheetId,
-        "Confirmed",
-        group,
-        slotKind,
-        normRes.relocations
-      );
-    }
-    const tenantClient =
-      resolvedClientName ||
-      (await resolveClientNameBySheetId(sheets, cleanClientSheetId, automationCommanderSheetId));
     if (tenantClient) {
-      await flushImmediateAndScheduleBackgroundClientRecomputes(sheets, tenantClient).catch(() => {});
+      await import("./masterSyncEngine.js")
+        .then(({ recomputeClientComparisonsInSupabase }) =>
+          recomputeClientComparisonsInSupabase(sheets, tenantClient)
+        )
+        .catch(() => { });
     }
-    await invalidatePortalAndPmaCaches_(cleanClientSheetId, cleanMasterSheetId, [
-      "invoices",
-      "outgoings",
-      "jobs",
-      "retainers",
-      "cash",
-    ]);
     const jobLabel = matchedJob.client
       ? `"${matchedJob.client} - ${matchedJob.jobName}"`
       : `"${matchedJob.jobName}"`;
@@ -1945,13 +1953,13 @@ export async function batchAssignOrUnassignJobItems({
     await Promise.all([
       resolvedAlertKeys.length > 0
         ? resolveAssignedAlertsInMemoryAndCache(sheets, {
-            acSheetId: automationCommanderSheetId,
-            clientName: tenantClient,
-            ...(itemType === "invoice"
-              ? { invoiceNos: resolvedAlertKeys }
-              : { expenseIds: resolvedAlertKeys }),
-            sessionId,
-          }).catch(() => {})
+          acSheetId: automationCommanderSheetId,
+          clientName: tenantClient,
+          ...(itemType === "invoice"
+            ? { invoiceNos: resolvedAlertKeys }
+            : { expenseIds: resolvedAlertKeys }),
+          sessionId,
+        }).catch(() => { })
         : Promise.resolve(),
       logPmaActivity(sheets, {
         automationCommanderSheetId,
@@ -1967,7 +1975,7 @@ export async function batchAssignOrUnassignJobItems({
           unassignedCount,
           keys: resolvedAlertKeys,
         },
-      }).catch(() => {}),
+      }).catch(() => { }),
       logPulseActivity(sheets, {
         automationCommanderSheetId,
         clientName: tenantClient,
@@ -1976,12 +1984,12 @@ export async function batchAssignOrUnassignJobItems({
         summary: sanitizeSpreadsheetTerms(summaryText),
         details: { jobName: matchedJob.jobName, assignedCount, unassignedCount },
         user: userEmail,
-      }).catch(() => {}),
+      }).catch(() => { }),
     ]);
   })();
   try {
     waitUntil(bgTasks);
-  } catch (_) {}
+  } catch (_) { }
 
   return {
     success: true,
@@ -2121,23 +2129,23 @@ export async function moveAccountingItemToJob({
       const trancheVals =
         itemType === "invoice"
           ? [
-              rawRow[baseCol] ?? "",
-              formatInvoiceRefForSheet(rawRow[baseCol + 1] ?? ""),
-              rawRow[baseCol + 2] ? (toSheetDateFormat(rawRow[baseCol + 2]) || rawRow[baseCol + 2]) : "",
-              rawRow[baseCol + 3] || 30,
-              sanitizeFormulaInput(canonicalizeInvoiceStatus(rawRow[baseCol + 4] ?? "")),
-              rawRow[baseCol + 5] ?? "",
-              sanitizeFormulaInput(normalizeStr_(rawRow[baseCol + 6])),
-            ]
+            rawRow[baseCol] ?? "",
+            formatInvoiceRefForSheet(rawRow[baseCol + 1] ?? ""),
+            rawRow[baseCol + 2] ? (toSheetDateFormat(rawRow[baseCol + 2]) || rawRow[baseCol + 2]) : "",
+            rawRow[baseCol + 3] || 30,
+            sanitizeFormulaInput(canonicalizeInvoiceStatus(rawRow[baseCol + 4] ?? "")),
+            rawRow[baseCol + 5] ?? "",
+            sanitizeFormulaInput(normalizeStr_(rawRow[baseCol + 6])),
+          ]
           : [
-              sanitizeFormulaInput(normalizeStr_(rawRow[baseCol])),
-              round2_(parseMoney_(rawRow[baseCol + 1])),
-              normalizeStr_(rawRow[baseCol + 2]) || "No",
-              rawRow[baseCol + 3] ? (toSheetDateFormat(rawRow[baseCol + 3]) || rawRow[baseCol + 3]) : "",
-              rawRow[baseCol + 4] || 30,
-              sanitizeFormulaInput(canonicalizeExpenseStatus(rawRow[baseCol + 5] ?? "")),
-              sanitizeFormulaInput(normalizeStr_(rawRow[baseCol + 6])),
-            ];
+            sanitizeFormulaInput(normalizeStr_(rawRow[baseCol])),
+            round2_(parseMoney_(rawRow[baseCol + 1])),
+            normalizeStr_(rawRow[baseCol + 2]) || "No",
+            rawRow[baseCol + 3] ? (toSheetDateFormat(rawRow[baseCol + 3]) || rawRow[baseCol + 3]) : "",
+            rawRow[baseCol + 4] || 30,
+            sanitizeFormulaInput(canonicalizeExpenseStatus(rawRow[baseCol + 5] ?? "")),
+            sanitizeFormulaInput(normalizeStr_(rawRow[baseCol + 6])),
+          ];
       const targetMonthKey = itemType === "invoice" ? toMonthKey_(rawRow[baseCol + 2]) : "";
       return { p, trancheVals, targetMonthKey };
     });
@@ -2219,8 +2227,8 @@ export async function moveAccountingItemToJob({
     const [srcNorm, tgtNorm] = await Promise.all([
       sourceGroup
         ? runAdjustAndNormalizeJobSlots_(sheets, cleanClientSheetId, "Confirmed", sourceGroup, slotKind, {
-            preloadedTolerances: tolerances,
-          }).catch(() => ({ batchData: [], relocations: [] }))
+          preloadedTolerances: tolerances,
+        }).catch(() => ({ batchData: [], relocations: [] }))
         : Promise.resolve({ batchData: [], relocations: [] }),
       runAdjustAndNormalizeJobSlots_(sheets, cleanClientSheetId, "Confirmed", targetGroup, slotKind, {
         jobBudgetOrRevenue: itemType === "invoice" ? updatedRevenue : updatedDirectCosts,
@@ -2260,37 +2268,48 @@ export async function moveAccountingItemToJob({
       isSysAdmin
     );
 
+    if (sourceGroup && srcNorm.relocations?.length > 0) {
+      await applySlotNoteAndFormattingRelocations_(
+        sheets,
+        cleanClientSheetId,
+        "Confirmed",
+        sourceGroup,
+        slotKind,
+        srcNorm.relocations
+      );
+    }
+    if (tgtNorm.relocations?.length > 0) {
+      await applySlotNoteAndFormattingRelocations_(
+        sheets,
+        cleanClientSheetId,
+        "Confirmed",
+        targetGroup,
+        slotKind,
+        tgtNorm.relocations
+      );
+    }
+    const tenantClient =
+      resolvedClientName ||
+      (await resolveClientNameBySheetId(sheets, cleanClientSheetId, automationCommanderSheetId));
+    if (tenantClient) {
+      await flushImmediateAndScheduleBackgroundClientRecomputes(sheets, tenantClient).catch(() => { });
+    }
+    await invalidatePortalAndPmaCaches_(cleanClientSheetId, cleanMasterSheetId, [
+      "invoices",
+      "outgoings",
+      "jobs",
+      "retainers",
+      "cash",
+    ]);
+
     const bgTasks = (async () => {
-      if (sourceGroup && srcNorm.relocations?.length > 0) {
-        await applySlotNoteAndFormattingRelocations_(
-          sheets,
-          cleanClientSheetId,
-          "Confirmed",
-          sourceGroup,
-          slotKind,
-          srcNorm.relocations
-        );
+      if (tenantClient) {
+        await import("./masterSyncEngine.js")
+          .then(({ recomputeClientComparisonsInSupabase }) =>
+            recomputeClientComparisonsInSupabase(sheets, tenantClient)
+          )
+          .catch(() => { });
       }
-      if (tgtNorm.relocations?.length > 0) {
-        await applySlotNoteAndFormattingRelocations_(
-          sheets,
-          cleanClientSheetId,
-          "Confirmed",
-          targetGroup,
-          slotKind,
-          tgtNorm.relocations
-        );
-      }
-      await invalidatePortalAndPmaCaches_(cleanClientSheetId, cleanMasterSheetId, [
-        "invoices",
-        "outgoings",
-        "jobs",
-        "retainers",
-        "cash",
-      ]);
-      const tenantClient =
-        resolvedClientName ||
-        (await resolveClientNameBySheetId(sheets, cleanClientSheetId, automationCommanderSheetId));
       const summary = `Moved ${itemType === "invoice" ? `invoice #${itemKey}` : `direct cost ${itemKey}`} from "${primarySourceJob.jobName}" to "${matchedTargetJob.jobName}"`;
       await Promise.all([
         logPmaActivity(sheets, {
@@ -2305,7 +2324,7 @@ export async function moveAccountingItemToJob({
             targetJobName: matchedTargetJob.jobName,
             trancheCount: movedTranches.length,
           },
-        }).catch(() => {}),
+        }).catch(() => { }),
         logPulseActivity(sheets, {
           automationCommanderSheetId,
           clientName: tenantClient,
@@ -2314,12 +2333,12 @@ export async function moveAccountingItemToJob({
           summary: sanitizeSpreadsheetTerms(summary),
           details: { itemKey, sourceJobName: primarySourceJob.jobName, targetJobName: matchedTargetJob.jobName },
           user: userEmail,
-        }).catch(() => {}),
+        }).catch(() => { }),
       ]);
     })();
     try {
       waitUntil(bgTasks);
-    } catch (_) {}
+    } catch (_) { }
 
     return {
       success: true,
@@ -2413,7 +2432,7 @@ export async function moveAccountingItemToJob({
       resolvedClientName ||
       (await resolveClientNameBySheetId(sheets, cleanClientSheetId, automationCommanderSheetId));
     if (resolvedMoveClient) {
-      await flushPendingClientRecomputes(sheets, resolvedMoveClient).catch(() => {});
+      await flushPendingClientRecomputes(sheets, resolvedMoveClient).catch(() => { });
     }
 
     const uniqueColLetters = [...new Set(Array.from(cellMap.values()).map((c) => c.colLetter))];
@@ -2571,26 +2590,33 @@ export async function moveAccountingItemToJob({
       outgNotesData,
     });
 
-    if (tenantClient) {
-      await flushImmediateAndScheduleBackgroundClientRecomputes(sheets, tenantClient).catch(() => {});
+    if (normRes.relocations?.length > 0) {
+      await applySlotNoteAndFormattingRelocations_(
+        sheets,
+        cleanClientSheetId,
+        "Confirmed",
+        targetGroup,
+        "expense",
+        normRes.relocations
+      );
     }
+    if (tenantClient) {
+      await flushImmediateAndScheduleBackgroundClientRecomputes(sheets, tenantClient).catch(() => { });
+    }
+    await invalidatePortalAndPmaCaches_(cleanClientSheetId, cleanMasterSheetId, [
+      "outgoings",
+      "jobs",
+      "views",
+      "cash",
+    ]);
     const bgTasks = (async () => {
-      if (normRes.relocations?.length > 0) {
-        await applySlotNoteAndFormattingRelocations_(
-          sheets,
-          cleanClientSheetId,
-          "Confirmed",
-          targetGroup,
-          "expense",
-          normRes.relocations
-        );
+      if (tenantClient) {
+        await import("./masterSyncEngine.js")
+          .then(({ recomputeClientComparisonsInSupabase }) =>
+            recomputeClientComparisonsInSupabase(sheets, tenantClient)
+          )
+          .catch(() => { });
       }
-      await invalidatePortalAndPmaCaches_(cleanClientSheetId, cleanMasterSheetId, [
-        "outgoings",
-        "jobs",
-        "views",
-        "cash",
-      ]);
       const summary = `Moved direct cost "${expPayload.displayDescription || expPayload.description || expPayload.appId}" from Contractors (${firstMatch.contractorName}) to "${matchedTargetJob.jobName}"`;
       await Promise.all([
         logPmaActivity(sheets, {
@@ -2604,7 +2630,7 @@ export async function moveAccountingItemToJob({
             contractorName: firstMatch.contractorName,
             targetJobName: matchedTargetJob.jobName,
           },
-        }).catch(() => {}),
+        }).catch(() => { }),
         logPulseActivity(sheets, {
           automationCommanderSheetId,
           clientName: tenantClient,
@@ -2613,12 +2639,12 @@ export async function moveAccountingItemToJob({
           summary: sanitizeSpreadsheetTerms(summary),
           details: { appId: expPayload.appId, targetJobName: matchedTargetJob.jobName },
           user: userEmail,
-        }).catch(() => {}),
+        }).catch(() => { }),
       ]);
     })();
     try {
       waitUntil(bgTasks);
-    } catch (_) {}
+    } catch (_) { }
 
     return {
       success: true,

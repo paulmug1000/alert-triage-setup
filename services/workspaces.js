@@ -9592,7 +9592,7 @@ export async function syncOutgNotesAndTriggerRefresh_(sheets, { sheetIdClean, ta
   await Promise.allSettled(outgNotesUpdates);
 
   if (targetMasterId) {
-    resolveSupabaseSheetContext({ clientName: tenantClient, spreadsheetId: targetMasterId })
+    const refreshPromise = resolveSupabaseSheetContext({ clientName: tenantClient, spreadsheetId: targetMasterId })
       .then((supaCtx) => {
         if (supaCtx && supaCtx.masterMode === "supabase") {
           return recomputeClientComparisonsInSupabase(sheets, supaCtx.clientName || tenantClient);
@@ -9612,6 +9612,9 @@ export async function syncOutgNotesAndTriggerRefresh_(sheets, { sheetIdClean, ta
         }
       })
       .catch((e) => console.warn("Background refreshOutgoings call failed:", e.message));
+    try {
+      waitUntil(refreshPromise);
+    } catch (_) { }
   }
 }
 
@@ -9623,7 +9626,7 @@ function isEditableOutgoingsNoteRow_(r, user, allowMakingUpCos = false) {
   if (allowMakingUpCos && r === 111) return true;
   if (r >= 13 && r <= 110) return true;
   if (r >= 126 && r <= 224) return true;
-  if (((r >= 115 && r <= 123) || (r >= 230 && r <= 238)) && canViewSalariesAndDividends(user)) {
+  if ((r === 117 || r === 118 || r === 119) && canViewSalariesAndDividends(user)) {
     return true;
   }
   return false;
@@ -9750,7 +9753,7 @@ export async function handleUpdateOutgoingNote(req, res, sheets) {
         });
       }
       if (sheetRow >= 12 && sheetRow <= 110 && tenantClient) {
-        await flushPendingClientRecomputes(sheets, tenantClient).catch(() => {});
+        await flushPendingClientRecomputes(sheets, tenantClient).catch(() => { });
       }
     }
 
@@ -9821,14 +9824,17 @@ export async function handleUpdateOutgoingNote(req, res, sheets) {
 
     const targetMasterId = await resolveMasterIdForOutgoings_(sheets, sheetIdClean, tenantClient, req.body.masterSheetId);
 
-    const outgNotesData = [
-      { range: `OutgNotes!${colLetter}${sheetRow}`, values: [[sanitizeOutgNotesVal_(noteStr)]] }
-    ];
+    const outgNotesData = [];
+    if (parsedRow >= 13 && parsedRow <= 111) {
+      outgNotesData.push({ range: `OutgNotes!${colLetter}${sheetRow}`, values: [[sanitizeOutgNotesVal_(noteStr)]] });
+    }
     if (newCosNote !== null) {
       outgNotesData.push({ range: `OutgNotes!${colLetter}111`, values: [[sanitizeOutgNotesVal_(newCosNote)]] });
     }
 
-    await syncOutgNotesAndTriggerRefresh_(sheets, { sheetIdClean, targetMasterId, tenantClient, outgNotesData });
+    if (outgNotesData.length > 0) {
+      await syncOutgNotesAndTriggerRefresh_(sheets, { sheetIdClean, targetMasterId, tenantClient, outgNotesData });
+    }
 
     let contractor = req.body.contractorName || "";
     if (!contractor && sheetRow) {
@@ -9874,7 +9880,10 @@ export async function handleUpdateOutgoingNote(req, res, sheets) {
     ]).catch(e => console.error("PMA log failed:", e));
     try { waitUntil(bgNoteTasks); } catch (_) { }
 
-    await invalidatePmaClientCache(sheetIdClean, null, ["outgoings", "views"]).catch(() => { });
+    if (tenantClient) {
+      await flushImmediateAndScheduleBackgroundClientRecomputes(sheets, tenantClient).catch(() => { });
+    }
+    await invalidatePmaClientCache(sheetIdClean, targetMasterId || null, ["outgoings", "views", "cash"]).catch(() => { });
 
     return res.status(200).json({
       success: true,
@@ -10026,10 +10035,12 @@ export async function handleUpdateOutgoingNotesBatch(req, res, sheets) {
         },
       });
 
-      outgNotesData.push({
-        range: `OutgNotes!${u.colLetter}${u.sheetRow}`,
-        values: [[sanitizeOutgNotesVal_(noteStr)]],
-      });
+      if (u.sheetRow >= 13 && u.sheetRow <= 111) {
+        outgNotesData.push({
+          range: `OutgNotes!${u.colLetter}${u.sheetRow}`,
+          values: [[sanitizeOutgNotesVal_(noteStr)]],
+        });
+      }
 
       if (u.sheetRow >= 12 && u.sheetRow <= 110) {
         touchedCosCols.add(u.colLetter);
@@ -10052,7 +10063,7 @@ export async function handleUpdateOutgoingNotesBatch(req, res, sheets) {
       })
     );
     if (touchedCosCols.size > 0 && tenantClient) {
-      await flushPendingClientRecomputes(sheets, tenantClient).catch(() => {});
+      await flushPendingClientRecomputes(sheets, tenantClient).catch(() => { });
     }
 
     // 2. Inspect Row 111 Making up CoS for each affected column in a single batch read
@@ -10128,7 +10139,9 @@ export async function handleUpdateOutgoingNotesBatch(req, res, sheets) {
     }
 
     const targetMasterId = await resolveMasterIdForOutgoings_(sheets, sheetIdClean, tenantClient, masterSheetId);
-    await syncOutgNotesAndTriggerRefresh_(sheets, { sheetIdClean, targetMasterId, tenantClient, outgNotesData });
+    if (outgNotesData.length > 0) {
+      await syncOutgNotesAndTriggerRefresh_(sheets, { sheetIdClean, targetMasterId, tenantClient, outgNotesData });
+    }
 
     const bgTasks = logPmaActivity(sheets, {
       automationCommanderSheetId,
@@ -10143,7 +10156,10 @@ export async function handleUpdateOutgoingNotesBatch(req, res, sheets) {
     }).catch((e) => console.error("PMA log failed:", e));
     try { waitUntil(bgTasks); } catch (_) { }
 
-    await invalidatePmaClientCache(sheetIdClean, null, ["outgoings", "views"]).catch(() => { });
+    if (tenantClient) {
+      await flushImmediateAndScheduleBackgroundClientRecomputes(sheets, tenantClient).catch(() => { });
+    }
+    await invalidatePmaClientCache(sheetIdClean, targetMasterId || null, ["outgoings", "views", "cash"]).catch(() => { });
 
     return res.status(200).json({
       success: true,
@@ -10152,7 +10168,10 @@ export async function handleUpdateOutgoingNotesBatch(req, res, sheets) {
     });
   } catch (err) {
     console.error("❌ update_outgoing_notes_batch error:", err);
-    return res.status(500).json({ success: false, error: err.message });
+    return res.status(500).json({
+      success: false,
+      error: sessionUser?.isAdmin ? err.message : sanitizeSpreadsheetTerms(err.message),
+    });
   }
 }
 
@@ -10189,7 +10208,7 @@ export async function handleSetMakingUpCosZero(req, res, sheets) {
     );
     const flushClientZero = clientName || (await resolveClientNameBySheetId(sheets, sheetIdClean, automationCommanderSheetId));
     if (flushClientZero) {
-      await flushPendingClientRecomputes(sheets, flushClientZero).catch(() => {});
+      await flushPendingClientRecomputes(sheets, flushClientZero).catch(() => { });
     }
 
     // Read back row 111 in that column to get recalculated value
@@ -10280,7 +10299,7 @@ export async function handleSetMakingUpCosTarget(req, res, sheets) {
     );
     const flushClientTarget = clientName || (await resolveClientNameBySheetId(sheets, sheetIdClean, automationCommanderSheetId));
     if (flushClientTarget) {
-      await flushPendingClientRecomputes(sheets, flushClientTarget).catch(() => {});
+      await flushPendingClientRecomputes(sheets, flushClientTarget).catch(() => { });
     }
 
     // 2. Invalidate Client Settings cache in Redis so Client Settings immediately reflects the change
@@ -10677,8 +10696,11 @@ export async function handleDeleteDirectJob(req, res, sheets) {
     memoryCache.set(delCacheKey, updatedDel, 15); // 15s TTL
 
     const tenantClient = clientName || (await resolveClientNameBySheetId(sheets, sheetIdClean, req.body.automationCommanderSheetId));
+    const sbCtx = tenantClient
+      ? await resolveSupabaseSheetContext({ clientName: tenantClient, spreadsheetId: sheetIdClean }).catch(() => null)
+      : null;
     await flushImmediateAndScheduleBackgroundClientRecomputes(sheets, tenantClient).catch(() => { });
-    await invalidatePmaClientCache(sheetIdClean, null, ["jobs", "invoices", "retainers", "cash"]);
+    await invalidatePmaClientCache(sheetIdClean, sbCtx?.masterSheetId || null, ["jobs", "invoices", "retainers", "cash"]);
 
     // Log activity
     logPmaActivity(sheets, {

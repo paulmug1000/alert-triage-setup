@@ -3317,6 +3317,8 @@ export async function provisionNewClientSystem({
           recon_sheet_url: reconUrl,
           backup_sheet_url: backupUrl,
           drive_folder_id: folderId,
+          grid_storage_retired: false,
+          grid_retired_at: null,
           metadata: {
             setupMode: true,
             requestConnections: hasSelectedTools,

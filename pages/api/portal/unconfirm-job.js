@@ -19,7 +19,7 @@ import {
   resolveEditableJobSheetMeta,
   isContiguousJobChildRow,
 } from "../../../utils/helpers.js";
-import { flushImmediateAndScheduleBackgroundClientRecomputes } from "../../../services/masterEngineService.js";
+import { flushImmediateAndScheduleBackgroundClientRecomputes, resolveSupabaseSheetContext } from "../../../services/masterEngineService.js";
 import { resolveAuthoritativeJobAnchor, getClientRelationalJobsLookup } from "../../../services/relationalJobsService.js";
 import { relinkNotesForJobChange } from "../../../services/pulseNotesService.js";
 import { buildJobNoteKey, buildJobNoteLabel } from "../../../utils/pulseNotesKeys.js";
@@ -599,7 +599,11 @@ export default async function handler(req, res) {
 
     // 9. Invalidate In-Memory and Redis caches across both Portal and PMA
     try {
-      await invalidatePmaClientCache(clientSheetId, null, ["jobs", "invoices", "outgoings", "retainers", "cash", "views"]);
+      const unconfSbCtx = await resolveSupabaseSheetContext({
+        clientName: verifiedClientName || clientName || "",
+        spreadsheetId: clientSheetId,
+      }).catch(() => null);
+      await invalidatePmaClientCache(clientSheetId, unconfSbCtx?.masterSheetId || null, ["jobs", "invoices", "outgoings", "retainers", "cash", "views"]);
     } catch (cacheErr) {
       console.warn("⚠️ Cache invalidation warning:", cacheErr.message);
     }

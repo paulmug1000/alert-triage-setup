@@ -28,6 +28,31 @@ import { redisClient, scanRedisKeys } from "./redisClient.js";
 
 const RET_MONTHS_MAP = { jan: 0, feb: 1, mar: 2, apr: 3, may: 4, jun: 5, jul: 6, aug: 7, sep: 8, oct: 9, nov: 10, dec: 11 };
 
+async function flushAndInvalidateRetainerCache_(
+  sheets,
+  clientSheetId,
+  masterSheetId = null,
+  scopes = ["jobs", "invoices", "retainers", "cash"],
+  clientNameHint = ""
+) {
+  let resolvedName = String(clientNameHint || "").trim();
+  let resolvedMasterId = masterSheetId || null;
+  if ((!resolvedName || !resolvedMasterId) && (clientSheetId || masterSheetId)) {
+    const sbCtx = await resolveSupabaseSheetContext({
+      spreadsheetId: clientSheetId || masterSheetId,
+      clientName: resolvedName || undefined,
+    }).catch(() => null);
+    if (sbCtx) {
+      if (!resolvedName && sbCtx.clientName) resolvedName = sbCtx.clientName;
+      if (!resolvedMasterId && sbCtx.masterSheetId) resolvedMasterId = sbCtx.masterSheetId;
+    }
+  }
+  if (resolvedName) {
+    await flushImmediateAndScheduleBackgroundClientRecomputes(sheets, resolvedName).catch(() => { });
+  }
+  await invalidatePmaClientCache(clientSheetId, resolvedMasterId, scopes).catch(() => { });
+}
+
 
 export function retParseSheetDate(val) {
   if (!val) return null;
@@ -849,7 +874,7 @@ export async function handleRenameRetainerJob(req, res, sheets) {
           requestBody: { valueInputOption: "USER_ENTERED", data },
         });
       }
-      await invalidatePmaClientCache(sheetIdClean, null, ["jobs", "invoices", "retainers", "cash"]).catch(() => { });
+      await flushAndInvalidateRetainerCache_(sheets, sheetIdClean, null, ["jobs", "invoices", "retainers", "cash"]).catch(() => { });
       return res.status(200).json({ success: true, rowsUpdated: data.length, isVariableRetainer: true });
     }
 
@@ -870,7 +895,7 @@ export async function handleRenameRetainerJob(req, res, sheets) {
       requestBody: { valueInputOption: "RAW", data },
     });
 
-    await invalidatePmaClientCache(sheetIdClean, null, ["jobs", "invoices", "retainers", "cash"]).catch(() => { });
+    await flushAndInvalidateRetainerCache_(sheets, sheetIdClean, null, ["jobs", "invoices", "retainers", "cash"]).catch(() => { });
 
     (async () => {
       let tenantClient = req.body.clientName || "";
@@ -1029,7 +1054,7 @@ export async function executeChangeRetainerEndDate(sheets, params = {}) {
           spreadsheetId: sheetIdClean, range: `Confirmed!${endDateCol}${parentRowNum}`,
           valueInputOption: "USER_ENTERED", requestBody: { values: [[sanitizeFormulaInput(formattedNewEndDate)]] },
         });
-        await invalidatePmaClientCache(sheetIdClean, masterSheetId, ["jobs", "invoices", "retainers", "cash"]).catch(e => console.warn("Cache invalidate failed in executeChangeRetainerEndDate:", e.message));
+        await flushAndInvalidateRetainerCache_(sheets, sheetIdClean, masterSheetId, ["jobs", "invoices", "retainers", "cash"]).catch(e => console.warn("Cache invalidate failed in executeChangeRetainerEndDate:", e.message));
         return { success: true, trimmed: 0, grown: 0, trimmedRowNums: [], addedChildRows: [] };
       }
 
@@ -1185,7 +1210,7 @@ export async function executeChangeRetainerEndDate(sheets, params = {}) {
         details: { jobName, newEndDate: displayNewEndDate, endClient, clientName: tenantClient, trimmed: trimRowNums.length, grown: 0 }
       }).catch(e => console.error("PMA log failed:", e));
 
-      await invalidatePmaClientCache(sheetIdClean, masterSheetId, ["jobs", "invoices", "retainers", "cash"]).catch(e => console.warn("Cache invalidate failed in executeChangeRetainerEndDate:", e.message));
+      await flushAndInvalidateRetainerCache_(sheets, sheetIdClean, masterSheetId, ["jobs", "invoices", "retainers", "cash"]).catch(e => console.warn("Cache invalidate failed in executeChangeRetainerEndDate:", e.message));
 
       return { success: true, trimmed: trimRowNums.length, grown: 0, trimmedRowNums: trimRowNums, addedChildRows: [] };
 
@@ -1200,7 +1225,7 @@ export async function executeChangeRetainerEndDate(sheets, params = {}) {
           spreadsheetId: sheetIdClean, range: `Confirmed!${endDateCol}${parentRowNum}`,
           valueInputOption: "USER_ENTERED", requestBody: { values: [[formattedNewEndDate]] },
         });
-        await invalidatePmaClientCache(sheetIdClean, masterSheetId, ["jobs", "invoices", "retainers", "cash"]).catch(e => console.warn("Cache invalidate failed in executeChangeRetainerEndDate:", e.message));
+        await flushAndInvalidateRetainerCache_(sheets, sheetIdClean, masterSheetId, ["jobs", "invoices", "retainers", "cash"]).catch(e => console.warn("Cache invalidate failed in executeChangeRetainerEndDate:", e.message));
         return { success: true, trimmed: 0, grown: 0, trimmedRowNums: [], addedChildRows: [] };
       }
 
@@ -1248,7 +1273,7 @@ export async function executeChangeRetainerEndDate(sheets, params = {}) {
           spreadsheetId: sheetIdClean, range: `Confirmed!${endDateCol}${parentRowNum}`,
           valueInputOption: "USER_ENTERED", requestBody: { values: [[formattedNewEndDate]] },
         });
-        await invalidatePmaClientCache(sheetIdClean, masterSheetId, ["jobs", "invoices", "retainers", "cash"]).catch(e => console.warn("Cache invalidate failed in executeChangeRetainerEndDate:", e.message));
+        await flushAndInvalidateRetainerCache_(sheets, sheetIdClean, masterSheetId, ["jobs", "invoices", "retainers", "cash"]).catch(e => console.warn("Cache invalidate failed in executeChangeRetainerEndDate:", e.message));
         return { success: true, trimmed: 0, grown: 0, trimmedRowNums: [], addedChildRows: [] };
       }
 
@@ -1427,7 +1452,7 @@ export async function executeChangeRetainerEndDate(sheets, params = {}) {
         details: { jobName, newEndDate: displayNewEndDate, endClient, clientName: tenantClient, trimmed: 0, grown: newRowDates.length }
       }).catch(e => console.error("PMA log failed:", e));
 
-      await invalidatePmaClientCache(sheetIdClean, masterSheetId, ["jobs", "invoices", "retainers", "cash"]).catch(e => console.warn("Cache invalidate failed in executeChangeRetainerEndDate:", e.message));
+      await flushAndInvalidateRetainerCache_(sheets, sheetIdClean, masterSheetId, ["jobs", "invoices", "retainers", "cash"]).catch(e => console.warn("Cache invalidate failed in executeChangeRetainerEndDate:", e.message));
 
       return { success: true, trimmed: 0, grown: newRowDates.length, trimmedRowNums: [], addedChildRows };
     }
@@ -1936,7 +1961,7 @@ export async function executeChangeRetainerStartDate(sheets, params = {}) {
       details: { jobName, newStartDate, newEndDate, newMonthlyAmount, endClient, clientName: tenantClient }
     }).catch(e => console.error("PMA log failed:", e));
 
-    await invalidatePmaClientCache(sheetIdClean, masterSheetId, ["jobs", "invoices", "retainers", "cash"]).catch(e => console.warn("Cache invalidate failed in executeChangeRetainerStartDate:", e.message));
+    await flushAndInvalidateRetainerCache_(sheets, sheetIdClean, masterSheetId, ["jobs", "invoices", "retainers", "cash"]).catch(e => console.warn("Cache invalidate failed in executeChangeRetainerStartDate:", e.message));
 
     return {
       success: true,
@@ -2175,7 +2200,7 @@ export async function handleChangeRetainerSendDates(req, res, sheets) {
       details: { jobName, endClient, clientName: tenantClient, newSendDay, applyTo, updatedCount: batchData.length, movedIntoFuture, updatedExpectedDate }
     }).catch(e => console.error("PMA log failed:", e));
 
-    await invalidatePmaClientCache(sheetIdClean, masterSheetId, ["jobs", "invoices", "retainers"]);
+    await flushAndInvalidateRetainerCache_(sheets, sheetIdClean, masterSheetId, ["jobs", "invoices", "retainers"]);
 
     return res.status(200).json({ success: true, updatedCount: batchData.length, slotUpdates, movedIntoFuture, updatedExpectedDate });
   } catch (err) {
@@ -2269,7 +2294,7 @@ export async function handleChangeRetainerMonthlyAmount(req, res, sheets) {
         requestBody: { valueInputOption: "RAW", data: updateData },
       });
 
-      await invalidatePmaClientCache(sheetIdClean, null, ["jobs", "invoices", "retainers", "cash"]).catch(() => { });
+      await flushAndInvalidateRetainerCache_(sheets, sheetIdClean, null, ["jobs", "invoices", "retainers", "cash"]).catch(() => { });
 
       return res.status(200).json({
         success: true,
@@ -2605,7 +2630,7 @@ export async function handleChangeRetainerMonthlyAmount(req, res, sheets) {
       }
     }
 
-    await invalidatePmaClientCache(sheetIdClean, null, ["jobs", "invoices", "retainers", "cash"]).catch(() => { });
+    await flushAndInvalidateRetainerCache_(sheets, sheetIdClean, null, ["jobs", "invoices", "retainers", "cash"]).catch(() => { });
 
     (async () => {
       let tenantClient = req.body.clientName || "";
@@ -3137,7 +3162,7 @@ export async function provisionRetainerChildRows_(sheets, params = {}) {
     // Invalidate PMA and Pulse Portal caches once provisioning finishes
     try {
       memoryCache.del(`deleted_job_rows:${sheetIdClean}:confirmed`);
-      await invalidatePmaClientCache(sheetIdClean, resolvedMasterId, [
+      await flushAndInvalidateRetainerCache_(sheets, sheetIdClean, resolvedMasterId, [
         "retainers",
         "jobs",
         "invoices",
@@ -3611,14 +3636,14 @@ export function provisionRetainerScheduleInBackground(sheets, params = {}) {
         (await resolveSupabaseSheetContext({ spreadsheetId: params?.clientSheetId || params?.masterSheetId }).catch(() => null))?.clientName ||
         "";
       if (flushClient) {
-        await flushImmediateAndScheduleBackgroundClientRecomputes(clientInstance, flushClient).catch(() => {});
+        await flushImmediateAndScheduleBackgroundClientRecomputes(clientInstance, flushClient).catch(() => { });
       }
       if (params?.clientSheetId || params?.masterSheetId) {
         await invalidatePmaClientCache(
           params.clientSheetId || null,
           params.masterSheetId || null,
           ["jobs", "invoices", "retainers", "cash", "views", "dashboard"]
-        ).catch(() => {});
+        ).catch(() => { });
       }
       return res;
     } catch (err) {
@@ -3923,7 +3948,7 @@ export async function createVariableRetainerSeries_(sheets, params = {}) {
   );
 
   memoryCache.del(`deleted_job_rows:${sheetIdClean}:confirmed`);
-  await invalidatePmaClientCache(sheetIdClean, resolvedMasterId, ["retainers", "jobs", "invoices", "outgoings", "cash", "views"]).catch(() => { });
+  await flushAndInvalidateRetainerCache_(sheets, sheetIdClean, resolvedMasterId, ["retainers", "jobs", "invoices", "outgoings", "cash", "views"]).catch(() => { });
 
   return {
     success: true,
@@ -4092,7 +4117,7 @@ export async function handleCreateRetainerJob(req, res, sheets) {
     );
 
     memoryCache.del(`deleted_job_rows:${sheetIdClean}:confirmed`);
-    await invalidatePmaClientCache(sheetIdClean, resolvedMasterId, ["retainers", "jobs", "invoices", "cash"]);
+    await flushAndInvalidateRetainerCache_(sheets, sheetIdClean, resolvedMasterId, ["retainers", "jobs", "invoices", "cash"]);
 
     let tenantClient = req.body.clientName || "";
     if (!tenantClient) {
@@ -4523,7 +4548,7 @@ export async function handleTidyUpRetainers(req, res, sheets) {
       }
     }
 
-    await invalidatePmaClientCache(sheetIdClean, null, ["jobs", "invoices", "retainers", "cash"]).catch(() => { });
+    await flushAndInvalidateRetainerCache_(sheets, sheetIdClean, null, ["jobs", "invoices", "retainers", "cash"]).catch(() => { });
 
     (async () => {
       let tenantClient = req.body.clientName || "";
@@ -4951,7 +4976,7 @@ export async function handleApplyRetainerSplitInvoice(req, res, sheets) {
         spreadsheetId: sheetIdClean, requestBody: { valueInputOption: "USER_ENTERED", data: rechWriteData },
       });
 
-      await invalidatePmaClientCache(sheetIdClean, masterSheetId, ["jobs", "invoices", "retainers", "cash"]).catch(() => { });
+      await flushAndInvalidateRetainerCache_(sheets, sheetIdClean, masterSheetId, ["jobs", "invoices", "retainers", "cash"]).catch(() => { });
 
       (async () => {
         let tenantClient = req.body.clientName || "";
@@ -5003,7 +5028,7 @@ export async function handleApplyRetainerSplitInvoice(req, res, sheets) {
       await sheets.spreadsheets.values.batchUpdate({
         spreadsheetId: sheetIdClean, requestBody: { valueInputOption: "USER_ENTERED", data: writeData },
       });
-      await invalidatePmaClientCache(sheetIdClean, masterSheetId, ["jobs", "invoices", "retainers", "cash"]).catch(() => { });
+      await flushAndInvalidateRetainerCache_(sheets, sheetIdClean, masterSheetId, ["jobs", "invoices", "retainers", "cash"]).catch(() => { });
       return res.status(200).json({
         success: true,
         mode: "converted",
@@ -5056,7 +5081,7 @@ export async function handleApplyRetainerSplitInvoice(req, res, sheets) {
         spreadsheetId: sheetIdClean, requestBody: { valueInputOption: "USER_ENTERED", data: writeData },
       });
 
-      await invalidatePmaClientCache(sheetIdClean, masterSheetId, ["jobs", "invoices", "retainers", "cash"]).catch(() => { });
+      await flushAndInvalidateRetainerCache_(sheets, sheetIdClean, masterSheetId, ["jobs", "invoices", "retainers", "cash"]).catch(() => { });
 
       (async () => {
         let tenantClient = req.body.clientName || "";
@@ -5229,7 +5254,7 @@ export async function handleDeleteRetainer(req, res, sheets) {
         );
       }
 
-      await invalidatePmaClientCache(sheetIdClean, masterIdClean, ["jobs", "invoices", "retainers", "cash", "views"]).catch(() => { });
+      await flushAndInvalidateRetainerCache_(sheets, sheetIdClean, masterIdClean, ["jobs", "invoices", "retainers", "cash", "views"]).catch(() => { });
       return res.status(200).json({ success: true, clearedRows: allSeriesRowsToClear.length, isVariableRetainer: true });
     }
 
@@ -5362,7 +5387,7 @@ export async function handleDeleteRetainer(req, res, sheets) {
       );
     }
 
-    await invalidatePmaClientCache(sheetIdClean, masterIdClean, ["jobs", "invoices", "retainers", "cash"]).catch(() => { });
+    await flushAndInvalidateRetainerCache_(sheets, sheetIdClean, masterIdClean, ["jobs", "invoices", "retainers", "cash"]).catch(() => { });
 
     (async () => {
       let tenantClient = req.body.clientName || "";
@@ -5691,7 +5716,7 @@ export async function handleUpdateVariableRetainerBase(req, res, sheets) {
       );
     }
 
-    await invalidatePmaClientCache(sheetIdClean, resolvedMasterId, ["retainers", "jobs", "invoices", "outgoings", "cash", "views"]).catch(() => { });
+    await flushAndInvalidateRetainerCache_(sheets, sheetIdClean, resolvedMasterId, ["retainers", "jobs", "invoices", "outgoings", "cash", "views"]).catch(() => { });
     return res.status(200).json({
       success: true,
       updatedCount,
@@ -5786,7 +5811,7 @@ export async function handleUpdateVariableRetainerMonth(req, res, sheets) {
       })
     );
 
-    await invalidatePmaClientCache(sheetIdClean, masterSheetId, ["retainers", "jobs", "invoices", "outgoings", "cash", "views"]).catch(() => { });
+    await flushAndInvalidateRetainerCache_(sheets, sheetIdClean, masterSheetId, ["retainers", "jobs", "invoices", "outgoings", "cash", "views"]).catch(() => { });
     return res.status(200).json({
       success: true,
       rowNum: rNum,
@@ -6470,7 +6495,7 @@ export async function handleSaveVariableRetainerSeries_(req, res, sheets, { veri
       );
     }
 
-    await invalidatePmaClientCache(sheetIdClean, resolvedMasterId, ["jobs", "invoices", "outgoings", "retainers", "cash", "views"]).catch(() => { });
+    await flushAndInvalidateRetainerCache_(sheets, sheetIdClean, resolvedMasterId, ["jobs", "invoices", "outgoings", "retainers", "cash", "views"]).catch(() => { });
     logPmaActivity(sheets, {
       automationCommanderSheetId: req.body.automationCommanderSheetId,
       clientName: verifiedClientName || clientName || "Client",

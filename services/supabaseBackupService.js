@@ -870,7 +870,10 @@ export async function restoreClientSnapshot({
           ? new Set(["master", "recon"])
           : new Set(["master", "recon", "client"]);
 
-    const isCrossClient = Boolean(payload.clientId && payload.clientId !== clientId);
+    const isSameClientTarget = Boolean(
+      payload.clientName && normalizeClientKey_(payload.clientName) === normalizeClientKey_(canonicalClient)
+    );
+    const shouldRemapUuids = !isSameClientTarget || Boolean(payload.clientId && payload.clientId !== clientId);
     const hasNotesInSnapshot = Array.isArray(payload.tables.pulse_notes);
     const targetTables = RELATIONAL_BACKUP_TABLES.filter(
       (t) => (!t.keyedBy || t.keyedBy === "client_id") && allowedDomains.has(t.domain)
@@ -894,6 +897,31 @@ export async function restoreClientSnapshot({
     let preservedNotesFks = [];
     if (allowedDomains.has("client") && !hasNotesInSnapshot) {
       preservedNotesFks = await fetchPaginatedEq_(sb, "pulse_notes", "client_id", clientId, "id").catch(() => []);
+    }
+
+    // Partial-scope restores (`scope = "client"` or `"master_recon"`): snapshot cross-domain FKs held on the surviving side before parent DELETE sets them NULL via ON DELETE SET NULL
+    let preservedCrmDealsJobFks = [];
+    let preservedTimeEntriesEmpFks = [];
+    let preservedJobInvAccFks = [];
+    let preservedJobExpDcFks = [];
+    let preservedContractorDcFks = [];
+    if (allowedDomains.has("client") && !allowedDomains.has("master")) {
+      const [crmSnap, timeSnap] = await Promise.all([
+        fetchPaginatedEq_(sb, "crm_deals_raw", "client_id", clientId, "id, matched_job_id").catch(() => []),
+        fetchPaginatedEq_(sb, "time_entries_raw", "client_id", clientId, "id, employee_id").catch(() => []),
+      ]);
+      preservedCrmDealsJobFks = crmSnap.filter((r) => Boolean(r.matched_job_id));
+      preservedTimeEntriesEmpFks = timeSnap.filter((r) => Boolean(r.employee_id));
+    }
+    if (allowedDomains.has("master") && !allowedDomains.has("client")) {
+      const [jiSnap, jeSnap, ceSnap] = await Promise.all([
+        fetchPaginatedEq_(sb, "pulse_job_invoices", "client_id", clientId, "id, accounting_invoice_id").catch(() => []),
+        fetchPaginatedEq_(sb, "pulse_job_expenses", "client_id", clientId, "id, accounting_direct_cost_id").catch(() => []),
+        fetchPaginatedEq_(sb, "pulse_contractor_entries", "client_id", clientId, "id, accounting_direct_cost_id").catch(() => []),
+      ]);
+      preservedJobInvAccFks = jiSnap.filter((r) => Boolean(r.accounting_invoice_id));
+      preservedJobExpDcFks = jeSnap.filter((r) => Boolean(r.accounting_direct_cost_id));
+      preservedContractorDcFks = ceSnap.filter((r) => Boolean(r.accounting_direct_cost_id));
     }
 
     // 1. Delete existing rows in reverse topological order (child tables before parents)
@@ -938,7 +966,7 @@ export async function restoreClientSnapshot({
       "accounting_invoice_id",
       "accounting_direct_cost_id",
     ];
-    if (isCrossClient) {
+    if (shouldRemapUuids) {
       for (const { table } of targetTables) {
         for (const row of Array.isArray(payload.tables[table]) ? payload.tables[table] : []) {
           if (row?.id) uuidRemap.set(row.id, randomUUID());
@@ -976,16 +1004,16 @@ export async function restoreClientSnapshot({
     }
 
     const canonicalNormKey = normalizeClientKey_(canonicalClient);
-    const sanitizeAndStampRow_ = (row, tableName) => {
+    const sanitizeAndStampRow_ = (row, tableName, rowIdx = 0) => {
       const clean = Object.create(null);
       for (const [k, v] of Object.entries(row || {})) {
         if (k === "__proto__" || k === "constructor" || k === "prototype") continue;
         clean[k] = v;
       }
-      if (isCrossClient && clean.id) {
+      if (shouldRemapUuids && clean.id) {
         clean.id = uuidRemap.get(clean.id) || randomUUID();
       }
-      if (isCrossClient) {
+      if (shouldRemapUuids) {
         for (const fkCol of fkCols) {
           if (clean[fkCol]) {
             clean[fkCol] = uuidRemap.has(clean[fkCol]) ? uuidRemap.get(clean[fkCol]) : null;
@@ -994,14 +1022,23 @@ export async function restoreClientSnapshot({
         if ("normalized_key" in clean) {
           clean.normalized_key = canonicalNormKey;
         }
-        if ((tableName === "alert_memory" || tableName === "pma_tasks") && clean.fingerprint_hash) {
-          clean.fingerprint_hash = createHash("sha256")
-            .update(`${canonicalClient}::${clean.fingerprint_hash}`)
-            .digest("hex");
-          if (tableName === "pma_tasks" && clean.task_key) {
-            clean.task_key = `${canonicalNormKey}::${clean.fingerprint_hash}`;
-          }
+      }
+      if (!isSameClientTarget && (tableName === "alert_memory" || tableName === "pma_tasks") && clean.fingerprint_hash) {
+        clean.fingerprint_hash = createHash("sha256")
+          .update(`${canonicalClient}::${clean.fingerprint_hash}`)
+          .digest("hex")
+          .slice(0, 16);
+        if (tableName === "pma_tasks" && clean.task_key) {
+          clean.task_key = `${canonicalNormKey}::${clean.fingerprint_hash}`;
         }
+      }
+      if (
+        (tableName === "accounting_invoices" ||
+          tableName === "accounting_direct_costs" ||
+          tableName === "crm_deals_raw") &&
+        (clean.sheet_row_num === null || clean.sheet_row_num === undefined)
+      ) {
+        clean.sheet_row_num = rowIdx + 2;
       }
       if (!allowedDomains.has("client")) {
         if (clean.matched_job_id && !liveCrossDomainIds.pulse_jobs?.has(clean.matched_job_id)) {
@@ -1040,6 +1077,8 @@ export async function restoreClientSnapshot({
       pulse_employees: new Set(),
       pulse_outgoing_items: new Set(),
       pulse_contractor_entries: new Set(),
+      accounting_invoices: new Set(),
+      accounting_direct_costs: new Set(),
     };
 
     for (const { table } of targetTables) {
@@ -1049,8 +1088,8 @@ export async function restoreClientSnapshot({
       if (table === "pulse_automation_logs" || table === "pulse_execution_logs") {
         srcRows = sortChronologicalLogs_(table, srcRows);
       }
-      const stamped = srcRows.map((row) => {
-        const clean = sanitizeAndStampRow_(row, table);
+      const stamped = srcRows.map((row, idx) => {
+        const clean = sanitizeAndStampRow_(row, table, idx);
         if (restoredParentIds[table] && clean.id) restoredParentIds[table].add(clean.id);
         return clean;
       });
@@ -1118,6 +1157,37 @@ export async function restoreClientSnapshot({
       }
     }
 
+    // Re-link surviving cross-domain child FKs after partial-scope restore when restored parent IDs match
+    if (allowedDomains.has("client") && !allowedDomains.has("master")) {
+      for (const row of preservedCrmDealsJobFks) {
+        if (restoredParentIds.pulse_jobs.has(row.matched_job_id)) {
+          await sb.from("crm_deals_raw").update({ matched_job_id: row.matched_job_id }).eq("id", row.id);
+        }
+      }
+      for (const row of preservedTimeEntriesEmpFks) {
+        if (restoredParentIds.pulse_employees.has(row.employee_id)) {
+          await sb.from("time_entries_raw").update({ employee_id: row.employee_id }).eq("id", row.id);
+        }
+      }
+    }
+    if (allowedDomains.has("master") && !allowedDomains.has("client")) {
+      for (const row of preservedJobInvAccFks) {
+        if (restoredParentIds.accounting_invoices.has(row.accounting_invoice_id)) {
+          await sb.from("pulse_job_invoices").update({ accounting_invoice_id: row.accounting_invoice_id }).eq("id", row.id);
+        }
+      }
+      for (const row of preservedJobExpDcFks) {
+        if (restoredParentIds.accounting_direct_costs.has(row.accounting_direct_cost_id)) {
+          await sb.from("pulse_job_expenses").update({ accounting_direct_cost_id: row.accounting_direct_cost_id }).eq("id", row.id);
+        }
+      }
+      for (const row of preservedContractorDcFks) {
+        if (restoredParentIds.accounting_direct_costs.has(row.accounting_direct_cost_id)) {
+          await sb.from("pulse_contractor_entries").update({ accounting_direct_cost_id: row.accounting_direct_cost_id }).eq("id", row.id);
+        }
+      }
+    }
+
     const keyInfoPayloadV2 = payload.config?.keyInfo || (payload.config && !payload.config.master_mode ? payload.config : null);
     if (keyInfoPayloadV2 && typeof keyInfoPayloadV2 === "object" && (scope === "all" || scope === "master_recon")) {
       const cleanKi = {
@@ -1156,12 +1226,14 @@ export async function restoreClientSnapshot({
       String(cfgRow?.metadata?.sheet_bridge_mode || "").trim().toLowerCase() === "live" &&
       Boolean(cfgRow?.client_sheet_id) &&
       !String(cfgRow.client_sheet_id).startsWith("sb-");
+    let sheetBridgeSyncWarning = null;
     if (isLiveBridgedTarget && allowedDomains.has("client")) {
       await import("./clientSheetBridgeService.js")
-        .then((m) => m.forceOverwriteSheetFromSupabase(canonicalClient))
-        .catch((bridgeErr) =>
-          console.warn(`[supabaseBackupService] Post-restore Google Sheet bridge sync warning (${canonicalClient}):`, bridgeErr.message)
-        );
+        .then((m) => m.pushSupabaseClientToSheet(canonicalClient))
+        .catch((bridgeErr) => {
+          sheetBridgeSyncWarning = bridgeErr.message || "Sheet bridge sync failed";
+          console.warn(`[supabaseBackupService] Post-restore Google Sheet bridge sync warning (${canonicalClient}):`, bridgeErr.message);
+        });
     }
 
     return {
@@ -1177,6 +1249,7 @@ export async function restoreClientSnapshot({
       restoredReconCount: Array.isArray(payload.tables.bank_recon_periods) ? payload.tables.bank_recon_periods.length : 0,
       restoredClientCount: Array.isArray(payload.tables.pulse_client_tab_blueprints) ? payload.tables.pulse_client_tab_blueprints.length : 0,
       preRestoreSnapshotId: preRestoreSnapshot?.id || null,
+      ...(sheetBridgeSyncWarning ? { sheetBridgeSyncWarning } : {}),
     };
   }
 

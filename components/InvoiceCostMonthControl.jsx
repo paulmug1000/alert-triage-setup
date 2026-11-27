@@ -206,6 +206,8 @@ export default function InvoiceCostMonthControl({
     borderRadius: "6px",
     background: disabled ? "#f8fafc" : "#ffffff",
     color: "#0f172a",
+    maxWidth: "100%",
+    minWidth: 0,
   };
 
   return (
@@ -296,7 +298,7 @@ export default function InvoiceCostMonthControl({
           <div
             style={{
               display: "grid",
-              gridTemplateColumns: "repeat(auto-fill, minmax(120px, 1fr))",
+              gridTemplateColumns: "repeat(auto-fill, minmax(min(120px, 100%), 1fr))",
               gap: "8px",
             }}
           >

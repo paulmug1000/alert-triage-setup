@@ -104,8 +104,13 @@ export function useModalScrollLock() {
     let prevHtmlOverscroll = "";
 
     const handleWheel = (e) => {
-      const openModals = openModalsCache;
-      if (openModals.length === 0) return;
+      const openModals = openModalsCache.filter((m) => m && m.isConnected && isElementVisible(m));
+      if (openModals.length === 0) {
+        if (isLocked || listenersAttached) {
+          applyLockState();
+        }
+        return;
+      }
 
       const target = e.target instanceof HTMLElement ? e.target : null;
       if (!target) {
@@ -137,8 +142,13 @@ export function useModalScrollLock() {
     };
 
     const handleTouchMove = (e) => {
-      const openModals = openModalsCache;
-      if (openModals.length === 0) return;
+      const openModals = openModalsCache.filter((m) => m && m.isConnected && isElementVisible(m));
+      if (openModals.length === 0) {
+        if (isLocked || listenersAttached) {
+          applyLockState();
+        }
+        return;
+      }
 
       const target = e.target instanceof HTMLElement ? e.target : null;
       if (!target) {
@@ -198,10 +208,10 @@ export function useModalScrollLock() {
       }
 
       if (shouldLock && !isLocked) {
-        prevBodyOverflow = document.body.style.overflow;
-        prevHtmlOverflow = document.documentElement.style.overflow;
-        prevBodyOverscroll = document.body.style.overscrollBehavior;
-        prevHtmlOverscroll = document.documentElement.style.overscrollBehavior;
+        prevBodyOverflow = document.body.style.overflow === "hidden" ? "" : document.body.style.overflow;
+        prevHtmlOverflow = document.documentElement.style.overflow === "hidden" ? "" : document.documentElement.style.overflow;
+        prevBodyOverscroll = document.body.style.overscrollBehavior === "none" ? "" : document.body.style.overscrollBehavior;
+        prevHtmlOverscroll = document.documentElement.style.overscrollBehavior === "none" ? "" : document.documentElement.style.overscrollBehavior;
 
         document.body.style.overflow = "hidden";
         document.documentElement.style.overflow = "hidden";
@@ -238,12 +248,17 @@ export function useModalScrollLock() {
       attributeFilter: ["style", "class", "hidden"]
     });
 
+    window.addEventListener("resize", scheduleLockSync);
+    window.addEventListener("orientationchange", scheduleLockSync);
+
     return () => {
       if (rafId !== null) {
         window.cancelAnimationFrame(rafId);
         rafId = null;
       }
       observer.disconnect();
+      window.removeEventListener("resize", scheduleLockSync);
+      window.removeEventListener("orientationchange", scheduleLockSync);
       detachScrollBlockers();
       if (isLocked) {
         document.body.style.overflow = prevBodyOverflow;

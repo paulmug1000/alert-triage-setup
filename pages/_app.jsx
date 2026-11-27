@@ -46,7 +46,7 @@ export default function App({ Component, pageProps }) {
       }
       img.src = src;
       if (typeof img.decode === "function") {
-        img.decode().catch(() => {});
+        img.decode().catch(() => { });
       }
       return img;
     });
@@ -62,8 +62,14 @@ export default function App({ Component, pageProps }) {
           box-sizing: border-box;
         }
         html {
-          overflow-y: scroll;
-          scrollbar-gutter: stable;
+          overflow-y: auto;
+          overflow-x: clip;
+        }
+        @media (hover: hover) and (pointer: fine) {
+          html {
+            overflow-y: scroll;
+            scrollbar-gutter: stable;
+          }
         }
         html, body, button, input, select, textarea {
           font-family: 'Kumbh Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
@@ -73,7 +79,9 @@ export default function App({ Component, pageProps }) {
           padding: 0;
           background-color: #ffffff;
           -webkit-font-smoothing: antialiased;
-          overflow-x: hidden;
+        }
+        body {
+          overflow-x: clip;
         }
         button {
           transition: transform 0.1s ease, filter 0.15s ease;

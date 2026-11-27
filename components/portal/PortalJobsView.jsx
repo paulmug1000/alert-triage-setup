@@ -571,20 +571,6 @@ export default function PortalJobsView({
     };
   }, [editRowNumber, editType, editJobName, editClient, editProjectCode, editProjectRetainer, editIsVariableRetainerSeries, editStartDate, editEndDate, hasAccounting, isReadOnly, clientSheetId, clientName]);
 
-  // Lock background scroll when modal is open
-  useEffect(() => {
-    if (editingJob) {
-      const origBodyOverflow = document.body.style.overflow;
-      const origHtmlOverflow = document.documentElement.style.overflow;
-      document.body.style.overflow = "hidden";
-      document.documentElement.style.overflow = "hidden";
-      return () => {
-        document.body.style.overflow = origBodyOverflow;
-        document.documentElement.style.overflow = origHtmlOverflow;
-      };
-    }
-  }, [editingJob]);
-
   const parseDate = (dateVal) => {
     if (!dateVal) return null;
     if (dateVal instanceof Date) return isNaN(dateVal.getTime()) ? null : dateVal;
@@ -2462,7 +2448,7 @@ export default function PortalJobsView({
             }}
           />
         </div>
-        <div style={{ overflowX: "auto", width: "100%" }}>
+        <div style={{ overflowX: "auto", width: "100%", WebkitOverflowScrolling: "touch" }}>
           <table
             className="portal-data-table"
             style={{
@@ -2765,6 +2751,7 @@ export default function PortalJobsView({
       {/* Job Edit / Add Modal */}
       {editingJob && (
         <div
+          className="portal-job-modal-overlay"
           style={{
             position: "fixed",
             inset: 0,
@@ -2780,12 +2767,14 @@ export default function PortalJobsView({
           onClick={() => !isSaving && !isConfirming && !isDeleting && setEditingJob(null)}
         >
           <div
+            className="portal-job-modal-card"
             style={{
               background: "#ffffff",
               borderRadius: "12px",
               boxShadow: "0 25px 50px -12px rgba(0, 0, 0, 0.25)",
-              maxWidth: "860px",
+              maxWidth: "min(860px, 100%)",
               width: "100%",
+              minWidth: 0,
               maxHeight: "90vh",
               display: "flex",
               flexDirection: "column",
@@ -2796,10 +2785,13 @@ export default function PortalJobsView({
           >
             {/* Modal Header (Fixed at top) */}
             <div
+              className="portal-job-modal-header"
               style={{
                 display: "flex",
                 justifyContent: "space-between",
                 alignItems: "center",
+                gap: "8px",
+                flexWrap: "wrap",
                 borderBottom: "1px solid #e2e8f0",
                 padding: "1.25rem 1.75rem 1rem",
                 background: "#ffffff",
@@ -2883,9 +2875,12 @@ export default function PortalJobsView({
 
             {/* Scrollable Form Body */}
             <div
+              className="portal-job-modal-body"
               style={{
                 flex: 1,
                 overflowY: "auto",
+                overflowX: "hidden",
+                WebkitOverflowScrolling: "touch",
                 padding: "1.25rem 1.75rem",
                 overscrollBehavior: "contain",
               }}
@@ -2906,8 +2901,8 @@ export default function PortalJobsView({
                 </div>
               )}
 
-              <form id="job-modal-form" onSubmit={handleSaveJob} style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
-                <fieldset disabled={isReadOnly} style={{ border: "none", padding: 0, margin: 0, display: "flex", flexDirection: "column", gap: "1rem" }}>
+              <form id="job-modal-form" onSubmit={handleSaveJob} style={{ display: "flex", flexDirection: "column", gap: "1rem", width: "100%", maxWidth: "100%", minWidth: 0 }}>
+                <fieldset disabled={isReadOnly} style={{ border: "none", padding: 0, margin: 0, display: "flex", flexDirection: "column", gap: "1rem", minWidth: 0, width: "100%", maxWidth: "100%" }}>
                   {isEditingCrmDeal && (
                     <div style={{ marginBottom: "-0.25rem" }}>
                       <span
@@ -3137,6 +3132,8 @@ export default function PortalJobsView({
                         display: "flex",
                         alignItems: "center",
                         justifyContent: "space-between",
+                        flexWrap: "wrap",
+                        gap: "6px",
                         padding: "6px 10px",
                         borderRadius: "6px",
                         background: isRechargedActiveForJob(editingJob) ? "#eff6ff" : "#f8fafc",
@@ -3178,7 +3175,7 @@ export default function PortalJobsView({
                     const showRechRow = editingJob.type === "Confirmed" && rechActive;
                     return (
                       <div style={{ display: "flex", flexDirection: "column", gap: "0.75rem", background: "#f8fafc", border: "1px solid #e2e8f0", borderRadius: "8px", padding: "0.85rem" }}>
-                        <div style={{ display: "grid", gridTemplateColumns: showRechRow ? "2fr 2fr 2fr 1fr 2fr" : "2fr 1fr 2fr", gap: "0.75rem" }}>
+                        <div className="modal-form-row modal-form-row-3" style={{ display: "grid", gridTemplateColumns: showRechRow ? "2fr 2fr 2fr 1fr 2fr" : "2fr 1fr 2fr", gap: "0.75rem" }}>
                           <div title={crmLockedTooltip}>
                             <label style={formLabelStyle}>Job revenue (excl. VAT) *</label>
                             <input
@@ -3254,7 +3251,7 @@ export default function PortalJobsView({
                           </div>
                         </div>
 
-                        <div style={{ display: "grid", gridTemplateColumns: "1.2fr 2fr 2fr 1.4fr 1.4fr 2fr", gap: "0.75rem" }}>
+                        <div className="modal-form-row modal-form-row-jc" style={{ display: "grid", gridTemplateColumns: "1.2fr 2fr 2fr 1.4fr 1.4fr 2fr", gap: "0.75rem" }}>
                           <div>
                             <label style={formLabelStyle}>Fixed or variable</label>
                             <select
@@ -3603,7 +3600,7 @@ export default function PortalJobsView({
                           </button>
                         </div>
 
-                        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0.75rem" }}>
+                        <div className="modal-form-row modal-form-row-var" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0.75rem" }}>
                           <div>
                             <label style={formLabelStyle}>Update base rates from</label>
                             <input
@@ -3631,7 +3628,7 @@ export default function PortalJobsView({
                         </div>
 
                         {showVarMonthlyForecasts && (
-                          <div style={{ maxHeight: "280px", overflowY: "auto", border: "1px solid #e2e8f0", borderRadius: "6px", background: "#ffffff" }}>
+                          <div style={{ maxHeight: "280px", overflowY: "auto", overflowX: "auto", maxWidth: "100%", border: "1px solid #e2e8f0", borderRadius: "6px", background: "#ffffff" }}>
                             <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "12px" }}>
                               <thead>
                                 <tr style={{ background: "#f8fafc", borderBottom: "1px solid #e2e8f0", color: "#64748b", textAlign: "left" }}>
@@ -3815,7 +3812,7 @@ export default function PortalJobsView({
                               <div
                                 style={{
                                   display: "grid",
-                                  gridTemplateColumns: "repeat(auto-fill, minmax(165px, 1fr))",
+                                  gridTemplateColumns: "repeat(auto-fill, minmax(min(165px, 100%), 1fr))",
                                   gap: "0.75rem",
                                   marginBottom: "1rem",
                                 }}
@@ -4053,7 +4050,7 @@ export default function PortalJobsView({
                             >
                               {/* Header */}
                               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "8px" }}>
-                                <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                                <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
                                   <span style={{ fontWeight: 700, fontSize: "13px", color: "#0047AB" }}>
                                     #{inv.ref}
                                   </span>
@@ -4194,7 +4191,7 @@ export default function PortalJobsView({
 
                               {/* Tranches Grid */}
                               {inv.isFullyPaid ? (
-                                <div style={{ display: "grid", gridTemplateColumns: inv.receivedTranches.length === 2 ? "1fr 1fr" : "repeat(auto-fit, minmax(130px, 1fr))", gap: "10px", background: "#f8fafc", padding: "8px 10px", borderRadius: "6px", border: "1px solid #e2e8f0" }}>
+                                <div className="modal-tranche-grid" style={{ display: "grid", gridTemplateColumns: inv.receivedTranches.length === 2 ? "1fr 1fr" : "repeat(auto-fit, minmax(130px, 1fr))", gap: "10px", background: "#f8fafc", padding: "8px 10px", borderRadius: "6px", border: "1px solid #e2e8f0" }}>
                                   {inv.receivedTranches.map((t, tIdx) => (
                                     <div key={tIdx}>
                                       <div style={{ display: "flex", alignItems: "center", gap: "4px", fontSize: "10px", fontWeight: 700, color: "#166534" }}>
@@ -4214,7 +4211,7 @@ export default function PortalJobsView({
                                   ))}
                                 </div>
                               ) : (
-                                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "10px", background: "#f8fafc", padding: "8px 10px", borderRadius: "6px", border: "1px solid #e2e8f0" }}>
+                                <div className="modal-tranche-grid" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "10px", background: "#f8fafc", padding: "8px 10px", borderRadius: "6px", border: "1px solid #e2e8f0" }}>
                                   {/* Received Tranche */}
                                   <div>
                                     <div style={{ display: "flex", alignItems: "center", gap: "4px", fontSize: "10px", fontWeight: 700, color: "#166534" }}>
@@ -4247,7 +4244,7 @@ export default function PortalJobsView({
                                       {currencySymbol}{formatSummaryNum(inv.balanceAmount)}
                                     </div>
                                     {inv.balanceTranche ? (
-                                      <div style={{ display: "flex", alignItems: "center", gap: "6px", marginTop: "4px" }}>
+                                      <div style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: "6px", marginTop: "4px" }}>
                                         <label style={{ fontSize: "10px", color: "#64748b", fontWeight: 600, whiteSpace: "nowrap" }}>
                                           Days to pay:
                                         </label>
@@ -4266,7 +4263,7 @@ export default function PortalJobsView({
                                           }}
                                         />
                                         {calculatePaymentDate(inv.balanceTranche.sendDate, inv.balanceTranche.days) && (
-                                          <span style={{ fontSize: "10px", color: "#64748b", whiteSpace: "nowrap" }}>
+                                          <span style={{ fontSize: "10px", color: "#64748b", whiteSpace: "normal" }}>
                                             Expected payment date: <strong style={{ color: "#0f172a" }}>{calculatePaymentDate(inv.balanceTranche.sendDate, inv.balanceTranche.days)}</strong>
                                           </span>
                                         )}
@@ -4353,7 +4350,7 @@ export default function PortalJobsView({
                           >
                             {/* Top Bar: Ref / Placeholder + Status Badge + Synced + Total + Delete */}
                             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "8px" }}>
-                              <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                              <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
                                 {isPlaceholder ? (
                                   <PlaceholderPill
                                     isAuto={isAuto}
@@ -4630,7 +4627,7 @@ export default function PortalJobsView({
                                   </div>
                                 </div>
                               ) : (
-                                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "10px" }}>
+                                <div className="modal-tranche-grid" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "10px" }}>
                                   {/* Left: Amount & send date */}
                                   <div>
                                     {isFieldLocked ? (
@@ -4658,7 +4655,7 @@ export default function PortalJobsView({
                                             fontWeight: 600
                                           }}
                                         />
-                                        <div style={{ display: "flex", alignItems: "center", gap: "4px" }}>
+                                        <div style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: "4px" }}>
                                           <label style={{ fontSize: "9.5px", color: "#64748b", fontWeight: 600, whiteSpace: "nowrap" }}>Sent:</label>
                                           <DateInput
                                             outputFormat="iso"
@@ -4668,6 +4665,8 @@ export default function PortalJobsView({
                                             style={{
                                               ...formInputStyle,
                                               width: "auto",
+                                              minWidth: 0,
+                                              maxWidth: "100%",
                                               padding: "2px 4px",
                                               fontSize: "10px"
                                             }}
@@ -4679,7 +4678,7 @@ export default function PortalJobsView({
 
                                   {/* Right: Days to pay & projected collection */}
                                   <div style={{ display: "flex", alignItems: "center" }}>
-                                    <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                                    <div style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: "6px" }}>
                                       <label style={{ fontSize: "10px", color: "#64748b", fontWeight: 600, whiteSpace: "nowrap" }}>
                                         Days to pay:
                                       </label>
@@ -4700,7 +4699,7 @@ export default function PortalJobsView({
                                         }}
                                       />
                                       {calculatePaymentDate(inv.sendDate, inv.days) && (
-                                        <span style={{ fontSize: "10px", color: "#64748b", whiteSpace: "nowrap" }}>
+                                        <span style={{ fontSize: "10px", color: "#64748b", whiteSpace: "normal" }}>
                                           Expected payment date: <strong style={{ color: "#0f172a" }}>{calculatePaymentDate(inv.sendDate, inv.days)}</strong>
                                         </span>
                                       )}
@@ -5094,7 +5093,7 @@ export default function PortalJobsView({
                             >
                               {/* Header */}
                               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "8px" }}>
-                                <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                                <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
                                   <span style={{ fontWeight: 700, fontSize: "13px", color: "#0047AB" }}>
                                     {exp.desc || "Expense"}
                                   </span>
@@ -5202,7 +5201,7 @@ export default function PortalJobsView({
 
                               {/* Tranches Grid */}
                               {exp.isFullyPaid ? (
-                                <div style={{ display: "grid", gridTemplateColumns: exp.paidTranches.length === 2 ? "1fr 1fr" : "repeat(auto-fit, minmax(130px, 1fr))", gap: "10px", background: "#f8fafc", padding: "8px 10px", borderRadius: "6px", border: "1px solid #e2e8f0" }}>
+                                <div className="modal-tranche-grid" style={{ display: "grid", gridTemplateColumns: exp.paidTranches.length === 2 ? "1fr 1fr" : "repeat(auto-fit, minmax(130px, 1fr))", gap: "10px", background: "#f8fafc", padding: "8px 10px", borderRadius: "6px", border: "1px solid #e2e8f0" }}>
                                   {exp.paidTranches.map((t, tIdx) => (
                                     <div key={tIdx}>
                                       <div style={{ display: "flex", alignItems: "center", gap: "4px", fontSize: "10px", fontWeight: 700, color: "#166534" }}>
@@ -5222,7 +5221,7 @@ export default function PortalJobsView({
                                   ))}
                                 </div>
                               ) : (
-                                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "10px", background: "#f8fafc", padding: "8px 10px", borderRadius: "6px", border: "1px solid #e2e8f0" }}>
+                                <div className="modal-tranche-grid" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "10px", background: "#f8fafc", padding: "8px 10px", borderRadius: "6px", border: "1px solid #e2e8f0" }}>
                                   {/* Paid Tranche */}
                                   <div>
                                     <div style={{ display: "flex", alignItems: "center", gap: "4px", fontSize: "10px", fontWeight: 700, color: "#166534" }}>
@@ -5255,7 +5254,7 @@ export default function PortalJobsView({
                                       {currencySymbol}{formatSummaryNum(exp.balanceAmount)}
                                     </div>
                                     {exp.balanceTranche ? (
-                                      <div style={{ display: "flex", alignItems: "center", gap: "6px", marginTop: "4px" }}>
+                                      <div style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: "6px", marginTop: "4px" }}>
                                         <label style={{ fontSize: "10px", color: "#64748b", fontWeight: 600, whiteSpace: "nowrap" }}>
                                           Days to pay:
                                         </label>
@@ -5274,7 +5273,7 @@ export default function PortalJobsView({
                                           }}
                                         />
                                         {calculatePaymentDate(exp.balanceTranche.recDate, exp.balanceTranche.days) && (
-                                          <span style={{ fontSize: "10px", color: "#64748b", whiteSpace: "nowrap" }}>
+                                          <span style={{ fontSize: "10px", color: "#64748b", whiteSpace: "normal" }}>
                                             Expected payment date: <strong style={{ color: "#0f172a" }}>{calculatePaymentDate(exp.balanceTranche.recDate, exp.balanceTranche.days)}</strong>
                                           </span>
                                         )}
@@ -5328,7 +5327,7 @@ export default function PortalJobsView({
                             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "8px" }}>
                               <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
                                 {isPlaceholder ? (
-                                  <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                                  <div style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: "6px" }}>
                                     <PlaceholderPill
                                       isAuto={isAuto}
                                       disabled={isReadOnly}
@@ -5350,6 +5349,8 @@ export default function PortalJobsView({
                                       style={{
                                         ...formInputStyle,
                                         width: "160px",
+                                        maxWidth: "100%",
+                                        minWidth: 0,
                                         padding: "2px 6px",
                                         fontSize: "12px",
                                         fontWeight: 600,
@@ -5373,6 +5374,8 @@ export default function PortalJobsView({
                                     style={{
                                       ...formInputStyle,
                                       width: "160px",
+                                      maxWidth: "100%",
+                                      minWidth: 0,
                                       padding: "2px 6px",
                                       fontSize: "12px",
                                       fontWeight: 600,
@@ -5615,7 +5618,7 @@ export default function PortalJobsView({
                                   </div>
                                 </div>
                               ) : (
-                                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "10px" }}>
+                                <div className="modal-tranche-grid" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "10px" }}>
                                   {/* Left: Amount & receive date */}
                                   <div>
                                     {isFieldLocked ? (
@@ -5643,7 +5646,7 @@ export default function PortalJobsView({
                                             fontWeight: 600
                                           }}
                                         />
-                                        <div style={{ display: "flex", alignItems: "center", gap: "4px" }}>
+                                        <div style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: "4px" }}>
                                           <label style={{ fontSize: "9.5px", color: "#64748b", fontWeight: 600, whiteSpace: "nowrap" }}>Received date:</label>
                                           <DateInput
                                             outputFormat="iso"
@@ -5653,6 +5656,8 @@ export default function PortalJobsView({
                                             style={{
                                               ...formInputStyle,
                                               width: "auto",
+                                              minWidth: 0,
+                                              maxWidth: "100%",
                                               padding: "2px 4px",
                                               fontSize: "10px"
                                             }}
@@ -5664,7 +5669,7 @@ export default function PortalJobsView({
 
                                   {/* Right: Payment timing */}
                                   <div style={{ display: "flex", alignItems: "center" }}>
-                                    <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                                    <div style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: "6px" }}>
                                       <label style={{ fontSize: "10px", color: "#64748b", fontWeight: 600, whiteSpace: "nowrap" }}>
                                         Days to pay:
                                       </label>
@@ -5685,7 +5690,7 @@ export default function PortalJobsView({
                                         }}
                                       />
                                       {calculatePaymentDate(exp.recDate, exp.days) && (
-                                        <span style={{ fontSize: "10px", color: "#64748b", whiteSpace: "nowrap" }}>
+                                        <span style={{ fontSize: "10px", color: "#64748b", whiteSpace: "normal" }}>
                                           Expected payment date: <strong style={{ color: "#0f172a" }}>{calculatePaymentDate(exp.recDate, exp.days)}</strong>
                                         </span>
                                       )}
@@ -5734,6 +5739,7 @@ export default function PortalJobsView({
 
             {/* Sticky / Hovering Action Bar (Always visible at bottom of modal) */}
             <div
+              className="portal-job-modal-footer"
               style={{
                 flexShrink: 0,
                 borderTop: "1px solid #e2e8f0",
@@ -6539,7 +6545,35 @@ export default function PortalJobsView({
       })()}
 
       <style jsx>{`
+        .modal-form-row > *,
+        .modal-tranche-grid > * {
+          min-width: 0;
+          max-width: 100%;
+        }
+        .portal-job-modal-body :global(input:not([type="checkbox"]):not([type="radio"])),
+        .portal-job-modal-body :global(select),
+        .portal-job-modal-body :global(textarea) {
+          max-width: 100%;
+          min-width: 0;
+          box-sizing: border-box;
+        }
         @media (max-width: 640px) {
+          .portal-job-modal-overlay {
+            padding: 0.5rem !important;
+          }
+          .portal-job-modal-card {
+            max-height: 92dvh !important;
+            border-radius: 10px !important;
+          }
+          .portal-job-modal-header {
+            padding: 0.9rem 1rem 0.75rem !important;
+          }
+          .portal-job-modal-body {
+            padding: 1rem !important;
+          }
+          .portal-job-modal-footer {
+            padding: 0.75rem 1rem !important;
+          }
           .portal-action-bar {
             gap: 0.75rem !important;
           }
@@ -6578,8 +6612,11 @@ export default function PortalJobsView({
           .modal-form-row-1,
           .modal-form-row-2,
           .modal-form-row-3,
-          .modal-form-row-4 {
-            grid-template-columns: 1fr !important;
+          .modal-form-row-4,
+          .modal-form-row-jc,
+          .modal-form-row-var,
+          .modal-tranche-grid {
+            grid-template-columns: minmax(0, 1fr) !important;
           }
           .modal-sub-grid-row {
             grid-template-columns: 1fr 1fr !important;

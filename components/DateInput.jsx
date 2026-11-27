@@ -145,6 +145,8 @@ export default function DateInput({
       {...rest}
       style={{
         width: "100%",
+        minWidth: 0,
+        maxWidth: "100%",
         padding: "7px 9px",
         border: "1px solid #cbd5e1",
         borderRadius: "5px",

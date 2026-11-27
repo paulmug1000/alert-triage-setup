@@ -2130,6 +2130,7 @@ export async function dispatchDueNativeMasterSyncs({
           const res = await fetch(`${baseUrl}/api/pma/master-engine`, {
             method: "POST",
             headers,
+            redirect: "manual",
             body: JSON.stringify({
               action: "run_native_sync",
               clientName,

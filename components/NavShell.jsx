@@ -291,7 +291,7 @@ export default function NavShell({
   activeNav, activeViewTab = "fyPerformance", onSelectViewTab,
   onHome, onAlerts, onOverview, onTasks, onNotes, onActivity, onAppLog,
   onOutgoings, onPassThrough, onInvoices, onRetainers, onJobs, onSalaries, onExpenses, onNBToFind, onBudget, onCash, onVat, onViews, onTools, onIntegrations, onSetup, onSettings, onDb,
-  homeAlertCount, taskCount, notesCount = 0, integrationsCount, user, onLogout, clients = [],
+  homeAlertCount, homeWarning = false, taskCount, notesCount = 0, integrationsCount, user, onLogout, clients = [],
   managedClient, activeEditClient, onSelectManagedClient, onClearManagedClient,
   isSingleClientUser: propIsSingleClientUser, singleClient: propSingleClient,
   onBeforeNavigateToPulse,
@@ -459,6 +459,19 @@ export default function NavShell({
     }}>{count > 99 ? "99+" : count}</span>
   ) : null;
 
+  const WarningMarker = () => (
+    <span
+      title="System health issue needs attention"
+      aria-label="System health issue needs attention"
+      style={{
+        display: "inline-flex", alignItems: "center", justifyContent: "center",
+        background: "#dc2626", color: "#ffffff", borderRadius: "50%",
+        fontSize: "11px", fontWeight: "800", width: "17px", height: "17px",
+        marginLeft: "5px", lineHeight: "1", verticalAlign: "middle", flexShrink: 0,
+      }}
+    >!</span>
+  );
+
   const isTabActive = (name) =>
     activeNav === name ||
     (name === "activity" && activeNav === "appLog") ||
@@ -527,7 +540,7 @@ export default function NavShell({
     : portalClients.some((c) => c.directCostsMode === "Pass-through");
 
   const allNavItems = [
-    { key: "home", label: "Home", handler: onHome },
+    { key: "home", label: "Home", handler: onHome, warning: isAdmin && homeWarning },
     { key: "alerts", label: "Alerts", handler: onAlerts, badge: homeAlertCount },
     { key: "tasks", label: "Tasks", handler: onTasks, badge: taskCount },
     { key: "notes", label: "Notes", handler: onNotes, badge: notesCount },
@@ -1255,6 +1268,7 @@ export default function NavShell({
               style={navBtnStyle(item.key)}
             >
               {item.label}
+              {item.warning && <WarningMarker />}
               {item.badge !== undefined && <Badge count={item.badge} />}
             </a>
           );
@@ -1264,6 +1278,7 @@ export default function NavShell({
           <>
             <a href={getNavHref("home")} className="triage-btn pulse-nav-item" onClick={(e) => handleNavClick(e, onHome)} style={navBtnStyle("home")}>
               Home
+              {isAdmin && homeWarning && <WarningMarker />}
             </a>
             <a href={getNavHref("alerts")} className="triage-btn pulse-nav-item" onClick={(e) => handleNavClick(e, onAlerts)} style={navBtnStyle("alerts")}>
               Alerts
@@ -1427,7 +1442,10 @@ export default function NavShell({
                         });
                       }}
                       style={{ background: "none", border: "none", cursor: "pointer", width: "100%", justifyContent: "space-between", borderBottom: "1px solid #f0f0f0", padding: "12px 16px", fontSize: "14px", fontWeight: isTabActive(item.key) ? "600" : "400", color: isTabActive(item.key) ? "#0047AB" : "#475569", display: "flex", alignItems: "center", textDecoration: "none", boxSizing: "border-box" }}>
-                      <span>{item.label}</span>
+                      <span style={{ display: "inline-flex", alignItems: "center" }}>
+                        {item.label}
+                        {item.warning && <WarningMarker />}
+                      </span>
                       {item.badge !== undefined && <Badge count={item.badge} />}
                     </a>
                   );

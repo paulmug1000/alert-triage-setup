@@ -81,7 +81,11 @@ export default function HomeView({
   triageComplete = false,
   managedClient,
   onClearManagedClient,
-  integrationsData: propIntegrationsData = null
+  integrationsData: propIntegrationsData = null,
+  systemHealth = null,
+  checkingSystemHealth = false,
+  onRecheckSystemHealth,
+  onTriggerAlertRefresh
 }) {
   const [searchTerm, setSearchTerm] = useState("");
   const [localIntegrationsData, setLocalIntegrationsData] = useState([]);
@@ -242,12 +246,154 @@ export default function HomeView({
     );
   }, [authorizedClients, searchTerm]);
 
+  const adminSystemIssues = useMemo(() => {
+    if (!isAdmin || !systemHealth || systemHealth.healthy || !Array.isArray(systemHealth.issues)) {
+      return [];
+    }
+    return systemHealth.issues;
+  }, [isAdmin, systemHealth]);
+
   if (effectiveClients.length === 0 && !managedClient) {
     return <PmaHomeSkeleton />;
   }
 
   return (
     <div className="pma-page-container" style={{ width: "100%", maxWidth: "100%", margin: "0 auto", padding: "20px 32px 60px", boxSizing: "border-box", fontFamily: "'Kumbh Sans', system-ui, -apple-system, sans-serif" }}>
+      {/* Admin System Health Fail-Safe Banner */}
+      {isAdmin && adminSystemIssues.length > 0 && (
+        <div
+          role="alert"
+          style={{
+            marginBottom: "18px",
+            background: "#FEF2F2",
+            border: "1px solid #FECACA",
+            borderLeft: "4px solid #DC2626",
+            borderRadius: "10px",
+            padding: "16px 20px",
+            boxShadow: "0 2px 6px rgba(220, 38, 38, 0.08)",
+          }}
+        >
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: "12px", flexWrap: "wrap", marginBottom: "12px" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+              <span
+                style={{
+                  display: "inline-flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  width: "26px",
+                  height: "26px",
+                  borderRadius: "50%",
+                  background: "#DC2626",
+                  color: "#FFFFFF",
+                  fontSize: "14px",
+                  fontWeight: "800",
+                  flexShrink: 0,
+                }}
+              >
+                !
+              </span>
+              <div>
+                <h2 style={{ margin: 0, fontSize: "15.5px", fontWeight: "700", color: "#991B1B" }}>
+                  {adminSystemIssues.length === 1
+                    ? "System health issue needs attention"
+                    : `${adminSystemIssues.length} system health issues need attention`}
+                </h2>
+                <p style={{ margin: "2px 0 0 0", fontSize: "12.5px", color: "#7F1D1D" }}>
+                  Automated background checks detected a pipeline interruption or overdue task.
+                </p>
+              </div>
+            </div>
+
+            <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
+              {typeof onTriggerAlertRefresh === "function" && (
+                <button
+                  type="button"
+                  className="triage-btn"
+                  disabled={isLoadingAlerts}
+                  onClick={() => onTriggerAlertRefresh()}
+                  style={{
+                    background: "#DC2626",
+                    color: "#FFFFFF",
+                    border: "none",
+                    borderRadius: "6px",
+                    padding: "7px 12px",
+                    fontSize: "12.5px",
+                    fontWeight: "600",
+                    cursor: isLoadingAlerts ? "wait" : "pointer",
+                  }}
+                >
+                  Refresh alerts now
+                </button>
+              )}
+              {typeof onRecheckSystemHealth === "function" && (
+                <button
+                  type="button"
+                  className="triage-btn"
+                  disabled={checkingSystemHealth}
+                  onClick={() => onRecheckSystemHealth()}
+                  style={{
+                    background: "#FFFFFF",
+                    color: "#991B1B",
+                    border: "1px solid #FCA5A5",
+                    borderRadius: "6px",
+                    padding: "7px 12px",
+                    fontSize: "12.5px",
+                    fontWeight: "600",
+                    cursor: checkingSystemHealth ? "wait" : "pointer",
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: "6px",
+                  }}
+                >
+                  {checkingSystemHealth && <Spinner size={12} color="#991B1B" />}
+                  <span>{checkingSystemHealth ? "Checking..." : "Re-check status"}</span>
+                </button>
+              )}
+            </div>
+          </div>
+
+          <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+            {adminSystemIssues.map((iss) => {
+              const isCritical = iss.severity === "critical";
+              return (
+                <div
+                  key={iss.id}
+                  style={{
+                    background: "#FFFFFF",
+                    border: `1px solid ${isCritical ? "#FECACA" : "#FDE68A"}`,
+                    borderRadius: "8px",
+                    padding: "10px 14px",
+                    display: "flex",
+                    alignItems: "flex-start",
+                    gap: "10px",
+                  }}
+                >
+                  <span
+                    style={{
+                      background: isCritical ? "#FEE2E2" : "#FEF3C7",
+                      color: isCritical ? "#991B1B" : "#92400E",
+                      border: `1px solid ${isCritical ? "#FCA5A5" : "#FCD34D"}`,
+                      borderRadius: "10px",
+                      padding: "2px 8px",
+                      fontSize: "11px",
+                      fontWeight: "700",
+                      whiteSpace: "nowrap",
+                      marginTop: "1px",
+                    }}
+                  >
+                    {isCritical ? "Critical" : "Warning"}
+                  </span>
+                  <div style={{ fontSize: "13px", lineHeight: "1.45", color: "#1E293B" }}>
+                    <div style={{ fontWeight: "700", color: "#0F172A" }}>{iss.title}</div>
+                    <div style={{ color: "#475569", marginTop: "2px" }}>{iss.detail}</div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
       {/* Page Header */}
       <div
         style={{
@@ -345,12 +491,12 @@ export default function HomeView({
                   ? `Active discrepancies and proactive alerts for ${managedClient.clientName}.`
                   : `Total active discrepancies and proactive alerts across all ${authorizedClients.length} clients.`)
                 : totalAlertsCount === 0
-                ? (managedClient?.clientName
-                  ? `All alerts for ${managedClient.clientName} are currently clear.`
-                  : "There are no active alerts across your clients.")
-                : (managedClient?.clientName
-                  ? `Active discrepancies and proactive alerts for ${managedClient.clientName}.`
-                  : `Total active discrepancies and proactive alerts across all ${authorizedClients.length} clients.`)}
+                  ? (managedClient?.clientName
+                    ? `All alerts for ${managedClient.clientName} are currently clear.`
+                    : "There are no active alerts across your clients.")
+                  : (managedClient?.clientName
+                    ? `Active discrepancies and proactive alerts for ${managedClient.clientName}.`
+                    : `Total active discrepancies and proactive alerts across all ${authorizedClients.length} clients.`)}
             </p>
           </div>
 

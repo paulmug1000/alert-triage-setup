@@ -1188,6 +1188,10 @@ function TriageSystemContent({ onBack, appGlobals, initialNav, initialUser = nul
           managedClient={managedClient}
           onClearManagedClient={handleClearManagedClient}
           integrationsData={integrationsRawData?.allClients || []}
+          systemHealth={isAdmin ? triageEngine.systemHealth : null}
+          checkingSystemHealth={triageEngine.checkingSystemHealth}
+          onRecheckSystemHealth={() => triageEngine.refreshSystemHealth(true)}
+          onTriggerAlertRefresh={() => triageEngine.refreshTriage(true)}
         />
       );
     }
@@ -1716,6 +1720,7 @@ function TriageSystemContent({ onBack, appGlobals, initialNav, initialUser = nul
         onSettings={handleNavSettings}
         onDb={handleNavDb}
         homeAlertCount={triageEngine.triageComplete ? (managedClient ? (managedClientAlertCount ?? 0) : currentLiveAlertCount) : undefined}
+        homeWarning={Boolean(isAdmin && triageEngine.systemHealth && !triageEngine.systemHealth.healthy && triageEngine.systemHealth.issues?.length > 0)}
         taskCount={navTaskCount}
         notesCount={pmaNotesCount}
         integrationsCount={integrationsAttentionCount}

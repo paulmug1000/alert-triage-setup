@@ -97,8 +97,9 @@ import {
   handleAcceptOption, handleDeleteJob, handleAnalyzeNoActionFlag,
   handleCheckOutgoingsCell,
   handleRehashIgnoredAlerts, PRECOMPUTED_KEY,
-  getTriageRefreshStatus, setTriageRefreshStatus, runBackgroundTriageRefresh
+  getTriageRefreshStatus, setTriageRefreshStatus, runBackgroundTriageRefresh, getBaseUrlFromReq
 } from "../../services/triageEngine";
+import { getSystemHealthSummary, checkAndNotifySystemHealth } from "../../services/systemHealthWatchdog";
 import { getClientViewData, handleUpdateViewCell, handleSpreadViewRow, handleUpdateCellNote } from "../../services/viewsService";
 import {
   getCashflowReconData,
@@ -150,7 +151,7 @@ import {
   unwrapRequestSheetIds,
   installSheetIdBoundary
 } from "../../services/userPermissions";
-import { matchesClientName, sanitizeSpreadsheetTerms, assertTrustedOrigin, isValidGoogleScriptUrl, resolveCanonicalOAuthHost, postGasWebAppLocked } from "../../utils/helpers";
+import { matchesClientName, sanitizeSpreadsheetTerms, assertTrustedOrigin, isValidGoogleScriptUrl, postGasWebAppLocked } from "../../utils/helpers";
 
 async function checkTriageClientAuth(sheets, sessionUser, clientNameClaim, sheetIds = []) {
   if (!sessionUser) return false;
@@ -379,6 +380,7 @@ export default async function handler(req, res) {
       "get_session",
       "get_alerts",
       "get_precomputed",
+      "get_system_health",
       "get_ignored_alerts",
       "get_proactive_alerts",
       "get_activity",
@@ -443,6 +445,7 @@ export default async function handler(req, res) {
       "get_refresh_status",
       "get_alerts",
       "get_precomputed",
+      "get_system_health",
     ]);
 
     const sheets = FAST_NO_SHEETS_ACTIONS.has(action)
@@ -1472,12 +1475,7 @@ export default async function handler(req, res) {
           return res.status(200).json({ success: true, alreadyRunning: true, status: current });
         }
 
-        const { host, proto } = resolveCanonicalOAuthHost(req);
-        const cleanUrl = (url) => url ? (url.startsWith("http") ? url : `https://${url}`) : null;
-        const prodUrl = cleanUrl(process.env.VERCEL_PROJECT_PRODUCTION_URL);
-        const baseUrl = (prodUrl && prodUrl.startsWith("https://") && prodUrl.includes("pulsedashboard.co.uk"))
-          ? prodUrl
-          : `${proto}://${host}`;
+        const baseUrl = getBaseUrlFromReq(req);
         const cronSecret = process.env.CRON_SECRET;
 
         await setTriageRefreshStatus({
@@ -1650,6 +1648,22 @@ export default async function handler(req, res) {
       }
       const result = await sendDailyAlertsSummary({ sheets, automationCommanderSheetId });
       return res.status(200).json(result);
+    } else if (action === "get_system_health") {
+      if (!isCronAuthorized && (!sessionUser || sessionUser.isReadOnly || !(sessionUser.isAdmin || sessionUser.role === "Admin"))) {
+        return res.status(403).json({ success: false, error: "Forbidden: Admin privileges required" });
+      }
+      const systemHealth = await getSystemHealthSummary({
+        bypassCache: Boolean(req.body?.bustCache === true || req.query?.bustCache === "true"),
+      });
+      return res.status(200).json({ success: true, systemHealth });
+    } else if (action === "run_health_watchdog") {
+      if (!isCronAuthorized && (!sessionUser || sessionUser.isReadOnly || !(sessionUser.isAdmin || sessionUser.role === "Admin"))) {
+        return res.status(403).json({ success: false, error: "Forbidden: Admin privileges required" });
+      }
+      const watchdogResult = await checkAndNotifySystemHealth({
+        dryRunEmail: Boolean(req.body?.dryRunEmail),
+      });
+      return res.status(200).json({ success: true, watchdogResult });
     } else if (action === "build_cached_alert_options") {
       return await handleBuildCachedAlertOptions(req, res, sheets);
     } else if (action === "get_alerts") {

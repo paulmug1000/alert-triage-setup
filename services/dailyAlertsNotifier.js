@@ -69,7 +69,7 @@ function escapeHtml(str) {
 /**
  * Build rich HTML email body for daily alert digest
  */
-function buildDigestHtml({ user, formattedDate, totalAlerts, clientSummaries, appUrl }) {
+function buildDigestHtml({ user, formattedDate, totalAlerts, clientSummaries, appUrl, systemNotice = "" }) {
   const clientRowsHtml = clientSummaries.map(cs => {
     const breakdownPills = [];
     if (cs.invoiceCount > 0) breakdownPills.push(`<span style="display:inline-block;background:#eff6ff;color:#1e40af;border:1px solid #bfdbfe;border-radius:4px;padding:2px 7px;font-size:11px;font-weight:600;margin-right:5px;margin-bottom:4px;">Invoices: ${cs.invoiceCount}</span>`);
@@ -122,6 +122,11 @@ function buildDigestHtml({ user, formattedDate, totalAlerts, clientSummaries, ap
         </p>
 
         <!-- Stats Overview Banner -->
+        ${systemNotice ? `
+          <div style="background:#fef2f2;border:1px solid #fecaca;border-left:4px solid #dc2626;border-radius:6px;padding:12px 16px;margin-bottom:16px;font-size:13px;color:#991b1b;line-height:1.45;">
+            <strong>System health notice:</strong> ${escapeHtml(systemNotice)}
+          </div>
+        ` : ""}
         <div style="background:#ffffff;border:1px solid #e5e7eb;border-left:4px solid #0066cc;border-radius:6px;padding:14px 18px;margin-bottom:20px;">
           <div style="font-size:22px;font-weight:700;color:#0066cc;">${totalAlerts}</div>
           <div style="font-size:13px;color:#4b5563;font-weight:500;">
@@ -205,10 +210,20 @@ export async function sendDailyAlertsSummary(sheetsOrOptions, maybeAcId) {
 
   // 2. Fetch active alerts from precomputed cache or AlertMemory
   let allAlerts = [];
+  let precomputedStaleNotice = "";
   try {
     const raw = await redisClient.get(PRECOMPUTED_KEY);
     if (raw) {
       const preData = JSON.parse(raw);
+      const computedMs = typeof preData.computedAt === "number"
+        ? preData.computedAt
+        : (Date.parse(preData.computedAt || "") || 0);
+      const ageMins = computedMs > 0 ? Math.round((Date.now() - computedMs) / 60000) : null;
+      if (ageMins === null || ageMins > 90) {
+        precomputedStaleNotice = ageMins === null
+          ? "Precomputed alert cache timestamp is missing; alert sweep health should be checked on the PMA home page."
+          : `Precomputed alert cache was ${ageMins} minutes old when this digest ran; background alert sweeps may have stalled.`;
+      }
       const combined = [
         ...(preData.alerts || []),
         ...(preData.proactiveAlerts || []),
@@ -216,9 +231,12 @@ export async function sendDailyAlertsSummary(sheetsOrOptions, maybeAcId) {
       ];
       allAlerts = combined;
       console.log(`  Loaded ${allAlerts.length} total active alerts from Redis cache.`);
+    } else {
+      precomputedStaleNotice = "Precomputed alert cache was empty when this digest ran; alerts fell back to persisted alert memory.";
     }
   } catch (e) {
     console.warn("  Redis cache fetch warning, falling back to AlertMemory:", e.message);
+    precomputedStaleNotice = "Precomputed alert cache could not be read when this digest ran; alerts fell back to persisted alert memory.";
   }
 
   if (!allAlerts.length) {
@@ -319,8 +337,9 @@ export async function sendDailyAlertsSummary(sheetsOrOptions, maybeAcId) {
       return assignedList.some((assigned) => matchesClientName(assigned, n.client_name));
     });
 
-    // Requirement #1: If user has 0 alerts and 0 open client notes, skip completely
-    if (userAlerts.length === 0 && userClientNotes.length === 0) {
+    // Requirement #1: If user has 0 alerts and 0 open client notes (and no admin system notice), skip completely
+    const adminSystemNotice = isAdminUser ? precomputedStaleNotice : "";
+    if (userAlerts.length === 0 && userClientNotes.length === 0 && !adminSystemNotice) {
       console.log(`  ⏭️ Skipped ${user.email}: 0 active alerts for assigned clients.`);
       results.skippedZeroAlerts.push(user.email);
       continue;
@@ -388,10 +407,12 @@ export async function sendDailyAlertsSummary(sheetsOrOptions, maybeAcId) {
       formattedDate,
       totalAlerts: totalItems,
       clientSummaries,
-      appUrl
+      appUrl,
+      systemNotice: adminSystemNotice,
     });
 
     const textBody = `Hello ${user.name || "there"},\n\n` +
+      (adminSystemNotice ? `System health notice: ${adminSystemNotice}\n\n` : "") +
       `Here is your Pulse Management Area daily summary for ${formattedDate}:\n` +
       `Total active alerts: ${totalItems} across ${clientSummaries.length} clients.\n\n` +
       clientSummaries.map(cs => `• ${cs.clientName}: ${cs.totalClientAlerts} alert(s)`).join("\n") +

@@ -29,6 +29,9 @@ export function useTriageEngine({
   const [claudeAnalysis, setClaudeAnalysis] = useState("");
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [refreshStatus, setRefreshStatus] = useState("");
+  const [systemHealth, setSystemHealth] = useState(null);
+  const [checkingSystemHealth, setCheckingSystemHealth] = useState(false);
+  const isAdminUser = Boolean(user && !user.isReadOnly && (user.isAdmin || user.role === "Admin"));
 
   const scopeClients = useCallback((clients) => {
     // Only Admin is an internal staff role able to see all clients
@@ -108,6 +111,7 @@ export function useTriageEngine({
     setClientAlerts([]);
     setTotalAlerts(0);
     setNoActionCount(0);
+    setSystemHealth(null);
   }, [user?.email]);
   const [selectedClient, setSelectedClient] = useState(null);
   const [clientAlerts, setClientAlerts] = useState([]);
@@ -207,6 +211,9 @@ export function useTriageEngine({
   }, []);
 
   const applyPrecomputedData = useCallback((preData) => {
+    if (preData?.systemHealth) {
+      setSystemHealth(preData.systemHealth);
+    }
     setSessionId(preData.sessionId);
     setTotalAlerts(preData.totalAlerts || 0);
     setNoActionCount(preData.noActionCount || 0);
@@ -407,6 +414,10 @@ export function useTriageEngine({
         }).then(r => r.json()).catch(() => null),
       ]);
 
+      if (preResult?.systemHealth && isMountedRef.current) {
+        setSystemHealth(preResult.systemHealth);
+      }
+
       let precomputedUsed = false;
       if (preResult && preResult.success && preResult.available) {
         console.log(`✅ Using precomputed data (${preResult.computedMinutesAgo} min old, ${preResult.totalAlerts} alerts)`);
@@ -475,6 +486,9 @@ export function useTriageEngine({
         body: JSON.stringify({ action: "get_precomputed", automationCommanderSheetId, bustCache: !isBg }),
       });
       const preData = await preResponse.json();
+      if (preData?.systemHealth && isMountedRef.current) {
+        setSystemHealth(preData.systemHealth);
+      }
 
       if (preData.success && preData.available) {
         setSessionId(preData.sessionId);
@@ -1343,6 +1357,38 @@ export function useTriageEngine({
     }
   };
 
+  const refreshSystemHealth = useCallback(async (bustCache = true) => {
+    if (!isAdminUser) return null;
+    try {
+      setCheckingSystemHealth(true);
+      const res = await fetch("/api/triage", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "get_system_health", automationCommanderSheetId, bustCache }),
+      });
+      const data = await res.json();
+      if (res.ok && data?.success && data.systemHealth && isMountedRef.current) {
+        setSystemHealth(data.systemHealth);
+        return data.systemHealth;
+      }
+    } catch (err) {
+      console.warn("Failed to check system health:", err.message);
+    } finally {
+      if (isMountedRef.current) setCheckingSystemHealth(false);
+    }
+    return null;
+  }, [isAdminUser, automationCommanderSheetId]);
+
+  useEffect(() => {
+    if (!isAdminUser) return undefined;
+    const timer = setInterval(() => {
+      if (typeof document === "undefined" || document.visibilityState === "visible") {
+        refreshSystemHealth(false);
+      }
+    }, 60000);
+    return () => clearInterval(timer);
+  }, [isAdminUser, refreshSystemHealth]);
+
   useEffect(() => {
     if (triageComplete && totalAlerts === 0 && noActionCount === 0
       && proactiveLoadedAt > 0 && proactiveAlerts.length > 0
@@ -1355,6 +1401,7 @@ export function useTriageEngine({
 
   return {
     sessionId, setSessionId, totalAlerts, setTotalAlerts, noActionCount, setNoActionCount,
+    systemHealth, checkingSystemHealth, refreshSystemHealth,
     acknowledgedNoAction, setAcknowledgedNoAction, triageComplete, setTriageComplete,
     claudeAnalysis, setClaudeAnalysis, isAnalyzing, setIsAnalyzing, refreshStatus, setRefreshStatus,
     clientsWithFlags, setClientsWithFlags, selectedClient, setSelectedClient, clientAlerts, setClientAlerts,

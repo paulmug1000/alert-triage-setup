@@ -39,6 +39,7 @@ import { redisClient, ensureRedisConnected } from "./redisClient.js";
 import { anthropic } from "./claudeClient.js";
 import { logPmaActivity } from "./pmaLogger.js";
 import { logPrecomputeRun, logFlagSweepRun, logBuildOptionsRun } from "./systemLogs.js";
+import { getSystemHealthSummary, recordSweepRunTelemetry } from "./systemHealthWatchdog.js";
 import { isPlaceholderInvoice, isDraftInvoice, isPlaceholderExpense, parseYearMonth, parseStaleExpenseDetail, isPipelineJobSuppressed, toSheetDateFormat, hasActiveCrmIntegration, ADMIN_ONLY_ALERT_TYPES, isNoEndDateSentinel, isJobCostingStyle, getJobCostingRowFormulasMap, buildJobRowClearAndRestorePlan, resolveCanonicalOAuthHost, parseVariableRetainerTag, isVariableRetainerRow, isFixedScheduleRetainer, sanitizeSpreadsheetTerms } from "../utils/helpers.js";
 import { getSessionUser, safeCompareSecret } from "./authService.js";
 import { matchesClientName, getClientManagerClientMap, isUserAuthorizedForClient, verifyUserAuthorizedForSheet, getCanonicalAcSheetId, canViewSalariesAndDividends } from "./userPermissions.js";
@@ -2229,6 +2230,10 @@ export async function handleGetPrecomputed(req, res, sheets) {
   const tStart = Date.now();
   const { automationCommanderSheetId, bustCache } = req.body;
   try {
+    const sessionUser = getSessionUser(req);
+    const isAdminSession = Boolean(
+      sessionUser && !sessionUser.isReadOnly && (sessionUser.isAdmin || sessionUser.role === "Admin")
+    );
     let raw = null;
     let tRedis = 0;
     if (!bustCache && _precomputedMemoryCache && (Date.now() - _precomputedCachedAt < 60000)) {
@@ -2253,11 +2258,19 @@ export async function handleGetPrecomputed(req, res, sheets) {
     }
     if (!raw) {
       console.log(`  No precomputed data found (${tRedis}ms)`);
-      return res.status(200).json({ success: true, available: false });
+      const systemHealth = isAdminSession ? await getSystemHealthSummary().catch(() => null) : null;
+      return res.status(200).json({
+        success: true,
+        available: false,
+        ...(isAdminSession && systemHealth ? { systemHealth } : {}),
+      });
     }
 
     const data = JSON.parse(raw);
-    const ageMs = Date.now() - (data.computedAt || 0);
+    const computedMs = typeof data.computedAt === "number"
+      ? data.computedAt
+      : (Date.parse(data.computedAt || "") || 0);
+    const ageMs = computedMs > 0 ? Math.max(0, Date.now() - computedMs) : 0;
     const isStale = ageMs > PRECOMPUTED_MAX_AGE_MS;
     if (isStale) {
       console.log(`  Precomputed data is ${Math.round(ageMs / 60000)} mins old (serving optimistically, background refresh needed)`);
@@ -2311,7 +2324,6 @@ export async function handleGetPrecomputed(req, res, sheets) {
       return status === "cached" || status === "pending_automation";
     });
 
-    const sessionUser = getSessionUser(req);
     let scopedAlerts = filteredAlerts;
     let scopedProactive = filteredProactive;
     let scopedNoAction = filteredNoAction;
@@ -2498,6 +2510,7 @@ export async function handleGetPrecomputed(req, res, sheets) {
         { EX: 3600 }
       ).catch(e => console.error("Error saving triage session to Redis:", e));
     }
+    const systemHealth = isAdminSession ? await getSystemHealthSummary().catch(() => null) : null;
     const totalMs = Date.now() - tStart;
 
     console.log(`⏱️ [handleGetPrecomputed]: total=${totalMs}ms (redisGet=${tRedis}ms, mem=${tMem}ms, filt=${tFilt}ms, cm=${tCm}ms)`);
@@ -2526,6 +2539,7 @@ export async function handleGetPrecomputed(req, res, sheets) {
       computedMinutesAgo: Math.round(ageMs / 60000),
       isStale,
       noActionAnalysisResults: aggregatedNoActionResults,
+      ...(isAdminSession && systemHealth ? { systemHealth } : {}),
       _timing: { totalMs, tRedis, tMem, tFilt, tCm },
     });
   } catch (err) {
@@ -3280,9 +3294,14 @@ export async function handleRunFlagSweep(req, res, sheets) {
   let clientsChecked = 0, flagsRaised = 0, errors = 0;
   let alertsDelayed = 0, alertsWoken = 0;
   let raisedDetail = [];
+  let sweepErrorDetails = Array.isArray(req.body?.priorErrorDetails) ? [...req.body.priorErrorDetails] : [];
+  const priorErrors = Number(req.body?.priorErrors) || 0;
+  const priorClientsChecked = Number(req.body?.priorClientsChecked) || 0;
+  let activeLiveClientCount = 0;
   let categoriesRunStr = "";
   try {
     const { clientRows } = await readAutoUpdatesClientRows_(sheets, acIdSweep);
+    activeLiveClientCount = clientRows.filter(c => !c.setupMode).length;
 
     await ensureSweepScheduleTab(sheets, acIdSweep);
     const schedule = await readSweepSchedule_(sheets, acIdSweep);
@@ -3458,7 +3477,15 @@ export async function handleRunFlagSweep(req, res, sheets) {
           batchData.gasScriptProps = (client.masterMode === "supabase" || isVirtualSupabaseSheetId(client.masterSheetId)) ? (ranges[12]?.values || []) : [];
           masterBatchSuccess = true;
         } catch (e) {
-          console.log(`  ⚠️ Batch fetch failed for ${client.clientName}: ${e.message}`);
+          console.error(`  ❌ Batch fetch failed for ${client.clientName}: ${e.message}`);
+          client._sweepFetchFailed = true;
+          errors++;
+          sweepErrorDetails.push({
+            clientName: client.clientName,
+            step: "master_batch_get",
+            error: String(e.message || "Batch fetch failed").slice(0, 200),
+          });
+          continue;
         }
 
         const hasActiveCrm = hasActiveCrmIntegration(batchData.crmTool);
@@ -3652,7 +3679,13 @@ export async function handleRunFlagSweep(req, res, sheets) {
             sharedData.pipelineData = clientBatchResp.data.valueRanges[1]?.values || [];
             fetchSuccess = true;
           } catch (e) {
-            console.log(`  ⚠️ Failed to fetch Confirmed/Pipeline for proactive checks: ${e.message}`);
+            console.error(`  ❌ Failed to fetch Confirmed/Pipeline for proactive checks (${client.clientName}): ${e.message}`);
+            errors++;
+            sweepErrorDetails.push({
+              clientName: client.clientName,
+              step: "proactive_batch_get",
+              error: String(e.message || "Client tabs fetch failed").slice(0, 200),
+            });
           }
 
           if (fetchSuccess) {
@@ -3738,6 +3771,12 @@ export async function handleRunFlagSweep(req, res, sheets) {
         clientsChecked++;
       } catch (clientErr) {
         errors++;
+        client._sweepFetchFailed = true;
+        sweepErrorDetails.push({
+          clientName: client.clientName,
+          step: "client_sweep",
+          error: String(clientErr.message || "Sweep error").slice(0, 200),
+        });
         console.error(`  run_flag_sweep: error for ${client.clientName}: ${clientErr.message}`);
       }
 
@@ -3757,7 +3796,7 @@ export async function handleRunFlagSweep(req, res, sheets) {
 
       // Auto-resolve any legacy/cached CRM discrepancy rows for clients without active CRM integration
       for (const client of clientChunk) {
-        if (!client._hasActiveCrm) {
+        if (!client._sweepFetchFailed && !client._hasActiveCrm) {
           const clientCrmDiscrepancyRows = memoryRows.filter(r =>
             r.clientName === client.clientName &&
             (r.alertType.startsWith("crm") || r.alertType === "crm") &&
@@ -4364,16 +4403,30 @@ export async function handleRunFlagSweep(req, res, sheets) {
       }
     }
 
+    const cumulativeErrors = priorErrors + errors;
+    const cumulativeChecked = priorClientsChecked + clientsChecked;
+
     if (!hasMore) {
       try {
-        if (!isForced) {
+        if (!isForced && cumulativeErrors === 0) {
           if (actionableDue) await markCategoryChecked_(sheets, acIdSweep, "actionable", schedule);
           if (infoDue) await markCategoryChecked_(sheets, acIdSweep, "info", schedule);
           if (proactiveDue) await markCategoryChecked_(sheets, acIdSweep, "proactive", schedule);
+        } else if (!isForced && cumulativeErrors > 0) {
+          console.warn(`  ⚠️ Skipping SweepSchedule timestamp advance because ${cumulativeErrors} client error(s) occurred.`);
         }
       } catch (scheduleErr) {
         console.log(`  ⚠️ Could not update SweepSchedule: ${scheduleErr.message}`);
       }
+      await recordSweepRunTelemetry({
+        startedAt: sweepStart,
+        completedFullSweep: true,
+        clientsChecked: cumulativeChecked,
+        expectedClients: activeLiveClientCount,
+        errorsCount: cumulativeErrors,
+        errorDetails: sweepErrorDetails,
+        categoriesRun: categoriesRunStr,
+      });
     }
 
     const elapsedS = Math.round((Date.now() - sweepStart) / 1000);
@@ -4409,6 +4462,9 @@ export async function handleRunFlagSweep(req, res, sheets) {
           proactiveDue,
           chain: true,
           bypassToken: effectiveBypass,
+          priorErrors: cumulativeErrors,
+          priorClientsChecked: cumulativeChecked,
+          priorErrorDetails: sweepErrorDetails.slice(0, 15),
         };
 
         if (lambdaElapsedMs < IN_LAMBDA_SWEEP_BUDGET_MS) {
@@ -4506,6 +4562,18 @@ export async function handleRunFlagSweep(req, res, sheets) {
       }, 300).catch(() => { });
     }
     const elapsedS = Math.round((Date.now() - sweepStart) / 1000);
+    await recordSweepRunTelemetry({
+      startedAt: sweepStart,
+      completedFullSweep: false,
+      clientsChecked: priorClientsChecked + (clientsChecked || 0),
+      expectedClients: activeLiveClientCount,
+      errorsCount: priorErrors + (errors || 0) + 1,
+      errorDetails: [
+        ...sweepErrorDetails,
+        { clientName: `Batch ${startIdx}`, step: "sweep_fatal", error: String(err.message || "Sweep failed").slice(0, 200) },
+      ].slice(0, 15),
+      categoriesRun: categoriesRunStr || "",
+    });
     await logFlagSweepRun(sheets, acIdSweep, { clientsChecked: clientsChecked || 0, flagsRaised: flagsRaised || 0, errors: (errors || 0) + 1, alertsDelayed: alertsDelayed || 0, alertsWoken: alertsWoken || 0, elapsedSeconds: elapsedS, raisedDetail: raisedDetail || [], isContinuation: startIdx > 0, categoriesRun: categoriesRunStr || "" }).catch(() => { });
     return res.status(500).json({ success: false, error: err.message });
   }

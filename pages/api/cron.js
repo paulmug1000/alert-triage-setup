@@ -19,6 +19,7 @@ import { sendDailyAlertsSummary, checkAndNotifyTabErrors, checkAndNotifyClientPa
 import { warmAllClientsPortalHomeCache } from "../../services/portalDataService";
 import { compactAlertMemory } from "../../services/alertMemory";
 import { runScheduledSheetBridgeSweep } from "../../services/clientSheetBridgeService";
+import { checkAndNotifySystemHealth } from "../../services/systemHealthWatchdog";
 
 export const config = {
   maxDuration: 300,
@@ -80,6 +81,9 @@ export default async function handler(req, res) {
   const onlyParityMonitor = Boolean(
     req.body?.onlyParityMonitor === true || req.query?.onlyParityMonitor === "true"
   );
+  const onlyMasterSync = Boolean(
+    req.body?.onlyMasterSync === true || req.query?.onlyMasterSync === "true"
+  );
 
   if (onlyParityMonitor) {
     const isolatedParityTask = (async () => {
@@ -107,6 +111,25 @@ export default async function handler(req, res) {
     return;
   }
 
+  if (onlyMasterSync) {
+    const isolatedMasterSyncTask = (async () => {
+      try {
+        console.log("CRON (isolated): Checking and dispatching due native master syncs across all tenants...");
+        const syncDispatchRes = await dispatchDueNativeMasterSyncs({
+          baseUrl,
+          cronSecret,
+          bypassToken,
+          maxConcurrency: 2,
+        });
+        console.log(`CRON (isolated): Completed dispatch of ${syncDispatchRes.dispatched} native sync sequence(s).`);
+      } catch (syncErr) {
+        console.error("❌ CRON (isolated master sync) failed:", syncErr.message);
+      }
+    })();
+    waitUntil(isolatedMasterSyncTask);
+    return;
+  }
+
   // Run the pipeline in the background using Vercel Pro waitUntil
   const backgroundTask = (async () => {
     console.log(`\n🕐 CRON (${triggerSource}): Starting background triage pipeline via runBackgroundTriageRefresh...`);
@@ -117,7 +140,7 @@ export default async function handler(req, res) {
         if (sb) {
           const { data: cfgRow } = await sb
             .from("system_config")
-            .select("*")
+            .select("value, description")
             .eq("key", "supabase_cron_clock")
             .maybeSingle();
           if (cfgRow) {
@@ -135,15 +158,55 @@ export default async function handler(req, res) {
         }
       } catch (_) { }
 
+      // Fail-safe watchdog check runs FIRST so downstream timeouts can never suppress alerting
       try {
-        console.log("CRON: Checking and dispatching due native master syncs across all tenants...");
-        const syncDispatchRes = await dispatchDueNativeMasterSyncs({
-          baseUrl,
-          cronSecret,
-          bypassToken,
-          maxConcurrency: 2,
-        });
-        console.log(`CRON: Completed dispatch of ${syncDispatchRes.dispatched} native sync sequence(s).`);
+        const watchdogRes = await checkAndNotifySystemHealth();
+        if (!watchdogRes.healthy) {
+          console.warn(
+            `⚠️ CRON Watchdog: ${watchdogRes.issues.length} active system issue(s) (emailed=${Boolean(watchdogRes.emailed)}).`
+          );
+        }
+      } catch (wdErr) {
+        console.warn("⚠️ CRON: Non-fatal error in checkAndNotifySystemHealth:", wdErr.message);
+      }
+
+      const cronHeaders = {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${cronSecret}`,
+        "x-cron-secret": cronSecret,
+        ...(bypassToken ? { "x-vercel-protection-bypass": bypassToken } : {}),
+      };
+
+      // Dispatch due native master syncs in an isolated Lambda so slow bank reconciliations
+      // never starve downstream alert sweeps, parity checks, or daily digests.
+      try {
+        let dispatchedIsolatedSync = false;
+        try {
+          const syncSelfRes = await fetch(`${baseUrl}/api/cron?onlyMasterSync=true`, {
+            method: "POST",
+            headers: cronHeaders,
+            redirect: "manual",
+            body: JSON.stringify({ onlyMasterSync: true, secret: cronSecret }),
+          });
+          if (syncSelfRes && syncSelfRes.ok) {
+            dispatchedIsolatedSync = true;
+            console.log("CRON: Dispatched isolated native master sync worker.");
+          } else {
+            console.warn(`⚠️ CRON: Isolated master sync dispatch returned HTTP ${syncSelfRes?.status}; falling back inline.`);
+          }
+        } catch (dispSyncErr) {
+          console.warn(`⚠️ CRON: Isolated master sync self-dispatch failed (${dispSyncErr.message}); falling back inline.`);
+        }
+        if (!dispatchedIsolatedSync) {
+          console.log("CRON: Running due native master sync dispatch inline...");
+          const syncDispatchRes = await dispatchDueNativeMasterSyncs({
+            baseUrl,
+            cronSecret,
+            bypassToken,
+            maxConcurrency: 2,
+          });
+          console.log(`CRON: Completed inline dispatch of ${syncDispatchRes.dispatched} native sync sequence(s).`);
+        }
       } catch (syncErr) {
         console.warn("⚠️ CRON: Error in dispatchDueNativeMasterSyncs:", syncErr.message);
       }
@@ -196,13 +259,6 @@ export default async function handler(req, res) {
       } else {
         console.log("⏭️ CRON: Skipping 10-minute triage housekeeping (within cooldown window).");
       }
-
-      const cronHeaders = {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${cronSecret}`,
-        "x-cron-secret": cronSecret,
-        ...(bypassToken ? { "x-vercel-protection-bypass": bypassToken } : {}),
-      };
 
       // Refresh 30-day Activity Feed cache approximately once per hour
       try {

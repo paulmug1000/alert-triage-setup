@@ -66,11 +66,24 @@ export default function ScenariosView({
     nonDelExp: new Array(12).fill(0),
   });
 
+  const createEmptyRawInputs = () => ({
+    rev: new Array(12).fill(""),
+    delStaff: new Array(12).fill(""),
+    delExp: new Array(12).fill(""),
+    nonDelStaff: new Array(12).fill(""),
+    nonDelExp: new Array(12).fill(""),
+  });
+
   // Adjustments state stored per financial year (matching WebApp.html getScenarioAdjs)
   const [adjsByYear, setAdjsByYear] = useState({});
+  const [rawAdjInputsByYear, setRawAdjInputsByYear] = useState({});
   const adjs = useMemo(
     () => adjsByYear[activeYearIdx] || createEmptyAdjs(),
     [adjsByYear, activeYearIdx]
+  );
+  const rawAdjInputs = useMemo(
+    () => rawAdjInputsByYear[activeYearIdx] || createEmptyRawInputs(),
+    [rawAdjInputsByYear, activeYearIdx]
   );
 
   // Pipeline job toggles:
@@ -99,7 +112,7 @@ export default function ScenariosView({
   const someConfirmed = confirmedCount > 0 && confirmedCount < pipelineJobs.length;
 
   const toggleAllIncluded = () => {
-    if (unconfirmedJobs.length === 0) return;
+    if (isYear0 || unconfirmedJobs.length === 0) return;
     if (allIncluded) {
       // Exclude all unconfirmed jobs
       setDisabledJobIds((prev) => {
@@ -118,6 +131,7 @@ export default function ScenariosView({
   };
 
   const toggleAllConfirmed = () => {
+    if (isYear0) return;
     if (allConfirmed) {
       setConfirmedJobIds(new Set());
       setDisabledJobIds(new Set());
@@ -128,7 +142,7 @@ export default function ScenariosView({
   };
 
   const toggleJobIncluded = (id) => {
-    if (confirmedJobIds.has(id)) return; // disabled if confirmed
+    if (isYear0 || confirmedJobIds.has(id)) return; // disabled if confirmed or Year 0
     setDisabledJobIds((prev) => {
       const next = new Set(prev);
       if (next.has(id)) next.delete(id);
@@ -138,6 +152,7 @@ export default function ScenariosView({
   };
 
   const toggleJobConfirmed = (id) => {
+    if (isYear0) return;
     setConfirmedJobIds((prev) => {
       const next = new Set(prev);
       if (next.has(id)) {
@@ -160,7 +175,16 @@ export default function ScenariosView({
   };
 
   const handleAdjMonthChange = (category, mIdx, val) => {
-    const num = parseMoney(val);
+    setRawAdjInputsByYear((prev) => {
+      const current = prev[activeYearIdx] || createEmptyRawInputs();
+      const copy = [...current[category]];
+      copy[mIdx] = val;
+      return {
+        ...prev,
+        [activeYearIdx]: { ...current, [category]: copy },
+      };
+    });
+    const num = parseMoney(val, thousandsSeparator);
     setAdjsByYear((prev) => {
       const current = prev[activeYearIdx] || createEmptyAdjs();
       const copy = [...current[category]];
@@ -173,6 +197,7 @@ export default function ScenariosView({
   };
 
   const handleToggleNBMonth = (mIdx) => {
+    if (isYear0) return;
     setAdjsByYear((prev) => {
       const current = prev[activeYearIdx] || createEmptyAdjs();
       const copy = [...current.nbChecked];
@@ -185,6 +210,7 @@ export default function ScenariosView({
   };
 
   const handleToggleMasterNB = () => {
+    if (isYear0) return;
     const anyUnchecked = adjs.nbChecked.some((c) => !c);
     setAdjsByYear((prev) => {
       const current = prev[activeYearIdx] || createEmptyAdjs();
@@ -200,6 +226,7 @@ export default function ScenariosView({
 
   const handleResetScenarios = () => {
     setAdjsByYear({});
+    setRawAdjInputsByYear({});
     setDisabledJobIds(new Set());
     setConfirmedJobIds(new Set());
   };
@@ -238,7 +265,7 @@ export default function ScenariosView({
     if (!val) return 0;
     const str = String(val).trim();
     if (str.includes("%")) return (parseFloat(str.replace("%", "").trim()) || 0) / 100;
-    return parseMoney(val);
+    return parseMoney(val, thousandsSeparator);
   };
 
   const formatMoney = (val, decimals = 0) => {
@@ -336,6 +363,7 @@ export default function ScenariosView({
   // Calculate Scenario Deltas using the exact algebraic resolution engine from WebApp.html
   const mutatedYearData = useMemo(() => {
     if (!activeYear?.rows) return null;
+    if (isYear0) return activeYear;
     return mutateFYDataForScenarios(activeYear, {
       confirmedJobs: confirmedJobIds,
       disabledJobs: disabledJobIds,
@@ -347,11 +375,12 @@ export default function ScenariosView({
       directCostsMode,
       profitShareSwitch: keyData?.outgoingsMeta?.profitShareSwitch,
       profitSharePct: keyData?.outgoingsMeta?.profitSharePct,
+      splitEnabled: keyData?.splitEnabled,
       yearIndex: activeYearIdx,
       currencySymbol,
       thousandsSeparator,
     });
-  }, [activeYear, confirmedJobIds, disabledJobIds, adjs, pipelineJobs, performanceData?.mode, directCostsMode, keyData?.outgoingsMeta, keyData?.nbtofind, activeYearIdx, currencySymbol, thousandsSeparator]);
+  }, [activeYear, isYear0, confirmedJobIds, disabledJobIds, adjs, pipelineJobs, performanceData?.mode, directCostsMode, keyData?.outgoingsMeta, keyData?.nbtofind, keyData?.splitEnabled, activeYearIdx, currencySymbol, thousandsSeparator]);
 
   const mutatedRows = mutatedYearData?.rows || activeYear?.rows || [];
   const showNBToFind = hasNBToFindInPerformance(performanceData) !== false;
@@ -367,13 +396,14 @@ export default function ScenariosView({
     directCostsMode,
     profitShareSwitch: keyData?.outgoingsMeta?.profitShareSwitch,
     profitSharePct: keyData?.outgoingsMeta?.profitSharePct,
+    splitEnabled: keyData?.splitEnabled,
     scenarioMeta: mutatedYearData?.scenarioMeta,
-  }), [confirmedJobIds, disabledJobIds, adjs, pipelineJobs, keyData?.outgoingsMeta, keyData?.nbtofind, performanceData?.mode, directCostsMode, mutatedYearData?.scenarioMeta]);
+  }), [confirmedJobIds, disabledJobIds, adjs, pipelineJobs, keyData?.outgoingsMeta, keyData?.nbtofind, keyData?.splitEnabled, performanceData?.mode, directCostsMode, mutatedYearData?.scenarioMeta]);
 
   const handleCellClick = (e, rowLabel, val, mIdx, periodLabel, rIdx) => {
     if (isYear0) return;
     const ddType = getDeepDiveType(rowLabel);
-    if (!ddType || !val || val === "—" || val === "" || Math.abs(parseMoney(val)) < 0.001) return;
+    if (!ddType || !val || val === "—" || val === "" || Math.abs(parseMoney(val, thousandsSeparator)) < 0.001) return;
 
     const rect = e.currentTarget.getBoundingClientRect();
     const isFY = mIdx === -1;
@@ -556,7 +586,7 @@ export default function ScenariosView({
             fontWeight: 600,
           }}
         >
-          Try Again
+          Try again
         </button>
       </div>
     );
@@ -661,6 +691,7 @@ export default function ScenariosView({
                       confirmedJobIds,
                       adjs,
                       currencySymbol,
+                      isIncomeMode,
                     }),
                   })
                 }
@@ -714,7 +745,7 @@ export default function ScenariosView({
             type="button"
             className="fy-nav-arrow-left"
             onClick={() => setSelectedYearIdx(Math.max(0, activeYearIdx - 1))}
-            title="Previous Year"
+            title="Previous year"
             style={{
               position: "absolute",
               left: "-42px",
@@ -991,7 +1022,7 @@ export default function ScenariosView({
                       {row.monthlyValues?.map((val, mIdx) => {
                         const mBadge = isPercentageRow ? getMarginBadgeStyle(label, val) : null;
                         const ddType = !isPercentageRow && !rowStyle.isHeader ? getDeepDiveType(label) : null;
-                        const isClickable = !isYear0 && Boolean(ddType && val && val !== "—" && val !== "" && Math.abs(parseMoney(val)) >= 0.001);
+                        const isClickable = !isYear0 && Boolean(ddType && val && val !== "—" && val !== "" && Math.abs(parseMoney(val, thousandsSeparator)) >= 0.001);
                         const monthLabel = headerMonths[mIdx] || `Month ${mIdx + 1}`;
                         const displayVal = val === "—" ? "" : formatCurrencyString(val, null, currencySymbol, thousandsSeparator);
                         const st = String(activeYear?.statusValues?.[mIdx] || "").trim().toLowerCase();
@@ -1091,7 +1122,7 @@ export default function ScenariosView({
                       {/* Total Column (Continuous unbroken Total column shading) */}
                       {(() => {
                         const ddType = !isPercentageRow && !rowStyle.isHeader ? getDeepDiveType(label) : null;
-                        const isClickable = !isYear0 && Boolean(ddType && totalVal && totalVal !== "—" && totalVal !== "" && Math.abs(parseMoney(totalVal)) >= 0.001);
+                        const isClickable = !isYear0 && Boolean(ddType && totalVal && totalVal !== "—" && totalVal !== "" && Math.abs(parseMoney(totalVal, thousandsSeparator)) >= 0.001);
                         const displayTotal = totalVal === "—" ? "" : formatCurrencyString(totalVal, null, currencySymbol, thousandsSeparator);
                         const totalColBg = "rgba(0, 71, 171, 0.04)";
 
@@ -1221,7 +1252,9 @@ export default function ScenariosView({
                       background: "#f8fafc",
                     }}
                   >
-                    Enter adjustments (+/-) to build your scenario
+                    {isYear0
+                      ? "Historical year — scenario adjustments are available for forecast financial years."
+                      : "Enter adjustments (+/-) to build your scenario"}
                   </td>
                   <td
                     style={{
@@ -1232,171 +1265,185 @@ export default function ScenariosView({
                   />
                 </tr>
 
-                {/* Include NB to Find Checkboxes */}
-                {showNBToFind && (
-                  <tr style={{ borderBottom: "1px solid #f1f5f9", background: "#ffffff" }}>
-                    <td className="scenario-col-first" style={{ padding: "6px 10px", fontWeight: 600, color: "#0047AB", position: "sticky", left: 0, background: "#ffffff", zIndex: 2, whiteSpace: "nowrap", width: "240px", minWidth: "240px", maxWidth: "240px", boxShadow: "2px 0 3px rgba(0,0,0,0.02)" }}>
-                      <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-                        <input
-                          type="checkbox"
-                          checked={adjs.nbChecked.every(Boolean)}
-                          ref={(el) => {
-                            if (el) {
-                              const checkedCount = adjs.nbChecked.filter(Boolean).length;
-                              el.indeterminate = checkedCount > 0 && checkedCount < 12;
-                            }
-                          }}
-                          onChange={handleToggleMasterNB}
-                          style={{ cursor: "pointer", width: "14px", height: "14px", accentColor: "#0047AB" }}
-                          title="Toggle all months"
-                        />
-                        <span>Include NB to find?</span>
-                      </div>
-                    </td>
-                    {headerMonths.map((_, mIdx) => {
-                      const st = String(activeYear?.statusValues?.[mIdx] || "").trim().toLowerCase();
-                      const isAct = st === "actual";
-                      return (
-                        <td key={mIdx} style={{ padding: "4px 4px", textAlign: "center", background: isAct ? "#f4f7fa" : "#ffffff" }}>
-                          <input
-                            type="checkbox"
-                            checked={adjs.nbChecked[mIdx]}
-                            onChange={() => handleToggleNBMonth(mIdx)}
-                            style={{ cursor: "pointer", width: "14px", height: "14px", accentColor: "#0047AB" }}
-                          />
+                {!isYear0 && (
+                  <>
+                    {/* Include NB to Find Checkboxes */}
+                    {showNBToFind && (
+                      <tr style={{ borderBottom: "1px solid #f1f5f9", background: "#ffffff" }}>
+                        <td className="scenario-col-first" style={{ padding: "6px 10px", fontWeight: 600, color: "#0047AB", position: "sticky", left: 0, background: "#ffffff", zIndex: 2, whiteSpace: "nowrap", width: "240px", minWidth: "240px", maxWidth: "240px", boxShadow: "2px 0 3px rgba(0,0,0,0.02)" }}>
+                          <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                            <input
+                              type="checkbox"
+                              checked={adjs.nbChecked.every(Boolean)}
+                              ref={(el) => {
+                                if (el) {
+                                  const checkedCount = adjs.nbChecked.filter(Boolean).length;
+                                  el.indeterminate = checkedCount > 0 && checkedCount < 12;
+                                }
+                              }}
+                              onChange={handleToggleMasterNB}
+                              style={{ cursor: "pointer", width: "14px", height: "14px", accentColor: "#0047AB" }}
+                              title="Toggle all months"
+                            />
+                            <span>Include NB to find?</span>
+                          </div>
                         </td>
-                      );
-                    })}
-                    <td style={{ padding: "6px 10px", textAlign: "right", fontSize: "11px", color: "#64748b", background: "rgba(0, 71, 171, 0.04)", borderLeft: "1px solid #cbd5e1" }}>
-                      {adjs.nbChecked.filter(Boolean).length}/12 Months
-                    </td>
-                  </tr>
+                        {headerMonths.map((_, mIdx) => {
+                          const st = String(activeYear?.statusValues?.[mIdx] || "").trim().toLowerCase();
+                          const isAct = st === "actual";
+                          return (
+                            <td key={mIdx} style={{ padding: "4px 4px", textAlign: "center", background: isAct ? "#f4f7fa" : "#ffffff" }}>
+                              <input
+                                type="checkbox"
+                                checked={adjs.nbChecked[mIdx]}
+                                onChange={() => handleToggleNBMonth(mIdx)}
+                                style={{ cursor: "pointer", width: "14px", height: "14px", accentColor: "#0047AB" }}
+                              />
+                            </td>
+                          );
+                        })}
+                        <td style={{ padding: "6px 10px", textAlign: "right", fontSize: "11px", color: "#64748b", background: "rgba(0, 71, 171, 0.04)", borderLeft: "1px solid #cbd5e1" }}>
+                          {adjs.nbChecked.filter(Boolean).length}/12 months
+                        </td>
+                      </tr>
+                    )}
+
+                    {/* Additional Revenue Inputs */}
+                    <tr style={{ borderBottom: "1px solid #f1f5f9", background: "#ffffff" }}>
+                      <td className="scenario-col-first" style={{ padding: "6px 10px", color: "#0047AB", position: "sticky", left: 0, background: "#ffffff", zIndex: 2, whiteSpace: "nowrap", width: "240px", minWidth: "240px", maxWidth: "240px", boxShadow: "2px 0 3px rgba(0,0,0,0.02)" }}>
+                        {isIncomeMode ? "Addl. income" : "Addl. revenue"}
+                      </td>
+                      {headerMonths.map((_, mIdx) => {
+                        const st = String(activeYear?.statusValues?.[mIdx] || "").trim().toLowerCase();
+                        const isAct = st === "actual";
+                        const rawStr = rawAdjInputs.rev[mIdx];
+                        const inputVal = rawStr !== undefined && rawStr !== "" ? rawStr : (adjs.rev[mIdx] ? String(adjs.rev[mIdx]) : "");
+                        return (
+                          <td key={mIdx} style={{ padding: "3px 3px", background: isAct ? "#f4f7fa" : "#ffffff" }}>
+                            <input
+                              type="text"
+                              value={inputVal}
+                              onChange={(e) => handleAdjMonthChange("rev", mIdx, e.target.value)}
+                              placeholder="0"
+                              style={{ ...gridInputStyle, background: "#ffffff" }}
+                            />
+                          </td>
+                        );
+                      })}
+                      <td style={{ padding: "6px 10px", textAlign: "right", fontWeight: 700, color: "#0047AB", background: "rgba(0, 71, 171, 0.04)", borderLeft: "1px solid #cbd5e1" }}>
+                        {formatMoney(adjs.rev.reduce((a, b) => a + b, 0))}
+                      </td>
+                    </tr>
+
+                    {/* Additional delivery staff costs */}
+                    <tr style={{ borderBottom: "1px solid #f1f5f9", background: "#ffffff" }}>
+                      <td className="scenario-col-first" style={{ padding: "6px 10px", color: "#0047AB", position: "sticky", left: 0, background: "#ffffff", zIndex: 2, whiteSpace: "nowrap", width: "240px", minWidth: "240px", maxWidth: "240px", boxShadow: "2px 0 3px rgba(0,0,0,0.02)" }}>
+                        Addl. delivery staff costs
+                      </td>
+                      {headerMonths.map((_, mIdx) => {
+                        const st = String(activeYear?.statusValues?.[mIdx] || "").trim().toLowerCase();
+                        const isAct = st === "actual";
+                        const rawStr = rawAdjInputs.delStaff[mIdx];
+                        const inputVal = rawStr !== undefined && rawStr !== "" ? rawStr : (adjs.delStaff[mIdx] ? String(adjs.delStaff[mIdx]) : "");
+                        return (
+                          <td key={mIdx} style={{ padding: "3px 3px", background: isAct ? "#f4f7fa" : "#ffffff" }}>
+                            <input
+                              type="text"
+                              value={inputVal}
+                              onChange={(e) => handleAdjMonthChange("delStaff", mIdx, e.target.value)}
+                              placeholder="0"
+                              style={{ ...gridInputStyle, background: "#ffffff" }}
+                            />
+                          </td>
+                        );
+                      })}
+                      <td style={{ padding: "6px 10px", textAlign: "right", fontWeight: 700, color: "#0047AB", background: "rgba(0, 71, 171, 0.04)", borderLeft: "1px solid #cbd5e1" }}>
+                        {formatMoney(adjs.delStaff.reduce((a, b) => a + b, 0))}
+                      </td>
+                    </tr>
+
+                    {/* Additional delivery expenses */}
+                    <tr style={{ borderBottom: "1px solid #f1f5f9", background: "#ffffff" }}>
+                      <td className="scenario-col-first" style={{ padding: "6px 10px", color: "#0047AB", position: "sticky", left: 0, background: "#ffffff", zIndex: 2, whiteSpace: "nowrap", width: "240px", minWidth: "240px", maxWidth: "240px", boxShadow: "2px 0 3px rgba(0,0,0,0.02)" }}>
+                        Addl. delivery expenses
+                      </td>
+                      {headerMonths.map((_, mIdx) => {
+                        const st = String(activeYear?.statusValues?.[mIdx] || "").trim().toLowerCase();
+                        const isAct = st === "actual";
+                        const rawStr = rawAdjInputs.delExp[mIdx];
+                        const inputVal = rawStr !== undefined && rawStr !== "" ? rawStr : (adjs.delExp[mIdx] ? String(adjs.delExp[mIdx]) : "");
+                        return (
+                          <td key={mIdx} style={{ padding: "3px 3px", background: isAct ? "#f4f7fa" : "#ffffff" }}>
+                            <input
+                              type="text"
+                              value={inputVal}
+                              onChange={(e) => handleAdjMonthChange("delExp", mIdx, e.target.value)}
+                              placeholder="0"
+                              style={{ ...gridInputStyle, background: "#ffffff" }}
+                            />
+                          </td>
+                        );
+                      })}
+                      <td style={{ padding: "6px 10px", textAlign: "right", fontWeight: 700, color: "#0047AB", background: "rgba(0, 71, 171, 0.04)", borderLeft: "1px solid #cbd5e1" }}>
+                        {formatMoney(adjs.delExp.reduce((a, b) => a + b, 0))}
+                      </td>
+                    </tr>
+
+                    {/* Additional non-delivery staff costs */}
+                    <tr style={{ borderBottom: "1px solid #f1f5f9", background: "#ffffff" }}>
+                      <td className="scenario-col-first" style={{ padding: "6px 10px", color: "#0047AB", position: "sticky", left: 0, background: "#ffffff", zIndex: 2, whiteSpace: "nowrap", width: "240px", minWidth: "240px", maxWidth: "240px", boxShadow: "2px 0 3px rgba(0,0,0,0.02)" }}>
+                        Addl. non-delivery staff costs
+                      </td>
+                      {headerMonths.map((_, mIdx) => {
+                        const st = String(activeYear?.statusValues?.[mIdx] || "").trim().toLowerCase();
+                        const isAct = st === "actual";
+                        const rawStr = rawAdjInputs.nonDelStaff[mIdx];
+                        const inputVal = rawStr !== undefined && rawStr !== "" ? rawStr : (adjs.nonDelStaff[mIdx] ? String(adjs.nonDelStaff[mIdx]) : "");
+                        return (
+                          <td key={mIdx} style={{ padding: "3px 3px", background: isAct ? "#f4f7fa" : "#ffffff" }}>
+                            <input
+                              type="text"
+                              value={inputVal}
+                              onChange={(e) => handleAdjMonthChange("nonDelStaff", mIdx, e.target.value)}
+                              placeholder="0"
+                              style={{ ...gridInputStyle, background: "#ffffff" }}
+                            />
+                          </td>
+                        );
+                      })}
+                      <td style={{ padding: "6px 10px", textAlign: "right", fontWeight: 700, color: "#0047AB", background: "rgba(0, 71, 171, 0.04)", borderLeft: "1px solid #cbd5e1" }}>
+                        {formatMoney(adjs.nonDelStaff.reduce((a, b) => a + b, 0))}
+                      </td>
+                    </tr>
+
+                    {/* Additional non-delivery expenses */}
+                    <tr style={{ background: "#ffffff" }}>
+                      <td className="scenario-col-first" style={{ padding: "6px 10px", color: "#0047AB", position: "sticky", left: 0, background: "#ffffff", zIndex: 2, whiteSpace: "nowrap", width: "240px", minWidth: "240px", maxWidth: "240px", boxShadow: "2px 0 3px rgba(0,0,0,0.02)" }}>
+                        Addl. non-delivery expenses
+                      </td>
+                      {headerMonths.map((_, mIdx) => {
+                        const st = String(activeYear?.statusValues?.[mIdx] || "").trim().toLowerCase();
+                        const isAct = st === "actual";
+                        const rawStr = rawAdjInputs.nonDelExp[mIdx];
+                        const inputVal = rawStr !== undefined && rawStr !== "" ? rawStr : (adjs.nonDelExp[mIdx] ? String(adjs.nonDelExp[mIdx]) : "");
+                        return (
+                          <td key={mIdx} style={{ padding: "3px 3px", background: isAct ? "#f4f7fa" : "#ffffff" }}>
+                            <input
+                              type="text"
+                              value={inputVal}
+                              onChange={(e) => handleAdjMonthChange("nonDelExp", mIdx, e.target.value)}
+                              placeholder="0"
+                              style={{ ...gridInputStyle, background: "#ffffff" }}
+                            />
+                          </td>
+                        );
+                      })}
+                      <td style={{ padding: "6px 10px", textAlign: "right", fontWeight: 700, color: "#0047AB", background: "rgba(0, 71, 171, 0.04)", borderLeft: "1px solid #cbd5e1" }}>
+                        {formatMoney(adjs.nonDelExp.reduce((a, b) => a + b, 0))}
+                      </td>
+                    </tr>
+                  </>
                 )}
-
-                {/* Additional Revenue Inputs */}
-                <tr style={{ borderBottom: "1px solid #f1f5f9", background: "#ffffff" }}>
-                  <td className="scenario-col-first" style={{ padding: "6px 10px", color: "#0047AB", position: "sticky", left: 0, background: "#ffffff", zIndex: 2, whiteSpace: "nowrap", width: "240px", minWidth: "240px", maxWidth: "240px", boxShadow: "2px 0 3px rgba(0,0,0,0.02)" }}>
-                    {isIncomeMode ? "Addl. income" : "Addl. revenue"}
-                  </td>
-                  {headerMonths.map((_, mIdx) => {
-                    const st = String(activeYear?.statusValues?.[mIdx] || "").trim().toLowerCase();
-                    const isAct = st === "actual";
-                    return (
-                      <td key={mIdx} style={{ padding: "3px 3px", background: isAct ? "#f4f7fa" : "#ffffff" }}>
-                        <input
-                          type="text"
-                          value={adjs.rev[mIdx] || ""}
-                          onChange={(e) => handleAdjMonthChange("rev", mIdx, e.target.value)}
-                          placeholder="0"
-                          style={{ ...gridInputStyle, background: "#ffffff" }}
-                        />
-                      </td>
-                    );
-                  })}
-                  <td style={{ padding: "6px 10px", textAlign: "right", fontWeight: 700, color: "#0047AB", background: "rgba(0, 71, 171, 0.04)", borderLeft: "1px solid #cbd5e1" }}>
-                    {formatMoney(adjs.rev.reduce((a, b) => a + b, 0))}
-                  </td>
-                </tr>
-
-                {/* Additional delivery staff costs */}
-                <tr style={{ borderBottom: "1px solid #f1f5f9", background: "#ffffff" }}>
-                  <td className="scenario-col-first" style={{ padding: "6px 10px", color: "#0047AB", position: "sticky", left: 0, background: "#ffffff", zIndex: 2, whiteSpace: "nowrap", width: "240px", minWidth: "240px", maxWidth: "240px", boxShadow: "2px 0 3px rgba(0,0,0,0.02)" }}>
-                    Addl. delivery staff costs
-                  </td>
-                  {headerMonths.map((_, mIdx) => {
-                    const st = String(activeYear?.statusValues?.[mIdx] || "").trim().toLowerCase();
-                    const isAct = st === "actual";
-                    return (
-                      <td key={mIdx} style={{ padding: "3px 3px", background: isAct ? "#f4f7fa" : "#ffffff" }}>
-                        <input
-                          type="text"
-                          value={adjs.delStaff[mIdx] || ""}
-                          onChange={(e) => handleAdjMonthChange("delStaff", mIdx, e.target.value)}
-                          placeholder="0"
-                          style={{ ...gridInputStyle, background: "#ffffff" }}
-                        />
-                      </td>
-                    );
-                  })}
-                  <td style={{ padding: "6px 10px", textAlign: "right", fontWeight: 700, color: "#0047AB", background: "rgba(0, 71, 171, 0.04)", borderLeft: "1px solid #cbd5e1" }}>
-                    {formatMoney(adjs.delStaff.reduce((a, b) => a + b, 0))}
-                  </td>
-                </tr>
-
-                {/* Additional delivery expenses */}
-                <tr style={{ borderBottom: "1px solid #f1f5f9", background: "#ffffff" }}>
-                  <td className="scenario-col-first" style={{ padding: "6px 10px", color: "#0047AB", position: "sticky", left: 0, background: "#ffffff", zIndex: 2, whiteSpace: "nowrap", width: "240px", minWidth: "240px", maxWidth: "240px", boxShadow: "2px 0 3px rgba(0,0,0,0.02)" }}>
-                    Addl. delivery expenses
-                  </td>
-                  {headerMonths.map((_, mIdx) => {
-                    const st = String(activeYear?.statusValues?.[mIdx] || "").trim().toLowerCase();
-                    const isAct = st === "actual";
-                    return (
-                      <td key={mIdx} style={{ padding: "3px 3px", background: isAct ? "#f4f7fa" : "#ffffff" }}>
-                        <input
-                          type="text"
-                          value={adjs.delExp[mIdx] || ""}
-                          onChange={(e) => handleAdjMonthChange("delExp", mIdx, e.target.value)}
-                          placeholder="0"
-                          style={{ ...gridInputStyle, background: "#ffffff" }}
-                        />
-                      </td>
-                    );
-                  })}
-                  <td style={{ padding: "6px 10px", textAlign: "right", fontWeight: 700, color: "#0047AB", background: "rgba(0, 71, 171, 0.04)", borderLeft: "1px solid #cbd5e1" }}>
-                    {formatMoney(adjs.delExp.reduce((a, b) => a + b, 0))}
-                  </td>
-                </tr>
-
-                {/* Additional non-delivery staff costs */}
-                <tr style={{ borderBottom: "1px solid #f1f5f9", background: "#ffffff" }}>
-                  <td className="scenario-col-first" style={{ padding: "6px 10px", color: "#0047AB", position: "sticky", left: 0, background: "#ffffff", zIndex: 2, whiteSpace: "nowrap", width: "240px", minWidth: "240px", maxWidth: "240px", boxShadow: "2px 0 3px rgba(0,0,0,0.02)" }}>
-                    Addl. non-delivery staff costs
-                  </td>
-                  {headerMonths.map((_, mIdx) => {
-                    const st = String(activeYear?.statusValues?.[mIdx] || "").trim().toLowerCase();
-                    const isAct = st === "actual";
-                    return (
-                      <td key={mIdx} style={{ padding: "3px 3px", background: isAct ? "#f4f7fa" : "#ffffff" }}>
-                        <input
-                          type="text"
-                          value={adjs.nonDelStaff[mIdx] || ""}
-                          onChange={(e) => handleAdjMonthChange("nonDelStaff", mIdx, e.target.value)}
-                          placeholder="0"
-                          style={{ ...gridInputStyle, background: "#ffffff" }}
-                        />
-                      </td>
-                    );
-                  })}
-                  <td style={{ padding: "6px 10px", textAlign: "right", fontWeight: 700, color: "#0047AB", background: "rgba(0, 71, 171, 0.04)", borderLeft: "1px solid #cbd5e1" }}>
-                    {formatMoney(adjs.nonDelStaff.reduce((a, b) => a + b, 0))}
-                  </td>
-                </tr>
-
-                {/* Additional non-delivery expenses */}
-                <tr style={{ background: "#ffffff" }}>
-                  <td className="scenario-col-first" style={{ padding: "6px 10px", color: "#0047AB", position: "sticky", left: 0, background: "#ffffff", zIndex: 2, whiteSpace: "nowrap", width: "240px", minWidth: "240px", maxWidth: "240px", boxShadow: "2px 0 3px rgba(0,0,0,0.02)" }}>
-                    Addl. non-delivery expenses
-                  </td>
-                  {headerMonths.map((_, mIdx) => {
-                    const st = String(activeYear?.statusValues?.[mIdx] || "").trim().toLowerCase();
-                    const isAct = st === "actual";
-                    return (
-                      <td key={mIdx} style={{ padding: "3px 3px", background: isAct ? "#f4f7fa" : "#ffffff" }}>
-                        <input
-                          type="text"
-                          value={adjs.nonDelExp[mIdx] || ""}
-                          onChange={(e) => handleAdjMonthChange("nonDelExp", mIdx, e.target.value)}
-                          placeholder="0"
-                          style={{ ...gridInputStyle, background: "#ffffff" }}
-                        />
-                      </td>
-                    );
-                  })}
-                  <td style={{ padding: "6px 10px", textAlign: "right", fontWeight: 700, color: "#0047AB", background: "rgba(0, 71, 171, 0.04)", borderLeft: "1px solid #cbd5e1" }}>
-                    {formatMoney(adjs.nonDelExp.reduce((a, b) => a + b, 0))}
-                  </td>
-                </tr>
               </tbody>
             </table>
           </div>
@@ -1407,7 +1454,7 @@ export default function ScenariosView({
             type="button"
             className="fy-nav-arrow-right"
             onClick={() => setSelectedYearIdx(Math.min(years.length - 1, activeYearIdx + 1))}
-            title="Next Year"
+            title="Next year"
             style={{
               position: "absolute",
               right: "-42px",
@@ -1508,7 +1555,7 @@ export default function ScenariosView({
                     <input
                       type="checkbox"
                       checked={allIncluded}
-                      disabled={unconfirmedJobs.length === 0}
+                      disabled={isYear0 || unconfirmedJobs.length === 0}
                       ref={(el) => {
                         if (el) el.indeterminate = someIncluded;
                       }}
@@ -1516,8 +1563,8 @@ export default function ScenariosView({
                       style={{
                         width: "16px",
                         height: "16px",
-                        cursor: unconfirmedJobs.length === 0 ? "not-allowed" : "pointer",
-                        opacity: unconfirmedJobs.length === 0 ? 0.4 : 1,
+                        cursor: (isYear0 || unconfirmedJobs.length === 0) ? "not-allowed" : "pointer",
+                        opacity: (isYear0 || unconfirmedJobs.length === 0) ? 0.4 : 1,
                         accentColor: "#0047AB",
                       }}
                       title="Include all in pipeline"
@@ -1532,7 +1579,7 @@ export default function ScenariosView({
                     <input
                       type="checkbox"
                       checked={allConfirmed}
-                      disabled={pipelineJobs.length === 0}
+                      disabled={isYear0 || pipelineJobs.length === 0}
                       ref={(el) => {
                         if (el) el.indeterminate = someConfirmed;
                       }}
@@ -1540,8 +1587,8 @@ export default function ScenariosView({
                       style={{
                         width: "16px",
                         height: "16px",
-                        cursor: pipelineJobs.length === 0 ? "not-allowed" : "pointer",
-                        opacity: pipelineJobs.length === 0 ? 0.4 : 1,
+                        cursor: (isYear0 || pipelineJobs.length === 0) ? "not-allowed" : "pointer",
+                        opacity: (isYear0 || pipelineJobs.length === 0) ? 0.4 : 1,
                         accentColor: "#0047AB",
                       }}
                       title="Assume all confirmed"
@@ -1675,13 +1722,13 @@ export default function ScenariosView({
                         <input
                           type="checkbox"
                           checked={isIncluded}
-                          disabled={isConf}
+                          disabled={isYear0 || isConf}
                           onChange={() => toggleJobIncluded(job.id)}
                           style={{
                             width: "16px",
                             height: "16px",
-                            cursor: isConf ? "not-allowed" : "pointer",
-                            opacity: isConf ? "0.4" : "1",
+                            cursor: (isYear0 || isConf) ? "not-allowed" : "pointer",
+                            opacity: (isYear0 || isConf) ? "0.4" : "1",
                             accentColor: "#0047AB",
                           }}
                         />
@@ -1692,11 +1739,13 @@ export default function ScenariosView({
                         <input
                           type="checkbox"
                           checked={isConf}
+                          disabled={isYear0}
                           onChange={() => toggleJobConfirmed(job.id)}
                           style={{
                             width: "16px",
                             height: "16px",
-                            cursor: "pointer",
+                            cursor: isYear0 ? "not-allowed" : "pointer",
+                            opacity: isYear0 ? "0.4" : "1",
                             accentColor: "#0047AB",
                           }}
                         />

@@ -378,6 +378,7 @@ export function buildScenarioSnapshot({
   confirmedJobIds = new Set(),
   adjs = {},
   currencySymbol = "£",
+  isIncomeMode = false,
 }) {
   const confirmedList = [];
   const excludedList = [];
@@ -401,7 +402,7 @@ export function buildScenarioSnapshot({
   }
 
   const categoryLabels = {
-    rev: "Revenue adjustment",
+    rev: isIncomeMode ? "Income adjustment" : "Revenue adjustment",
     delStaff: "Delivery staff",
     delExp: "Delivery expenses",
     nonDelStaff: "Non-delivery staff",

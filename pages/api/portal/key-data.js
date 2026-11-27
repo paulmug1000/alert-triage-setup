@@ -39,6 +39,20 @@ function parseMonthYear(str) {
   return isNaN(d.getTime()) ? null : d;
 }
 
+function parsePercentDecimal_(rawVal) {
+  if (rawVal === null || rawVal === undefined || rawVal === "") return 0;
+  if (typeof rawVal === "number") {
+    if (!Number.isFinite(rawVal)) return 0;
+    return Math.abs(rawVal) > 1 ? rawVal / 100 : rawVal;
+  }
+  const str = String(rawVal).trim();
+  if (!str) return 0;
+  const hasPct = str.includes("%");
+  const num = parseFloat(str.replace(/[%,\s]/g, ""));
+  if (!Number.isFinite(num)) return 0;
+  return (hasPct || Math.abs(num) > 1) ? num / 100 : num;
+}
+
 function colToLetter(colIndex) {
   let temp, letter = "";
   let c = colIndex + 1;
@@ -217,8 +231,6 @@ export default async function handler(req, res) {
           ...data.outgoingsMeta,
           salariesDel: [],
           salariesNonDel: [],
-          profitShareBaseDel: [],
-          profitShareBaseNonDel: [],
         }
         : data.outgoingsMeta,
       outgoings: data.outgoings
@@ -607,7 +619,7 @@ export async function buildPortalKeyDataPayload({
   const splitEnabled = String(splitInfoRows[1]?.[0] || "").trim().toLowerCase() === "yes";
 
   const profitSharePctRaw = profitShareRows[0]?.[0] || "0%";
-  const profitSharePct = parseFloat(String(profitSharePctRaw).replace("%", "")) / 100 || 0;
+  const profitSharePct = parsePercentDecimal_(profitSharePctRaw);
   const profitShareSwitch = String(profitShareRows[1]?.[0] || "").trim();
   const mode = String(modeRows[0]?.[0] || "Revenue").trim();
   const rawDirectCostsMode = String(directCostsModeRows[0]?.[0] || "Contractors").trim();
@@ -1311,6 +1323,7 @@ export async function buildPortalKeyDataPayload({
     makingUpCosPct: 0,
     salariesDel: [],
     salariesNonDel: [],
+    salaryDelRatio: [],
     directCostsAsContractors: [],
     makingUpCosBase: [],
     makingUpCosBaseConf: [],
@@ -1329,7 +1342,7 @@ export async function buildPortalKeyDataPayload({
   };
 
   const makingUpCosPctRaw = outgoingsRows[111] ? outgoingsRows[111][0] : "0%";
-  outgoingsMeta.makingUpCosPct = parseFloat(String(makingUpCosPctRaw).replace("%", "")) / 100 || 0;
+  outgoingsMeta.makingUpCosPct = parsePercentDecimal_(makingUpCosPctRaw);
 
   if (outgoingsRows[110]) {
     outgoingsMeta.makingUpCosVat = outgoingsRows[110][1] || "";
@@ -1340,16 +1353,19 @@ export async function buildPortalKeyDataPayload({
     if (!outgoingsRows[rIdx] && !outgoingsRawRows[rIdx]) return 0;
     const rawVal = outgoingsRawRows[rIdx]?.[cIdx];
     if (typeof rawVal === "number" && Number.isFinite(rawVal)) return rawVal;
-    return parseFloat(String(outgoingsRows[rIdx]?.[cIdx] || 0).replace(/[£,]/g, "")) || 0;
+    return parseMoney(outgoingsRows[rIdx]?.[cIdx], thousandsSeparator);
   };
 
   for (let yi = 0; yi < yearBlocks.length; yi++) {
     const blk = yearBlocks[yi];
-    const sDel = [], sNonDel = [], dcContr = [], mCos = [], mCosConf = [], mCosHz = [], psDel = [], psNonDel = [];
+    const sDel = [], sNonDel = [], sDelRatio = [], dcContr = [], mCos = [], mCosConf = [], mCosHz = [], psDel = [], psNonDel = [];
     for (let j = 0; j < blk.count; j++) {
       const cIdx = blk.start + j;
-      sDel.push(getOutgoingsNum(5, cIdx));
-      sNonDel.push(getOutgoingsNum(6, cIdx));
+      const sDelVal = getOutgoingsNum(5, cIdx);
+      const sNonDelVal = getOutgoingsNum(6, cIdx);
+      sDel.push(sDelVal);
+      sNonDel.push(sNonDelVal);
+      sDelRatio.push(sDelVal + sNonDelVal > 0 ? sDelVal / (sDelVal + sNonDelVal) : null);
       dcContr.push(getOutgoingsNum(8, cIdx));
       mCos.push(getOutgoingsNum(110, cIdx));
       mCosConf.push(getOutgoingsNum(244, cIdx));
@@ -1360,6 +1376,7 @@ export async function buildPortalKeyDataPayload({
     }
     outgoingsMeta.salariesDel.push(sDel);
     outgoingsMeta.salariesNonDel.push(sNonDel);
+    outgoingsMeta.salaryDelRatio.push(sDelRatio);
     outgoingsMeta.directCostsAsContractors.push(dcContr);
     outgoingsMeta.makingUpCosBase.push(mCos);
     outgoingsMeta.makingUpCosBaseConf.push(mCosConf);

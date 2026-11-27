@@ -3214,7 +3214,7 @@ export function parsePortalJobsFromFormattedRows({
       const dcNum = parseMoneyLocal(directCosts);
       const parsedLikel = parseFloat(String(likelihood).replace("%", ""));
       const likelihoodNum = !isNaN(parsedLikel)
-        ? (String(likelihood).includes("%") || parsedLikel >= 1 ? parsedLikel / 100 : parsedLikel)
+        ? (String(likelihood).includes("%") || parsedLikel > 1 ? parsedLikel / 100 : parsedLikel)
         : (jobType === "Confirmed" ? 1 : 0.5);
 
       const startDate = formatDateVal(startDateRaw);

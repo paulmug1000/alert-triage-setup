@@ -133,7 +133,7 @@ export function parseLikelihood(likelihoodVal, fallback = 0.5) {
   if (!rawStr) return fallback;
   const parsed = parseFloat(rawStr.replace("%", ""));
   if (isNaN(parsed)) return fallback;
-  if (rawStr.includes("%") || parsed >= 1) {
+  if (rawStr.includes("%") || parsed > 1) {
     return parsed / 100;
   }
   return parsed;
@@ -2927,6 +2927,21 @@ export function mutateFYDataForScenarios(activeYear, scenariosConfig = {}) {
   const yearIdx = scenariosConfig.yearIndex !== undefined ? scenariosConfig.yearIndex : 2;
   const outIdx = yearIdx - 1;
 
+  // Historical Year 0 is read-only and has no Outgoings model (outIdx < 0)
+  if (yearIdx === 0 || outIdx < 0) {
+    yearData.scenarioMeta = {
+      mCos: new Array(12).fill(0),
+      psDel: new Array(12).fill(0),
+      psNonDel: new Array(12).fill(0),
+      adjDelStaff: new Array(12).fill(0),
+      adjNonDelStaff: new Array(12).fill(0),
+      adjDelExp: new Array(12).fill(0),
+      adjNonDelExp: new Array(12).fill(0),
+      adjRev: new Array(12).fill(0),
+    };
+    return yearData;
+  }
+
   // Determine mode and directCostsMode
   const row12Label = String(rows[12]?.label || "").toLowerCase();
   const modeStr = String(
@@ -2936,6 +2951,9 @@ export function mutateFYDataForScenarios(activeYear, scenariosConfig = {}) {
     (String(rows[8]?.label || rows[3]?.label || "").toLowerCase().includes("income") ? "Income" : "Revenue")
   ).trim().toLowerCase();
   const isRevMode = modeStr !== "income";
+  const isNoGrossProfitMode =
+    String(rows[10]?.label || "").trim().toLowerCase().includes("hide from here") ||
+    String(rows[25]?.label || "").trim().toLowerCase() === "total outgoings";
   const rawDcMode = String(
     scenariosConfig.directCostsMode ||
     outgoingsMeta.directCostsMode ||
@@ -2958,7 +2976,7 @@ export function mutateFYDataForScenarios(activeYear, scenariosConfig = {}) {
     const nbDcArr = nbtofind.directCosts[nbDcYearKey] || nbtofind.directCosts[yearIdx] || [];
     for (let m = 0; m < 12; m++) {
       if (!adjs.nbChecked[m]) {
-        nbDCDeduction[m] = parseMoney(nbDcArr[m] || 0);
+        nbDCDeduction[m] = parseMoney(nbDcArr[m] || 0, ccySep);
       }
     }
   }
@@ -2985,17 +3003,17 @@ export function mutateFYDataForScenarios(activeYear, scenariosConfig = {}) {
       const row = activeYear.rows[rIdx];
       if (!row) return 0;
       if (isTotalCol) {
-        return typeof row.totalMath === "number" ? row.totalMath : parseMoney(row.totalVal);
+        return typeof row.totalMath === "number" ? row.totalMath : parseMoney(row.totalVal, ccySep);
       }
       const rawNum = row.monthlyMath?.[m];
-      return typeof rawNum === "number" ? rawNum : parseMoney(row.monthlyValues?.[m]);
+      return typeof rawNum === "number" ? rawNum : parseMoney(row.monthlyValues?.[m], ccySep);
     };
 
     const getVisualVal = (rIdx) => {
       const row = activeYear.rows[rIdx];
       if (!row) return 0;
-      if (isTotalCol) return parseMoney(row.totalVal);
-      return parseMoney(row.monthlyValues?.[m]);
+      if (isTotalCol) return parseMoney(row.totalVal, ccySep);
+      return parseMoney(row.monthlyValues?.[m], ccySep);
     };
 
     const getOldVal = getExactVal;
@@ -3005,7 +3023,7 @@ export function mutateFYDataForScenarios(activeYear, scenariosConfig = {}) {
 
     if (!isTotalCol) {
       let exactPipeRevDeduction = 0, exactAssumedConfRev = 0, exactDCDeduction = 0, exactAssumedConfDCAdd = 0;
-      let remainingActivePipeRev = 0;
+      let hasActivePipeJobs = false;
 
       jobsList.forEach((job) => {
         const pId = Number(job.parentId !== undefined ? job.parentId : (job.rowNumber - 2));
@@ -3019,8 +3037,8 @@ export function mutateFYDataForScenarios(activeYear, scenariosConfig = {}) {
 
         if (isConfirmed || isUnchecked) {
           exactPipeRevDeduction += jobRevMonthWeighted;
-        } else if (jobRevMonthWeighted > 0) {
-          remainingActivePipeRev += jobRevMonthWeighted;
+        } else if (Math.abs(jobRevMonthWeighted) >= 0.001) {
+          hasActivePipeJobs = true;
         }
 
         if (isConfirmed) {
@@ -3039,8 +3057,10 @@ export function mutateFYDataForScenarios(activeYear, scenariosConfig = {}) {
       const exactNewConfRev = exactOldConfRev + exactAssumedConfRev + (adjs.rev[m] || 0);
 
       const exactOldPipeRev = getOldVal(4);
-      let exactNewPipeRev = Math.max(0, exactOldPipeRev - exactPipeRevDeduction);
-      if (remainingActivePipeRev < 0.001 || exactNewPipeRev < 0.001) {
+      let exactNewPipeRev = exactOldPipeRev - exactPipeRevDeduction;
+      if (isRevMode && exactNewPipeRev < 0.001) {
+        exactNewPipeRev = 0;
+      } else if (!hasActivePipeJobs || Math.abs(exactNewPipeRev) < 0.001) {
         exactNewPipeRev = 0;
       }
 
@@ -3058,9 +3078,9 @@ export function mutateFYDataForScenarios(activeYear, scenariosConfig = {}) {
       if (isRevMode) {
         exactOldDC = isContractorsDirectMode
           ? (outIdx >= 0 && outgoingsMeta.directCostsAsContractors?.[outIdx] !== undefined
-            ? parseMoney(outgoingsMeta.directCostsAsContractors[outIdx][m])
+            ? parseMoney(outgoingsMeta.directCostsAsContractors[outIdx][m], ccySep)
             : 0)
-          : getOldVal(12);
+          : getOldVal(isNoGrossProfitMode ? 23 : 12);
         const exactNbDCDeduction = nbDCDeduction[m] || 0;
         exactNewDC = Math.max(0, exactOldDC - exactDCDeduction - exactNbDCDeduction + exactAssumedConfDCAdd);
         if (exactNewDC < 0.001) exactNewDC = 0;
@@ -3078,39 +3098,27 @@ export function mutateFYDataForScenarios(activeYear, scenariosConfig = {}) {
 
       let salaryDel = 0, salaryNonDel = 0;
       if (outIdx >= 0 && outgoingsMeta.salariesDel && outgoingsMeta.salariesDel[outIdx]) {
-        salaryDel = parseMoney(outgoingsMeta.salariesDel[outIdx][m]);
+        salaryDel = parseMoney(outgoingsMeta.salariesDel[outIdx][m], ccySep);
       }
       if (outIdx >= 0 && outgoingsMeta.salariesNonDel && outgoingsMeta.salariesNonDel[outIdx]) {
-        salaryNonDel = parseMoney(outgoingsMeta.salariesNonDel[outIdx][m]);
+        salaryNonDel = parseMoney(outgoingsMeta.salariesNonDel[outIdx][m], ccySep);
       }
 
       let baseM = 0, basePS_del = 0, basePS_nonDel = 0, forceZeroM = false;
       let M_tgt = outgoingsMeta.makingUpCosPct || 0;
 
       if (outIdx >= 0 && outgoingsMeta.makingUpCosBase && outgoingsMeta.makingUpCosBase[outIdx]) {
-        baseM = parseMoney(outgoingsMeta.makingUpCosBase[outIdx][m]);
+        baseM = parseMoney(outgoingsMeta.makingUpCosBase[outIdx][m], ccySep);
       }
       if (outIdx >= 0 && outgoingsMeta.profitShareBaseDel && outgoingsMeta.profitShareBaseDel[outIdx]) {
-        basePS_del = parseMoney(outgoingsMeta.profitShareBaseDel[outIdx][m]);
+        basePS_del = parseMoney(outgoingsMeta.profitShareBaseDel[outIdx][m], ccySep);
       }
       if (outIdx >= 0 && outgoingsMeta.profitShareBaseNonDel && outgoingsMeta.profitShareBaseNonDel[outIdx]) {
-        basePS_nonDel = parseMoney(outgoingsMeta.profitShareBaseNonDel[outIdx][m]);
+        basePS_nonDel = parseMoney(outgoingsMeta.profitShareBaseNonDel[outIdx][m], ccySep);
       }
       if (outIdx >= 0 && outgoingsMeta.makingUpCosHardZero && outgoingsMeta.makingUpCosHardZero[outIdx]) {
         if (outgoingsMeta.makingUpCosHardZero[outIdx][m] === true) forceZeroM = true;
       }
-
-      let newDirectCosts = isRevMode && !isContractorsDirectMode ? exactNewDC : 0;
-      let newOtherExpDel = getOldVal(otherExpDelRowIdx) + exactAdjDelExp;
-      let newOtherExpNonDel = getOldVal(23) + exactAdjNonDelExp;
-
-      let trueStaffDel =
-        (getOldVal(11) - baseM - basePS_del) +
-        (isContractorsDirectMode ? (exactNewDC - exactOldDC) : 0) +
-        adjDelStaffRaw;
-      let trueStaffNonDel = (getOldVal(22) - basePS_nonDel) + adjNonDelStaffRaw;
-
-      let pBase = newTotalRev - newDirectCosts - newOtherExpDel - newOtherExpNonDel - trueStaffDel - trueStaffNonDel;
 
       let p = 0;
       const psSwitch = String(scenariosConfig.profitShareSwitch || outgoingsMeta.profitShareSwitch || "").trim().toLowerCase();
@@ -3118,64 +3126,117 @@ export function mutateFYDataForScenarios(activeYear, scenariosConfig = {}) {
         p = scenariosConfig.profitSharePct !== undefined ? scenariosConfig.profitSharePct : (outgoingsMeta.profitSharePct || 0);
       }
 
-      let M = 0, B = 0, B_del = 0, B_nonDel = 0;
-      let targetCoS = newTotalRev * M_tgt;
-      let trueBaseCoS = newDirectCosts + newOtherExpDel + trueStaffDel;
-
-      let totalSalaries = salaryDel + salaryNonDel;
-      let d = totalSalaries > 0 ? (salaryDel / totalSalaries) : 0.5;
+      const preRatio = outIdx >= 0 ? outgoingsMeta.salaryDelRatio?.[outIdx]?.[m] : undefined;
+      const hasPreRatio = typeof preRatio === "number" && Number.isFinite(preRatio);
+      const totalSalaries = salaryDel + salaryNonDel;
+      const hasSalaries = hasPreRatio || totalSalaries > 0;
+      const d = hasPreRatio ? preRatio : (totalSalaries > 0 ? (salaryDel / totalSalaries) : 0);
 
       let hasFinancialDeltas = (deltaConfRev !== 0 || deltaPipeRev !== 0 || deltaNB !== 0 || deltaDC !== 0 || adjDelStaffRaw !== 0 || adjNonDelStaffRaw !== 0 || adjDelExp !== 0 || adjNonDelExp !== 0);
 
-      if (!hasFinancialDeltas) {
-        M = baseM;
-        B_del = basePS_del;
-        B_nonDel = basePS_nonDel;
-        B = B_del + B_nonDel;
-      } else {
-        if (M_tgt > 0 && !forceZeroM) {
-          let denom = 1 - (p * d);
-          if (denom === 0) denom = 1;
-          let B_temp = (p * (pBase - targetCoS + trueBaseCoS)) / denom;
-          let M_temp = targetCoS - trueBaseCoS - (B_temp * d);
+      let M = 0, B = 0, B_del = 0, B_nonDel = 0;
 
-          if (M_temp < 0) {
-            M = 0;
-            B = p * Math.max(0, pBase);
-          } else {
-            if (B_temp < 0) {
-              B = 0;
-              M = Math.max(0, targetCoS - trueBaseCoS);
+      if (isNoGrossProfitMode) {
+        // KeyInfo!B16 = "No": Outgoings!G122 = G6+G9+G113+G118+G234 rolled into Row 22 (Staff costs),
+        // expenses + PT DC rolled into Row 23 (Other expenses), Row 25 = Total outgoings, no Making up CoS.
+        const dcInExpDelta = isRevMode && !isContractorsDirectMode ? (exactNewDC - exactOldDC) : 0;
+        const dcInStaffDelta = isContractorsDirectMode ? (exactNewDC - exactOldDC) : 0;
+        const trueStaffTotal = (getOldVal(22) - basePS_del - basePS_nonDel) + dcInStaffDelta + adjDelStaffRaw + adjNonDelStaffRaw;
+        const newOtherExpTotal = getOldVal(23) + exactAdjDelExp + exactAdjNonDelExp + dcInExpDelta;
+        const pBaseNoGP = newTotalRev - trueStaffTotal - newOtherExpTotal;
+
+        if (!hasFinancialDeltas) {
+          B_del = basePS_del;
+          B_nonDel = basePS_nonDel;
+          B = B_del + B_nonDel;
+        } else {
+          B = p * pBaseNoGP;
+          B_del = B;
+          B_nonDel = 0;
+        }
+        M = 0;
+
+        scenarioMeta.mCos[m] = 0;
+        scenarioMeta.psDel[m] = Math.round(B_del);
+        scenarioMeta.psNonDel[m] = Math.round(B_nonDel);
+        scenarioMeta.adjDelStaff[m] = adjDelStaffRaw;
+        scenarioMeta.adjNonDelStaff[m] = adjNonDelStaffRaw;
+        scenarioMeta.adjDelExp[m] = adjDelExp;
+        scenarioMeta.adjNonDelExp[m] = adjNonDelExp;
+        scenarioMeta.adjRev[m] = adjs.rev[m] || 0;
+
+        adjDelStaff = 0;
+        adjNonDelStaff =
+          Math.round((B - (basePS_del + basePS_nonDel)) + adjDelStaffRaw + adjNonDelStaffRaw) +
+          (isContractorsDirectMode ? deltaDC : 0);
+        adjDelExp = 0;
+        adjNonDelExp = Math.round(exactAdjDelExp + exactAdjNonDelExp) + (isRevMode && !isContractorsDirectMode ? deltaDC : 0);
+      } else {
+        let newDirectCosts = isRevMode && !isContractorsDirectMode ? exactNewDC : 0;
+        let newOtherExpDel = getOldVal(otherExpDelRowIdx) + exactAdjDelExp;
+        let newOtherExpNonDel = getOldVal(23) + exactAdjNonDelExp;
+
+        let trueStaffDel =
+          (getOldVal(11) - baseM - basePS_del) +
+          (isContractorsDirectMode ? (exactNewDC - exactOldDC) : 0) +
+          adjDelStaffRaw;
+        let trueStaffNonDel = (getOldVal(22) - basePS_nonDel) + adjNonDelStaffRaw;
+
+        let pBase = newTotalRev - newDirectCosts - newOtherExpDel - newOtherExpNonDel - trueStaffDel - trueStaffNonDel;
+
+        let targetCoS = newTotalRev * M_tgt;
+        let trueBaseCoS = newDirectCosts + newOtherExpDel + trueStaffDel;
+
+        if (!hasFinancialDeltas) {
+          M = baseM;
+          B_del = basePS_del;
+          B_nonDel = basePS_nonDel;
+          B = B_del + B_nonDel;
+        } else if (!hasSalaries) {
+          // Outgoings!G235 = IFERROR(G234*(G6/(G6+G7))) returns 0 when G6+G7=0
+          B = 0;
+          B_del = 0;
+          B_nonDel = 0;
+          M = (M_tgt > 0 && !forceZeroM) ? Math.max(0, targetCoS - trueBaseCoS) : 0;
+        } else {
+          if (M_tgt > 0 && !forceZeroM) {
+            let denom = 1 - (p * d);
+            if (Math.abs(denom) < 1e-9) denom = 1;
+            let B_temp = (p * (pBase - targetCoS + trueBaseCoS)) / denom;
+            let M_temp = targetCoS - trueBaseCoS - (B_temp * d);
+
+            if (M_temp < 0) {
+              M = 0;
+              B = p * pBase;
             } else {
               M = M_temp;
               B = B_temp;
             }
+          } else {
+            M = 0;
+            B = p * pBase;
           }
-        } else {
-          M = 0;
-          B = p * Math.max(0, pBase);
+
+          if (M < 0) M = 0;
+
+          B_del = B * d;
+          B_nonDel = B * (1 - d);
         }
 
-        if (M < 0) M = 0;
-        if (B < 0) B = 0;
+        scenarioMeta.mCos[m] = Math.round(M);
+        scenarioMeta.psDel[m] = Math.round(B_del);
+        scenarioMeta.psNonDel[m] = Math.round(B_nonDel);
+        scenarioMeta.adjDelStaff[m] = adjDelStaffRaw;
+        scenarioMeta.adjNonDelStaff[m] = adjNonDelStaffRaw;
+        scenarioMeta.adjDelExp[m] = adjDelExp;
+        scenarioMeta.adjNonDelExp[m] = adjNonDelExp;
+        scenarioMeta.adjRev[m] = adjs.rev[m] || 0;
 
-        B_del = B * d;
-        B_nonDel = B * (1 - d);
+        adjDelStaff =
+          Math.round((M - baseM) + (B_del - basePS_del) + adjDelStaffRaw) +
+          (isContractorsDirectMode ? deltaDC : 0);
+        adjNonDelStaff = Math.round((B_nonDel - basePS_nonDel) + adjNonDelStaffRaw);
       }
-
-      scenarioMeta.mCos[m] = Math.round(M);
-      scenarioMeta.psDel[m] = Math.round(B_del);
-      scenarioMeta.psNonDel[m] = Math.round(B_nonDel);
-      scenarioMeta.adjDelStaff[m] = adjDelStaffRaw;
-      scenarioMeta.adjNonDelStaff[m] = adjNonDelStaffRaw;
-      scenarioMeta.adjDelExp[m] = adjDelExp;
-      scenarioMeta.adjNonDelExp[m] = adjNonDelExp;
-      scenarioMeta.adjRev[m] = adjs.rev[m] || 0;
-
-      adjDelStaff =
-        Math.round((M - baseM) + (B_del - basePS_del) + adjDelStaffRaw) +
-        (isContractorsDirectMode ? deltaDC : 0);
-      adjNonDelStaff = Math.round((B_nonDel - basePS_nonDel) + adjNonDelStaffRaw);
 
       sumDeltaConfRev += deltaConfRev;
       sumDeltaPipeRev += deltaPipeRev;
@@ -3202,8 +3263,12 @@ export function mutateFYDataForScenarios(activeYear, scenariosConfig = {}) {
         const visualBaseline = getVisualVal(rIdx);
         let valToFormat = visualBaseline + delta;
         if (rIdx === 4) {
-          const hasAnyMonthlyPipe = rows[rIdx].monthlyValues.some((v) => parseMoney(v) > 0);
-          if (!hasAnyMonthlyPipe || valToFormat < 0) {
+          if (isTotalCol) {
+            const hasAnyMonthlyPipe = rows[rIdx].monthlyValues.some((v) => Math.abs(parseMoney(v, ccySep)) > 0);
+            if (!hasAnyMonthlyPipe || (isRevMode && valToFormat < 0)) {
+              valToFormat = 0;
+            }
+          } else if (isRevMode && valToFormat < 0) {
             valToFormat = 0;
           }
         }
@@ -3223,56 +3288,81 @@ export function mutateFYDataForScenarios(activeYear, scenariosConfig = {}) {
     const totalDeltaRev = deltaConfRev + deltaPipeRev + deltaNB;
     applyDelta(8, totalDeltaRev); // Total Rev
 
-    applyDelta(11, adjDelStaff); // Staff costs delivery
-
-    let deltaCOS = 0;
-    if (isRevMode && !isContractorsDirectMode) {
-      applyDelta(12, deltaDC); // Pass-through costs
-      applyDelta(otherExpDelRowIdx, adjDelExp); // Other expenses - delivery
-      deltaCOS = deltaDC + adjDelStaff + adjDelExp;
-    } else {
-      applyDelta(otherExpDelRowIdx, adjDelExp);
-      deltaCOS = adjDelStaff + adjDelExp;
-    }
-    applyDelta(15, deltaCOS); // Total Costs of Sale
-
-    const deltaGP = totalDeltaRev - deltaCOS;
-    applyDelta(17, deltaGP); // Gross Profit
-
-    applyDelta(22, adjNonDelStaff); // Staff costs non-delivery
-    applyDelta(23, adjNonDelExp); // Other expenses non-delivery
-
-    const deltaOverheads = adjNonDelStaff + adjNonDelExp;
-    applyDelta(25, deltaOverheads); // Total Overheads
-
-    applyDelta(29, deltaGP - deltaOverheads); // Operating Profit
-
     // Recalculate Margins
     const getNewVal = (rIdx) => {
       if (!rows[rIdx] || rows[rIdx].label === "Hide") return 0;
-      return parseMoney(isTotalCol ? rows[rIdx].totalVal : rows[rIdx].monthlyValues[m]);
+      return parseMoney(isTotalCol ? rows[rIdx].totalVal : rows[rIdx].monthlyValues[m], ccySep);
     };
-    const newTotalRev = getNewVal(8);
 
-    if (rows[19] && rows[19].label !== "Hide") {
-      const pct = formatPercent(newTotalRev ? getNewVal(17) / newTotalRev : 0);
-      if (isTotalCol) rows[19].totalVal = pct;
-      else rows[19].monthlyValues[m] = pct;
-    }
-    if (rows[27] && rows[27].label !== "Hide") {
-      const pct = formatPercent(newTotalRev ? getNewVal(25) / newTotalRev : 0);
-      if (isTotalCol) rows[27].totalVal = pct;
-      else rows[27].monthlyValues[m] = pct;
-    }
-    if (rows[31] && rows[31].label !== "Hide") {
-      const pct = formatPercent(newTotalRev ? getNewVal(29) / newTotalRev : 0);
-      if (isTotalCol) rows[31].totalVal = pct;
-      else rows[31].monthlyValues[m] = pct;
-    }
-    if (rows[33] && rows[33].label !== "Hide") {
-      const pct = formatPercent(newTotalRev ? (getNewVal(22) + getNewVal(11)) / newTotalRev : 0);
-      if (isTotalCol) rows[33].totalVal = pct;
-      else rows[33].monthlyValues[m] = pct;
+    if (isNoGrossProfitMode) {
+      applyDelta(22, adjNonDelStaff); // Staff costs
+      applyDelta(23, adjNonDelExp); // Other expenses
+      const deltaOutgoings = adjNonDelStaff + adjNonDelExp;
+      applyDelta(25, deltaOutgoings); // Total outgoings
+      applyDelta(29, totalDeltaRev - deltaOutgoings); // Operating Profit
+
+      const newTotalRev = getNewVal(8);
+      if (rows[31] && rows[31].label !== "Hide") {
+        const newOp = getNewVal(29);
+        const opSign = newTotalRev < 0 && newOp < 0 ? -1 : 1;
+        const pct = formatPercent(newTotalRev ? (newOp / newTotalRev) * opSign : 0);
+        if (isTotalCol) rows[31].totalVal = pct;
+        else rows[31].monthlyValues[m] = pct;
+      }
+      if (rows[33] && rows[33].label !== "Hide") {
+        const pct = formatPercent(newTotalRev ? getNewVal(22) / newTotalRev : 0);
+        if (isTotalCol) rows[33].totalVal = pct;
+        else rows[33].monthlyValues[m] = pct;
+      }
+    } else {
+      applyDelta(11, adjDelStaff); // Staff costs delivery
+
+      let deltaCOS = 0;
+      if (isRevMode && !isContractorsDirectMode) {
+        applyDelta(12, deltaDC); // Pass-through costs
+        applyDelta(otherExpDelRowIdx, adjDelExp); // Other expenses - delivery
+        deltaCOS = deltaDC + adjDelStaff + adjDelExp;
+      } else {
+        applyDelta(otherExpDelRowIdx, adjDelExp);
+        deltaCOS = adjDelStaff + adjDelExp;
+      }
+      applyDelta(15, deltaCOS); // Total Costs of Sale
+
+      const deltaGP = totalDeltaRev - deltaCOS;
+      applyDelta(17, deltaGP); // Gross Profit
+
+      applyDelta(22, adjNonDelStaff); // Staff costs non-delivery
+      applyDelta(23, adjNonDelExp); // Other expenses non-delivery
+
+      const deltaOverheads = adjNonDelStaff + adjNonDelExp;
+      applyDelta(25, deltaOverheads); // Total Overheads
+
+      applyDelta(29, deltaGP - deltaOverheads); // Operating Profit
+
+      const newTotalRev = getNewVal(8);
+
+      if (rows[19] && rows[19].label !== "Hide") {
+        const pct = formatPercent(newTotalRev ? getNewVal(17) / newTotalRev : 0);
+        if (isTotalCol) rows[19].totalVal = pct;
+        else rows[19].monthlyValues[m] = pct;
+      }
+      if (rows[27] && rows[27].label !== "Hide") {
+        const pct = formatPercent(newTotalRev ? getNewVal(25) / newTotalRev : 0);
+        if (isTotalCol) rows[27].totalVal = pct;
+        else rows[27].monthlyValues[m] = pct;
+      }
+      if (rows[31] && rows[31].label !== "Hide") {
+        const newOp = getNewVal(29);
+        const opSign = newTotalRev < 0 && newOp < 0 ? -1 : 1;
+        const pct = formatPercent(newTotalRev ? (newOp / newTotalRev) * opSign : 0);
+        if (isTotalCol) rows[31].totalVal = pct;
+        else rows[31].monthlyValues[m] = pct;
+      }
+      if (rows[33] && rows[33].label !== "Hide") {
+        const pct = formatPercent(newTotalRev ? (getNewVal(22) + getNewVal(11)) / newTotalRev : 0);
+        if (isTotalCol) rows[33].totalVal = pct;
+        else rows[33].monthlyValues[m] = pct;
+      }
     }
   }
 

@@ -4389,8 +4389,24 @@ export function calculateRevenueSplit(amount, mode, start, end, retainerDay = 28
 }
 
 export async function resolveMasterSheetIdForClient_(sheets, sheetIdClean, clientName) {
-  if (!sheetIdClean) return null;
-  const cleanId = extractSheetIdFromUrl(sheetIdClean) || sheetIdClean;
+  if (!sheetIdClean && !clientName) return null;
+  const cleanId = sheetIdClean ? (extractSheetIdFromUrl(sheetIdClean) || sheetIdClean) : "";
+  try {
+    const sbCtx = await resolveSupabaseSheetContext({
+      clientName: clientName || "",
+      spreadsheetId: cleanId || "",
+    }).catch(() => null);
+    if (sbCtx?.masterSheetId) return sbCtx.masterSheetId;
+  } catch (_) { }
+
+  if (clientName) {
+    try {
+      const resolved = await resolveMasterSheetIdByClientName(clientName).catch(() => null);
+      if (resolved) return extractSheetIdFromUrl(resolved) || String(resolved).trim();
+    } catch (_) { }
+  }
+
+  if (!cleanId) return null;
   try {
     const d1Res = await withRetry(() => sheets.spreadsheets.values.get({
       spreadsheetId: cleanId,
@@ -8942,6 +8958,7 @@ export async function handleCreateJobFromInvoice(req, res, sheets) {
     await withRetry(() =>
       sheets.spreadsheets.values.batchUpdate({
         spreadsheetId: sheetIdClean,
+        _deferBackgroundRecompute: true,
         requestBody: {
           valueInputOption: "USER_ENTERED",
           data: updateData,
@@ -9489,6 +9506,7 @@ export async function handleAddNewJob(req, res, sheets) {
     await withRetry(() =>
       sheets.spreadsheets.values.batchUpdate({
         spreadsheetId: sheetIdClean,
+        _deferBackgroundRecompute: true,
         requestBody: {
           valueInputOption: "USER_ENTERED",
           data: updateData,
@@ -11068,13 +11086,13 @@ export async function handleMarkPipelineAlreadyConfirmed(req, res, sheets) {
       const pHeaderResp = await withRetry(() =>
         sheets.spreadsheets.values.get({
           spreadsheetId: sheetIdClean,
-          range: "Pipeline!1:2",
+          range: "Pipeline!1:1",
           valueRenderOption: "FORMATTED_VALUE",
         })
       );
       const rows = pHeaderResp.data?.values || [];
       isJobCosting = isJobCostingStyle({ headers: rows[0] || [] });
-      const headerRow = rows[1] && rows[1].length > 10 ? rows[1] : (rows[0] || []);
+      const headerRow = rows[0] || [];
       const lIdx = headerRow.findIndex((h) => {
         const s = String(h || "").trim().toLowerCase();
         return s === "% likel." || s === "% likelihood" || s === "% likely" || s === "likelihood";
@@ -11125,6 +11143,7 @@ export async function handleMarkPipelineAlreadyConfirmed(req, res, sheets) {
     await withRetry(() =>
       sheets.spreadsheets.values.batchUpdate({
         spreadsheetId: sheetIdClean,
+        _skipFormulaRecompute: true,
         requestBody: {
           valueInputOption: "USER_ENTERED",
           data: batchData,

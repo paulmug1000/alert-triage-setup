@@ -2551,9 +2551,14 @@ export async function moveAccountingItemToJob({
       allocated.rowNum,
       allocated.slotNum
     );
+    const tenantClient =
+      resolvedClientName ||
+      (await resolveClientNameBySheetId(sheets, cleanClientSheetId, automationCommanderSheetId));
     await withRetry(() =>
       sheets.spreadsheets.values.batchUpdate({
         spreadsheetId: cleanClientSheetId,
+        _skipFormulaRecompute: Boolean(tenantClient),
+        _deferBackgroundRecompute: true,
         requestBody: {
           valueInputOption: "USER_ENTERED",
           data: mergedConfWrites,
@@ -2568,9 +2573,6 @@ export async function moveAccountingItemToJob({
       isSysAdmin
     );
 
-    const tenantClient =
-      resolvedClientName ||
-      (await resolveClientNameBySheetId(sheets, cleanClientSheetId, automationCommanderSheetId));
     const targetMasterId = await resolveMasterIdForOutgoings_(
       sheets,
       cleanClientSheetId,

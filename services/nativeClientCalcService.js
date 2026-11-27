@@ -450,9 +450,12 @@ export async function saveNativeClientTabBlueprint(
       let existingRow = _blueprintCache.get(cacheKey)?.row || null;
       if (!existingRow && supabase) {
         try {
+          const selectCols = needFormulaPreserve
+            ? "row_count, col_count, base_values_grid, formulas_blueprint, notes_meta"
+            : "notes_meta";
           const { data: bpDbRow } = await supabase
             .from("pulse_client_tab_blueprints")
-            .select("row_count, col_count, base_values_grid, formulas_blueprint, notes_meta")
+            .select(selectCols)
             .eq("client_id", ctx.clientId)
             .eq("tab_name", tabName)
             .maybeSingle();
@@ -1036,7 +1039,12 @@ export async function loadNativeClientTabRecordsBatch(
     }
   } else {
     const [jB, iB, fB] = await Promise.all([
-      needJobs && !jobsBundle ? preloadClientRelationalJobsBundle(ctx) : Promise.resolve(jobsBundle),
+      needJobs && !jobsBundle
+        ? preloadClientRelationalJobsBundle(ctx, {
+          includeConfirmed: reqSet.has("Confirmed"),
+          includePipeline: reqSet.has("Pipeline"),
+        })
+        : Promise.resolve(jobsBundle),
       needAnyInputs && !inputsBundle
         ? preloadClientRelationalInputsBundle(ctx, {
           includeSalaries: needSalaries,

@@ -917,48 +917,47 @@ export async function resolveLiveSessionUser(req, res = null, { sheets = null, b
     return null;
   }
 
-  if (sessionUser._jti && (await isSessionJtiRevoked(sessionUser._jti))) {
-    if (res) clearSessionCookie(res);
-    if (req) req._liveSessionUser = null;
-    return null;
-  }
-
-  let forceDirBypass = Boolean(bypassCache);
-  try {
-    await ensureRedisConnected(400);
-    if (redisClient?.isOpen) {
-      if (!sessionUser._jti && sessionUser._rawTokenHash) {
-        const revHash = await redisClient.get(`pma:revoked_tok_hash:${sessionUser._rawTokenHash}`).catch(() => null);
-        if (revHash) {
-          if (res) clearSessionCookie(res);
-          if (req) req._liveSessionUser = null;
-          return null;
-        }
-      }
-      const normEmailForRev = String(sessionUser.email || "").toLowerCase().trim();
-      const revokedAtRaw = await redisClient.get(`${USER_REVOKED_AT_PREFIX}${normEmailForRev}`).catch(() => null);
-      if (revokedAtRaw && Number(revokedAtRaw) >= Number(sessionUser._iat || 0)) {
-        if (!sessionUser._jti) {
-          if (res) clearSessionCookie(res);
-          if (req) req._liveSessionUser = null;
-          return null;
-        }
-        forceDirBypass = true;
-      }
-    }
-  } catch { }
-
   const activeRes = res || req?.res || req?.socket?._httpMessage || null;
+  const normEmail = String(sessionUser.email || "").toLowerCase().trim();
+  let forceDirBypass = Boolean(bypassCache);
 
   try {
-    const users = await getAllUsers(sheets, getCanonicalAcSheetId(), forceDirBypass);
+    await ensureRedisConnected(400).catch(() => { });
+    const [jtiRevoked, revHash, revokedAtRaw, initialUsers] = await Promise.all([
+      sessionUser._jti ? isSessionJtiRevoked(sessionUser._jti) : Promise.resolve(false),
+      !sessionUser._jti && sessionUser._rawTokenHash && redisClient?.isOpen
+        ? redisClient.get(`pma:revoked_tok_hash:${sessionUser._rawTokenHash}`).catch(() => null)
+        : Promise.resolve(null),
+      redisClient?.isOpen
+        ? redisClient.get(`${USER_REVOKED_AT_PREFIX}${normEmail}`).catch(() => null)
+        : Promise.resolve(null),
+      getAllUsers(sheets, getCanonicalAcSheetId(), forceDirBypass),
+    ]);
+
+    if (jtiRevoked || revHash) {
+      if (res) clearSessionCookie(res);
+      if (req) req._liveSessionUser = null;
+      return null;
+    }
+
+    if (revokedAtRaw && Number(revokedAtRaw) >= Number(sessionUser._iat || 0)) {
+      if (!sessionUser._jti) {
+        if (res) clearSessionCookie(res);
+        if (req) req._liveSessionUser = null;
+        return null;
+      }
+      forceDirBypass = true;
+    }
+
+    const users = forceDirBypass && !bypassCache
+      ? await getAllUsers(sheets, getCanonicalAcSheetId(), true)
+      : initialUsers;
     if (!Array.isArray(users) || users.length === 0) {
       // Fail closed when the live user directory cannot be verified
       if (req) req._liveSessionUser = null;
       return null;
     }
 
-    const normEmail = String(sessionUser.email || "").toLowerCase().trim();
     const liveUser = users.find((u) => u.email === normEmail);
     if (!liveUser || liveUser.status === "Suspended") {
       if (sessionUser._jti) await revokeSessionJti(sessionUser._jti, sessionUser._exp);
@@ -986,6 +985,7 @@ export async function resolveLiveSessionUser(req, res = null, { sheets = null, b
       _jti: { value: sessionUser._jti || null, enumerable: false, configurable: true },
       _exp: { value: sessionUser._exp || null, enumerable: false },
       _iat: { value: sessionUser._iat || 0, enumerable: false },
+      _liveVerifiedAt: { value: Date.now(), enumerable: false },
     });
 
     const changed =

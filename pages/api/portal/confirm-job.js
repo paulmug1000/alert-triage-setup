@@ -25,7 +25,7 @@ import { buildRetainerChildRowsWritePlan, createVariableRetainerSeries_ } from "
 import { getToleranceValues } from "../../../services/sharedHelpers.js";
 import { resolveMasterSheetIdForClient_ } from "../../../services/workspaces.js";
 import { flushImmediateAndScheduleBackgroundClientRecomputes } from "../../../services/masterEngineService.js";
-import { resolveAuthoritativeJobAnchor, getClientRelationalJobsLookup } from "../../../services/relationalJobsService.js";
+import { resolveAuthoritativeJobAnchor, getClientRelationalJobsLookup, getRecentReconciledJobUuid } from "../../../services/relationalJobsService.js";
 import { relinkNotesForJobChange } from "../../../services/pulseNotesService.js";
 import { buildJobNoteKey, buildJobNoteLabel } from "../../../utils/pulseNotesKeys.js";
 
@@ -70,6 +70,7 @@ export default async function handler(req, res) {
     return res.status(400).json({ success: false, error: "Valid clientSheetId and pipelineRow (>= 2) are required" });
   }
 
+  let didFlushImmediate = false;
   try {
     const sheets = await getSheetsClient();
 
@@ -82,25 +83,27 @@ export default async function handler(req, res) {
     const liveGate = await assertClientPortalLive(sessionUser, verifiedClientName, res);
     if (!liveGate.allowed) return;
 
-    const relationalAnchor = await resolveAuthoritativeJobAnchor({
-      spreadsheetId: clientSheetId,
-      clientName: verifiedClientName,
-      jobUuid,
-      expectedTabName: "Pipeline",
-      fallbackRowNum: !isNaN(parsedPRow) && parsedPRow >= 2 ? parsedPRow : null,
-    });
+    const [relationalAnchor, metaResp] = await Promise.all([
+      resolveAuthoritativeJobAnchor({
+        spreadsheetId: clientSheetId,
+        clientName: verifiedClientName,
+        jobUuid,
+        expectedTabName: "Pipeline",
+        fallbackRowNum: !isNaN(parsedPRow) && parsedPRow >= 2 ? parsedPRow : null,
+      }),
+      withRetry(() =>
+        sheets.spreadsheets.get({
+          spreadsheetId: clientSheetId,
+          fields: "sheets(properties,rowGroups)",
+        })
+      ),
+    ]);
     const pRow = relationalAnchor?.rowNum;
     if (isNaN(pRow) || pRow < 2) {
       return res.status(400).json({ success: false, error: "Valid clientSheetId and pipelineRow (>= 2) are required" });
     }
 
     // 1. Get sheet metadata
-    const metaResp = await withRetry(() =>
-      sheets.spreadsheets.get({
-        spreadsheetId: clientSheetId,
-        fields: "sheets(properties,rowGroups)",
-      })
-    );
     const sheetMetaList = metaResp.data?.sheets || [];
     const pipelineSheetObj = resolveEditableJobSheetMeta(sheetMetaList, "pipeline");
     const confirmedSheetObj = resolveEditableJobSheetMeta(sheetMetaList, "confirmed");
@@ -142,7 +145,7 @@ export default async function handler(req, res) {
       withRetry(() =>
         sheets.spreadsheets.values.get({
           spreadsheetId: clientSheetId,
-          range: `${pipelineSheetName}!1:2`,
+          range: `${pipelineSheetName}!1:1`,
           valueRenderOption: "FORMATTED_VALUE",
         })
       ).catch(() => null),
@@ -280,7 +283,7 @@ export default async function handler(req, res) {
       let likelihoodCol = "AN";
       let copiedStatusCol = "DD";
       const pHeaderRows = pHeaderResp?.data?.values || [];
-      const hRow = pHeaderRows[1] && pHeaderRows[1].length > 10 ? pHeaderRows[1] : (pHeaderRows[0] || []);
+      const hRow = pHeaderRows[0] || [];
       const lIdx = hRow.findIndex((h) => ["% likel.", "% likelihood", "% likely", "likelihood"].includes(String(h || "").trim().toLowerCase()));
       if (lIdx !== -1) likelihoodCol = colToLetter(lIdx);
       const cIdx = hRow.findIndex((h) => { const s = String(h || "").trim().toLowerCase(); return s.includes("copied") || s.includes("conf?"); });
@@ -306,6 +309,7 @@ export default async function handler(req, res) {
       );
       const confirmSbCtx = await resolveMasterSheetIdForClient_(sheets, clientSheetId, verifiedClientName || clientName || "").catch(() => null);
       await flushImmediateAndScheduleBackgroundClientRecomputes(sheets, verifiedClientName || clientName || "").catch(() => { });
+      didFlushImmediate = true;
       await invalidatePmaClientCache(clientSheetId, confirmSbCtx || null, ["jobs", "invoices", "outgoings", "retainers", "cash", "views"]).catch(() => { });
       return res.status(200).json({
         success: true,
@@ -626,7 +630,7 @@ export default async function handler(req, res) {
     let copiedStatusCol = "DD";
     try {
       const rows = pHeaderResp?.data?.values || [];
-      const headerRow = rows[1] && rows[1].length > 10 ? rows[1] : (rows[0] || []);
+      const headerRow = rows[0] || [];
       const lIdx = headerRow.findIndex((h) => {
         const s = String(h || "").trim().toLowerCase();
         return s === "% likel." || s === "% likelihood" || s === "% likely" || s === "likelihood";
@@ -674,6 +678,7 @@ export default async function handler(req, res) {
 
     // 9. Flush immediate recomputes BEFORE invalidating caches so Portal/PMA reads reflect the promoted job immediately
     await flushImmediateAndScheduleBackgroundClientRecomputes(sheets, verifiedClientName || clientName || "").catch(() => { });
+    didFlushImmediate = true;
 
     // 10. Invalidate In-Memory and Redis caches across both Portal and PMA
     try {
@@ -718,10 +723,12 @@ export default async function handler(req, res) {
       newJobLabel: buildJobNoteLabel({ client: parentClient, jobName: parentJobName }),
     }).catch(() => { });
 
-    await flushImmediateAndScheduleBackgroundClientRecomputes().catch(() => { });
-
-    let confirmedJobUuid = null;
-    if (relationalAnchor?.isRelational) {
+    let confirmedJobUuid = getRecentReconciledJobUuid(
+      verifiedClientName || clientName || parentClient || "",
+      confirmedSheetName,
+      targetParentRow
+    );
+    if (!confirmedJobUuid && relationalAnchor?.isRelational) {
       try {
         const relLookup = await getClientRelationalJobsLookup(verifiedClientName || clientName || parentClient || "");
         confirmedJobUuid = relLookup?.jobsByTabAndRow?.get(`confirmed:${targetParentRow}`)?.id || null;
@@ -744,6 +751,8 @@ export default async function handler(req, res) {
       error: sessionUser?.isAdmin ? err.message : sanitizeSpreadsheetTerms(err.message || "Request failed.")
     });
   } finally {
-    await flushImmediateAndScheduleBackgroundClientRecomputes().catch(() => { });
+    if (!didFlushImmediate) {
+      await flushImmediateAndScheduleBackgroundClientRecomputes().catch(() => { });
+    }
   }
 }

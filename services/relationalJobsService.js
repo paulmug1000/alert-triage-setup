@@ -14,6 +14,7 @@
 
 import fs from "fs";
 import path from "path";
+import { waitUntil } from "@vercel/functions";
 import { getSupabaseAdmin, isSupabaseConfigured } from "./supabaseClient.js";
 import {
   getOrLoadVirtualTabGrid_,
@@ -1150,6 +1151,20 @@ function makeJobIdentityKey_(job) {
 const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const _inFlightReconcileByClient = new Map();
 const _pendingReconcileTabsByClient = new Map();
+const _recentReconciledJobIdsByClient = new Map();
+
+export function getRecentReconciledJobUuid(clientName, tabName, rowNum) {
+  const key = String(clientName || "").trim().toLowerCase();
+  const rNum = Number(rowNum);
+  if (!key || !Number.isInteger(rNum) || rNum < 2) return null;
+  const entry = _recentReconciledJobIdsByClient.get(key);
+  if (!entry || entry.expiresAt <= Date.now()) {
+    if (entry) _recentReconciledJobIdsByClient.delete(key);
+    return null;
+  }
+  const tabType = String(tabName || "").trim().toLowerCase().startsWith("pipe") ? "pipeline" : "confirmed";
+  return entry.map.get(`${tabType}:${rNum}`) || null;
+}
 
 function numbersEqualLoose_(a, b) {
   if (a === b) return true;
@@ -1504,12 +1519,12 @@ async function runSingleReconcilePass_(ctx, targetTabs, options = {}) {
     const [accInvsRows, accDirectRows] = await Promise.all([
       missingInvLookup && neededInvRefs.size > 0
         ? fetchPaginatedTableForClient_(
-            supabase,
-            "accounting_invoices",
-            "id, invoice_number",
-            ctx.clientId,
-            (q) => q.eq("record_kind", "invoice")
-          )
+          supabase,
+          "accounting_invoices",
+          "id, invoice_number",
+          ctx.clientId,
+          (q) => q.eq("record_kind", "invoice")
+        )
         : Promise.resolve([]),
       missingExpLookup && neededExpAppIds.size > 0
         ? fetchPaginatedTableForClient_(supabase, "accounting_direct_costs", "id, external_id", ctx.clientId)
@@ -1604,6 +1619,7 @@ async function runSingleReconcilePass_(ctx, targetTabs, options = {}) {
   const plannedJobsMeta = [];
   const jobIdByTabAndRow = new Map();
 
+  let didJobIdentityOrRowChange = false;
   for (const mod of models) {
     const pool = existingJobsByTab[mod.tabType] || [];
     const byProjectCode = new Map();
@@ -1706,9 +1722,18 @@ async function runSingleReconcilePass_(ctx, targetTabs, options = {}) {
             ["raw_scalars", "custom_formulas", "extra_fields", "cell_notes"]
           )
         ) {
+          if (
+            Number(matched.sheet_row_num) !== Number(rowPayload.sheet_row_num) ||
+            String(matched.customer_name || "") !== String(rowPayload.customer_name || "") ||
+            String(matched.job_name || "") !== String(rowPayload.job_name || "") ||
+            String(matched.project_code || "") !== String(rowPayload.project_code || "")
+          ) {
+            didJobIdentityOrRowChange = true;
+          }
           updateJobPayloads.push(rowPayload);
         }
       } else {
+        didJobIdentityOrRowChange = true;
         insertJobPayloads.push(rowPayload);
       }
       plannedJobsMeta.push({ sourceJob: j, matchedId: matched?.id || null });
@@ -1736,6 +1761,7 @@ async function runSingleReconcilePass_(ctx, targetTabs, options = {}) {
   }
 
   const obsoleteJobIds = existingJobs.filter((ej) => !usedExistingJobIds.has(ej.id)).map((ej) => ej.id);
+  if (obsoleteJobIds.length > 0) didJobIdentityOrRowChange = true;
 
   // Re-point pulse_notes.job_id before obsolete Pipeline jobs are deleted on same-pass Pipeline -> Confirmed promotion
   if (obsoleteJobIds.length > 0 && insertedJobsList.length > 0) {
@@ -1768,7 +1794,7 @@ async function runSingleReconcilePass_(ctx, targetTabs, options = {}) {
               .eq("client_id", ctx.clientId)
               .eq("job_id", oldId)
           )
-        ).catch(() => {});
+        ).catch(() => { });
       }
     }
   }
@@ -1962,8 +1988,31 @@ async function runSingleReconcilePass_(ctx, targetTabs, options = {}) {
     if (e) throw new Error(`Failed inserting pulse_job_expenses: ${e.message}`);
   }
 
-  // Keep pulse_notes.job_id synchronized with live pulse_jobs UUIDs
-  await syncPulseNotesJobIdsForClient_(supabase, ctx.clientId).catch(() => { });
+  // Record reconciled UUIDs in short-lived memory cache for immediate post-save lookups
+  const clientRecKey = String(ctx.clientName || "").trim().toLowerCase();
+  if (clientRecKey) {
+    const mergedUuidMap = new Map();
+    const prevEntry = _recentReconciledJobIdsByClient.get(clientRecKey);
+    if (prevEntry && prevEntry.expiresAt > Date.now() && !isBothTabs) {
+      for (const [mk, mv] of prevEntry.map.entries()) {
+        if (singleTabType && !mk.startsWith(`${singleTabType}:`)) {
+          mergedUuidMap.set(mk, mv);
+        }
+      }
+    }
+    for (const [mk, mv] of jobIdByTabAndRow.entries()) {
+      mergedUuidMap.set(mk, mv);
+    }
+    _recentReconciledJobIdsByClient.set(clientRecKey, {
+      expiresAt: Date.now() + 30000,
+      map: mergedUuidMap,
+    });
+  }
+
+  // Keep pulse_notes.job_id synchronized with live pulse_jobs UUIDs when job identities or row numbers changed
+  if (didJobIdentityOrRowChange || forceFullUpsert) {
+    await syncPulseNotesJobIdsForClient_(supabase, ctx.clientId).catch(() => { });
+  }
 
   const prevMeta =
     !clMetaResp?.error && clMetaResp?.data?.metadata && typeof clMetaResp.data.metadata === "object"
@@ -2005,7 +2054,7 @@ async function runSingleReconcilePass_(ctx, targetTabs, options = {}) {
   };
 
   if (!clMetaResp?.error && clMetaResp?.data) {
-    await supabase
+    const metaUpdatePromise = supabase
       .from("clients")
       .update({
         metadata: {
@@ -2013,7 +2062,16 @@ async function runSingleReconcilePass_(ctx, targetTabs, options = {}) {
           relational_jobs_state: summary,
         },
       })
-      .eq("id", ctx.clientId);
+      .eq("id", ctx.clientId)
+      .then(() => { })
+      .catch(() => { });
+    if (options.updateBackfillTimestamp) {
+      await metaUpdatePromise;
+    } else {
+      try {
+        waitUntil(metaUpdatePromise);
+      } catch { }
+    }
   }
 
   return summary;
@@ -2578,13 +2636,32 @@ export async function preloadClientRelationalJobsBundle(
         ? "pipeline"
         : null;
 
-  const [clMetaResp, jobs, invoices, expenses, series] = await Promise.all([
-    supabase.from("clients").select("metadata").eq("id", ctx.clientId).maybeSingle(),
-    fetchAllRowsForClient_(supabase, "pulse_jobs", ctx.clientId, { tabType: tabFilter }),
-    fetchAllRowsForClient_(supabase, "pulse_job_invoices", ctx.clientId),
-    fetchAllRowsForClient_(supabase, "pulse_job_expenses", ctx.clientId),
-    fetchAllRowsForClient_(supabase, "pulse_retainer_series", ctx.clientId, { tabType: tabFilter }),
-  ]);
+  let clMetaResp, jobs, invoices, expenses, series;
+  if (tabFilter) {
+    [clMetaResp, jobs, series] = await Promise.all([
+      supabase.from("clients").select("metadata").eq("id", ctx.clientId).maybeSingle(),
+      fetchAllRowsForClient_(supabase, "pulse_jobs", ctx.clientId, { tabType: tabFilter }),
+      fetchAllRowsForClient_(supabase, "pulse_retainer_series", ctx.clientId, { tabType: tabFilter }),
+    ]);
+    const jobIds = jobs.map((j) => j.id);
+    if (jobIds.length > 0) {
+      [invoices, expenses] = await Promise.all([
+        fetchChildRowsForJobIds_(supabase, "pulse_job_invoices", ctx.clientId, jobIds),
+        fetchChildRowsForJobIds_(supabase, "pulse_job_expenses", ctx.clientId, jobIds),
+      ]);
+    } else {
+      invoices = [];
+      expenses = [];
+    }
+  } else {
+    [clMetaResp, jobs, invoices, expenses, series] = await Promise.all([
+      supabase.from("clients").select("metadata").eq("id", ctx.clientId).maybeSingle(),
+      fetchAllRowsForClient_(supabase, "pulse_jobs", ctx.clientId),
+      fetchAllRowsForClient_(supabase, "pulse_job_invoices", ctx.clientId),
+      fetchAllRowsForClient_(supabase, "pulse_job_expenses", ctx.clientId),
+      fetchAllRowsForClient_(supabase, "pulse_retainer_series", ctx.clientId),
+    ]);
+  }
 
   const jobsByTabAndRow = new Map();
   const jobsByUuid = new Map();

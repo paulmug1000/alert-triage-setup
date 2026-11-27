@@ -263,7 +263,7 @@ export async function resolvePortalCache({
         const sbCtx = await resolveSupabaseSheetContext({ spreadsheetId: rawTargetSheetId });
         if (sbCtx?.sheetRole === "client" && sbCtx?.clientMode === "supabase" && sbCtx?.sheetBridgeMode === "live") {
           const { ensureClientSheetBridgeFreshOnRead } = await import("./clientSheetBridgeService.js");
-          await ensureClientSheetBridgeFreshOnRead(sbCtx);
+          await ensureClientSheetBridgeFreshOnRead(sbCtx, { background: !bypassCache });
         }
       } catch (bridgeErr) {
         console.warn(`[resolvePortalCache] Bridge read check warning for ${cacheKey}:`, bridgeErr?.message);

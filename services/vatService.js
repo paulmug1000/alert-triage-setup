@@ -14,6 +14,7 @@
 import { getSheetsClient, withRetry, extractSheetIdFromUrl } from "./sheetsClient.js";
 import { unwrapSheetId } from "./userPermissions.js";
 import { resolvePortalCache, invalidatePmaClientCache } from "./cacheService.js";
+import { flushImmediateAndScheduleBackgroundClientRecomputes } from "./masterEngineService.js";
 import { logPmaActivity } from "./pmaLogger.js";
 
 const MONTH_NAMES = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"];
@@ -758,9 +759,10 @@ export async function saveCorpTaxRate({
       range,
       valueInputOption: "USER_ENTERED",
       requestBody: { values: [[decimalRate]] },
-      _syncFormulaRecompute: true,
+      _deferBackgroundRecompute: true,
     })
   );
+  await flushImmediateAndScheduleBackgroundClientRecomputes(sheets, cleanClientId).catch(() => { });
 
   await invalidatePmaClientCache(cleanClientId, null, ["performance", "cash", "views"]);
 
@@ -780,7 +782,7 @@ export async function saveCorpTaxRate({
       decimalRate,
     },
     userEmail: userEmail || "PMA User",
-  }).catch(() => {});
+  }).catch(() => { });
 
   const data = await fetchVatData(clientName || "Client", cleanClientId, true);
   return {

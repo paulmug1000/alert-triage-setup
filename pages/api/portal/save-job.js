@@ -21,7 +21,7 @@ import {
   isAutoExpensePlaceholderId_,
 } from "../../../services/workspaces.js";
 import { flushImmediateAndScheduleBackgroundClientRecomputes } from "../../../services/masterEngineService.js";
-import { resolveAuthoritativeJobAnchor, getClientRelationalJobsLookup } from "../../../services/relationalJobsService.js";
+import { resolveAuthoritativeJobAnchor, getClientRelationalJobsLookup, getRecentReconciledJobUuid } from "../../../services/relationalJobsService.js";
 import { relinkNotesForJobChange } from "../../../services/pulseNotesService.js";
 import { buildJobNoteKey, buildJobNoteLabel } from "../../../utils/pulseNotesKeys.js";
 import {
@@ -565,6 +565,7 @@ export default async function handler(req, res) {
     return res.status(400).json({ success: false, error: "clientSheetId and job object are required" });
   }
 
+  let didFlushImmediate = false;
   try {
     const sheets = await getSheetsClient();
 
@@ -682,15 +683,41 @@ export default async function handler(req, res) {
     const parsedLikelihoodNum = parseFloat(rawLikelihoodStr.replace(/[%,\s]/g, ""));
     const isLikelihood100 = !isNaN(parsedLikelihoodNum) && (parsedLikelihoodNum >= 100 || (!rawLikelihoodStr.includes("%") && rawLikelihoodStr === "1"));
     const isTargetConfirmed = String(job.type || "").toLowerCase() === "confirmed" || isLikelihood100;
-    const metaResp = await withRetry(() =>
-      sheets.spreadsheets.get({
-        spreadsheetId: clientSheetId,
-        fields: "sheets(properties.sheetId,properties.title,rowGroups)",
-      })
-    );
-    const sheetMetaList = metaResp.data?.sheets || [];
+
+    let origId = String(job.id || "");
+    const wasPipeline = origId.startsWith("pipeline");
+    const wasConfirmed = origId.startsWith("confirmed");
+    const isSheetChange = (wasPipeline && isTargetConfirmed) || (wasConfirmed && !isTargetConfirmed);
     const requestedStatus = isTargetConfirmed ? "confirmed" : "pipeline";
     const fallbackSheetName = isTargetConfirmed ? "Confirmed" : "Pipeline";
+    const expectedSourceTab = isSheetChange ? (wasPipeline ? "Pipeline" : "Confirmed") : fallbackSheetName;
+
+    const [metaResp, fallbackHeaderResp, initialRelationalAnchor] = await Promise.all([
+      withRetry(() =>
+        sheets.spreadsheets.get({
+          spreadsheetId: clientSheetId,
+          fields: "sheets(properties.sheetId,properties.title,rowGroups)",
+        })
+      ),
+      withRetry(() =>
+        sheets.spreadsheets.values.get({
+          spreadsheetId: clientSheetId,
+          range: `${fallbackSheetName}!1:1`,
+          valueRenderOption: "FORMATTED_VALUE",
+        })
+      ),
+      job.jobUuid && origId !== "new"
+        ? resolveAuthoritativeJobAnchor({
+          spreadsheetId: clientSheetId,
+          clientName: verifiedClientName,
+          jobUuid: job.jobUuid,
+          expectedTabName: expectedSourceTab,
+          fallbackRowNum: job.rowNumber,
+        })
+        : Promise.resolve(null),
+    ]);
+
+    const sheetMetaList = metaResp.data?.sheets || [];
     const targetSheetObj = resolveEditableJobSheetMeta(sheetMetaList, requestedStatus);
     if (!targetSheetObj) {
       throw new Error(`Sheet "${fallbackSheetName}" not found in spreadsheet.`);
@@ -698,14 +725,16 @@ export default async function handler(req, res) {
     const sheetName = targetSheetObj.properties.title;
     const sheetId = targetSheetObj.properties.sheetId;
 
-    // 2. Read headers of target sheet
-    const headerResp = await withRetry(() =>
-      sheets.spreadsheets.values.get({
-        spreadsheetId: clientSheetId,
-        range: `${sheetName}!1:1`,
-        valueRenderOption: "FORMATTED_VALUE",
-      })
-    );
+    // 2. Read headers of target sheet (reuse prefetched Row 1 when tab name matches)
+    const headerResp = sheetName === fallbackSheetName
+      ? fallbackHeaderResp
+      : await withRetry(() =>
+        sheets.spreadsheets.values.get({
+          spreadsheetId: clientSheetId,
+          range: `${sheetName}!1:1`,
+          valueRenderOption: "FORMATTED_VALUE",
+        })
+      );
 
     const headers = (headerResp.data?.values?.[0] || []).map((h) =>
       String(h || "").toLowerCase().trim().replace(/\s+/g, " ")
@@ -827,25 +856,22 @@ export default async function handler(req, res) {
     };
 
     // 3. Determine if moving between sheets or if new job
-    let origId = String(job.id || "");
-    const wasPipeline = origId.startsWith("pipeline");
-    const wasConfirmed = origId.startsWith("confirmed");
-    const isSheetChange = (wasPipeline && isTargetConfirmed) || (wasConfirmed && !isTargetConfirmed);
-
-    let relationalAnchor = null;
+    let relationalAnchor = initialRelationalAnchor;
     if (job.jobUuid && origId !== "new") {
-      const expectedSourceTab = isSheetChange ? (wasPipeline ? "Pipeline" : "Confirmed") : sheetName;
-      relationalAnchor = await resolveAuthoritativeJobAnchor({
-        spreadsheetId: clientSheetId,
-        clientName: verifiedClientName,
-        jobUuid: job.jobUuid,
-        expectedTabName: expectedSourceTab,
-        fallbackRowNum: job.rowNumber,
-      });
+      const actualExpectedSourceTab = isSheetChange ? (wasPipeline ? "Pipeline" : "Confirmed") : sheetName;
+      if (!relationalAnchor || actualExpectedSourceTab !== expectedSourceTab) {
+        relationalAnchor = await resolveAuthoritativeJobAnchor({
+          spreadsheetId: clientSheetId,
+          clientName: verifiedClientName,
+          jobUuid: job.jobUuid,
+          expectedTabName: actualExpectedSourceTab,
+          fallbackRowNum: job.rowNumber,
+        });
+      }
       if (relationalAnchor?.resolved && relationalAnchor.rowNum) {
         job.rowNumber = relationalAnchor.rowNum;
         job.childRowNumbers = relationalAnchor.rowNums?.slice(1) || job.childRowNumbers;
-        origId = `${expectedSourceTab.toLowerCase()}-${relationalAnchor.rowNum}`;
+        origId = `${actualExpectedSourceTab.toLowerCase()}-${relationalAnchor.rowNum}`;
       }
     }
 
@@ -1098,12 +1124,13 @@ export default async function handler(req, res) {
       }
       if (deferredClearRanges.length > 0) {
         await withRetry(() =>
-          sheets.spreadsheets.values.batchClear({ spreadsheetId: clientSheetId, requestBody: { ranges: deferredClearRanges } })
+          sheets.spreadsheets.values.batchClear({ spreadsheetId: clientSheetId, _skipFormulaRecompute: true, requestBody: { ranges: deferredClearRanges } })
         );
         if (deferredRestoreData.length > 0) {
           await withRetry(() =>
             sheets.spreadsheets.values.batchUpdate({
               spreadsheetId: clientSheetId,
+              _skipFormulaRecompute: true,
               requestBody: { valueInputOption: "USER_ENTERED", data: deferredRestoreData },
             })
           );
@@ -1111,6 +1138,7 @@ export default async function handler(req, res) {
       }
       const saveVarMasterId = await resolveMasterSheetIdForClient_(sheets, clientSheetId, verifiedClientName || clientName || "").catch(() => null);
       await flushImmediateAndScheduleBackgroundClientRecomputes(sheets, verifiedClientName || clientName || "").catch(() => { });
+      didFlushImmediate = true;
       await invalidatePmaClientCache(clientSheetId, saveVarMasterId || null, ["jobs", "invoices", "outgoings", "retainers", "cash", "views"]).catch(() => { });
       return res.status(200).json({
         success: true,
@@ -1846,6 +1874,7 @@ export default async function handler(req, res) {
 
     // 9. FLUSH RELATIONAL / FORMULA RECOMPUTES FIRST, THEN INVALIDATE CACHES
     await flushImmediateAndScheduleBackgroundClientRecomputes(sheets, verifiedClientName || clientName || "").catch(() => { });
+    didFlushImmediate = true;
 
     try {
       const saveMasterId = await resolveMasterSheetIdForClient_(sheets, clientSheetId, verifiedClientName || clientName || "").catch(() => null);
@@ -1878,12 +1907,16 @@ export default async function handler(req, res) {
       directExpenses: validExpenses,
     }).catch(() => { });
 
-    let savedJobUuid = relationalAnchor?.resolved && !isSheetChange ? relationalAnchor.jobUuid : null;
-    try {
-      const relLookup = await getClientRelationalJobsLookup(verifiedClientName || clientName || "");
-      const matched = relLookup?.jobsByTabAndRow?.get(`${sheetName.toLowerCase()}:${parentRow}`);
-      if (matched?.id) savedJobUuid = matched.id;
-    } catch (_) { }
+    let savedJobUuid =
+      getRecentReconciledJobUuid(verifiedClientName || clientName || "", sheetName, parentRow) ||
+      (relationalAnchor?.resolved && !isSheetChange ? relationalAnchor.jobUuid : null);
+    if (!savedJobUuid) {
+      try {
+        const relLookup = await getClientRelationalJobsLookup(verifiedClientName || clientName || "");
+        const matched = relLookup?.jobsByTabAndRow?.get(`${sheetName.toLowerCase()}:${parentRow}`);
+        if (matched?.id) savedJobUuid = matched.id;
+      } catch (_) { }
+    }
 
     return res.status(200).json({
       success: true,
@@ -1900,6 +1933,8 @@ export default async function handler(req, res) {
     const status = err?.statusCode || 500;
     return res.status(status).json({ success: false, error: sessionUser?.isAdmin ? err.message : sanitizeSpreadsheetTerms(err.message || "Request failed.") });
   } finally {
-    await flushImmediateAndScheduleBackgroundClientRecomputes().catch(() => { });
+    if (!didFlushImmediate) {
+      await flushImmediateAndScheduleBackgroundClientRecomputes().catch(() => { });
+    }
   }
 }

@@ -31,6 +31,7 @@ import {
   isVirtualSupabaseSheetId,
   colIdx0ToLetter,
   getTabWriteRevision_,
+  getLastClientEditTimestamp,
   CORE_CLIENT_TABS,
 } from "./masterEngineService.js";
 import { isCashCellEditable } from "./cashEditService.js";
@@ -1805,7 +1806,10 @@ async function releaseRedisBridgeLock_(normKey, token) {
  * `version` check (at most once per 10s per tenant) and pulls any human sheet edits
  * into Supabase before returning data to PMA / Portal / Proactive checks.
  */
-export async function ensureClientSheetBridgeFreshOnRead(ctx, { throttleMs = READ_CHECK_THROTTLE_MS } = {}) {
+export async function ensureClientSheetBridgeFreshOnRead(
+  ctx,
+  { throttleMs = READ_CHECK_THROTTLE_MS, background = false, force = false } = {}
+) {
   if (
     !ctx ||
     ctx.clientMode !== "supabase" ||
@@ -1826,29 +1830,46 @@ export async function ensureClientSheetBridgeFreshOnRead(ctx, { throttleMs = REA
   }
 
   const now = Date.now();
-  if (now - (_lastReadCheckByClient.get(key) || 0) < throttleMs) {
-    return null;
+  if (!force) {
+    const lastEditMs = getLastClientEditTimestamp(ctx.clientName);
+    if (lastEditMs && now - lastEditMs < 10000) {
+      return null;
+    }
+    if (now - (_lastReadCheckByClient.get(key) || 0) < throttleMs) {
+      return null;
+    }
   }
   _lastReadCheckByClient.set(key, now);
 
-  if (redisClient?.isOpen) {
+  const runCheckPromise = (async () => {
+    if (!force && redisClient?.isOpen) {
+      try {
+        const ok = await redisClient.set(`pulse:sheet_bridge_read_check:${key}`, String(now), {
+          NX: true,
+          EX: Math.max(3, Math.ceil(throttleMs / 1000)),
+        });
+        if (ok !== "OK") return null;
+      } catch { }
+    }
+
     try {
-      const ok = await redisClient.set(`pulse:sheet_bridge_read_check:${key}`, String(now), {
-        NX: true,
-        EX: Math.max(3, Math.ceil(throttleMs / 1000)),
+      return await checkAndSyncClientSheetBridge(ctx.clientName, { direction: "inbound_check" }).catch((err) => {
+        console.warn(`[clientSheetBridge] Read freshness check warning (${ctx.clientName}):`, err.message);
+        return null;
       });
-      if (ok !== "OK") return null;
+    } finally {
+      _lastReadCheckByClient.set(key, Date.now());
+    }
+  })();
+
+  if (background && !force) {
+    try {
+      waitUntil(runCheckPromise);
     } catch { }
+    return null;
   }
 
-  try {
-    return await checkAndSyncClientSheetBridge(ctx.clientName, { direction: "inbound_check" }).catch((err) => {
-      console.warn(`[clientSheetBridge] Read freshness check warning (${ctx.clientName}):`, err.message);
-      return null;
-    });
-  } finally {
-    _lastReadCheckByClient.set(key, Date.now());
-  }
+  return await runCheckPromise;
 }
 
 /**

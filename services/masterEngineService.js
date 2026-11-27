@@ -603,6 +603,20 @@ export async function resolveSupabaseSheetContext({ spreadsheetId = "", clientNa
   return null;
 }
 
+export async function getAllCachedSupabaseSheetContexts() {
+  await resolveSupabaseSheetContext({ clientName: "__warmup__" }).catch(() => null);
+  const seen = new Set();
+  const out = [];
+  for (const entry of _sheetContextCache.byClientName?.values() || []) {
+    if (!entry) continue;
+    const dedupeKey = entry.clientId || String(entry.clientName || "").toLowerCase();
+    if (!dedupeKey || seen.has(dedupeKey)) continue;
+    seen.add(dedupeKey);
+    out.push(entry);
+  }
+  return out;
+}
+
 let _useClientRoleFallback = false;
 
 function findLastActiveClientJobRow_(values, minDefault = 50) {
@@ -979,9 +993,23 @@ export const NATIVE_CONNECTOR_BYPASS_GRID_TABS = new Set([
   "GasScriptProps",
 ]);
 
+const EAGER_FULL_LOAD_CLIENT_TABS = new Set([
+  "Confirmed",
+  "Pipeline",
+  "Outgoings",
+  "OutgNotes",
+  "Salaries",
+  "NBtoFind",
+  "Budget",
+  "Cash",
+  "KeyInfo",
+]);
+
 export async function getOrLoadVirtualTabGrid_(ctx, sheetRole, tabName, rawSheetsApi = null, options = {}) {
-  const valuesOnly = Boolean(options?.valuesOnly);
-  const includeNotes = Boolean(options?.includeNotes);
+  const eagerFullClientLoad =
+    sheetRole === "client" && ctx?.clientComputeMode === "native" && EAGER_FULL_LOAD_CLIENT_TABS.has(tabName);
+  const valuesOnly = eagerFullClientLoad ? false : Boolean(options?.valuesOnly);
+  const includeNotes = eagerFullClientLoad ? true : Boolean(options?.includeNotes);
   const supabase = getSupabaseAdmin();
   if (!supabase) return { values_grid: [], formulas_grid: [], notes_grid: {} };
 
@@ -1033,7 +1061,7 @@ export async function getOrLoadVirtualTabGrid_(ctx, sheetRole, tabName, rawSheet
             _notesLoaded: effectiveIncludeNotes,
           };
           const existing = _gridMemoryCache.get(cacheKey);
-          if (shouldStoreClientRecordInCache_(existing, { valuesOnly, includeNotes })) {
+          if (shouldStoreClientRecordInCache_(existing, { valuesOnly, includeNotes: effectiveIncludeNotes })) {
             setGridMemoryCache_(cacheKey, recOut);
           }
           return recOut;
@@ -2755,6 +2783,24 @@ function doesClientRangeNeedFormulaFlush_(parsed, clientName = "") {
     return true;
   }
 
+  if (parsed.tabName === "Performance") {
+    if (sourceTabs && sourceTabs.size === 1 && sourceTabs.has("Performance")) {
+      return false;
+    }
+    return true;
+  }
+
+  if (parsed.tabName === "VAT") {
+    if (
+      sourceTabs &&
+      sourceTabs.size > 0 &&
+      [...sourceTabs].every((t) => t === "Performance" || t === "Budget" || t === "NBtoFind" || t === "Cash")
+    ) {
+      return false;
+    }
+    return true;
+  }
+
   return true;
 }
 
@@ -3158,6 +3204,32 @@ async function runSingleImmediateClientTabsPass_(
         formulas: [],
         notes: {},
       };
+    }
+  }
+
+  // If Performance is updated directly (e.g. Corp Tax rate), include values-only KeyInfo/Calcs/NBtoFind/Outgoings
+  // so Performance formulas evaluate immediately in <200ms instead of blocking on all 18 tabs.
+  if (allImmediateTabs.includes("Performance")) {
+    const perfDeps = ["KeyInfo", "Calcs", "NBtoFind", "Outgoings"].filter(
+      (depTab) => !allImmediateTabs.includes(depTab) && !localGrids[depTab]
+    );
+    if (perfDeps.length > 0) {
+      await Promise.all(
+        perfDeps.map(async (depTab) => {
+          const depEntry = _gridMemoryCache.get(`${clientKey}::client::${depTab}`);
+          let depRec = depEntry && depEntry.expiresAt > Date.now() ? depEntry.record : null;
+          if (!depRec) {
+            depRec = await getOrLoadVirtualTabGrid_(ctx, "client", depTab, rawSheetsApi, { valuesOnly: true }).catch(() => null);
+          }
+          if (depRec) {
+            localGrids[depTab] = {
+              values: Array.isArray(depRec.values_grid) ? depRec.values_grid : [],
+              formulas: [],
+              notes: {},
+            };
+          }
+        })
+      );
     }
   }
 
@@ -3977,7 +4049,9 @@ export async function handleVirtualSheetsCall({
     const parsed = parseA1Range(rangeStr);
     if (sheetRole === "client" && ctx.sheetBridgeMode === "live") {
       await import("./clientSheetBridgeService.js")
-        .then(({ ensureClientSheetBridgeFreshOnRead }) => ensureClientSheetBridgeFreshOnRead(ctx))
+        .then(({ ensureClientSheetBridgeFreshOnRead }) =>
+          ensureClientSheetBridgeFreshOnRead(ctx, { background: !params._forceInboundBridgeCheck })
+        )
         .catch((e) => console.warn("[masterEngineService] Bridge read check warning:", e.message));
     }
     if (
@@ -4132,7 +4206,9 @@ export async function handleVirtualSheetsCall({
     const parsedList = ranges.map((r) => ({ raw: r, parsed: parseA1Range(r) }));
     if (sheetRole === "client" && ctx.sheetBridgeMode === "live") {
       await import("./clientSheetBridgeService.js")
-        .then(({ ensureClientSheetBridgeFreshOnRead }) => ensureClientSheetBridgeFreshOnRead(ctx))
+        .then(({ ensureClientSheetBridgeFreshOnRead }) =>
+          ensureClientSheetBridgeFreshOnRead(ctx, { background: !params._forceInboundBridgeCheck })
+        )
         .catch((e) => console.warn("[masterEngineService] Bridge read check warning:", e.message));
     }
     if (
@@ -4210,29 +4286,46 @@ export async function handleVirtualSheetsCall({
       if (uncachedTabs.length > 0 && supabase && ctx.clientComputeMode === "native") {
         try {
           const { loadNativeClientTabRecordsBatch } = await import("./nativeClientCalcService.js");
-          const loadedMap = await loadNativeClientTabRecordsBatch(ctx, uncachedTabs, {
-            source: "db",
-            valuesOnly: useValuesOnly,
-            includeNotes: !useValuesOnly,
-          });
-          for (const t of uncachedTabs) {
-            const rec = loadedMap?.[t];
-            if (!rec || !Array.isArray(rec.values_grid) || rec.values_grid.length === 0) continue;
-            const fullRec = {
-              client_id: ctx.clientId,
-              client_name: ctx.clientName,
-              sheet_role: "client",
-              tab_name: t,
-              ...rec,
-              _valuesOnlyLoaded: useValuesOnly,
-              _notesLoaded: !useValuesOnly,
-            };
-            byTab.set(t, fullRec);
-            const existing = _gridMemoryCache.get(`${clientKeyLower}::client::${t}`);
-            if (shouldStoreClientRecordInCache_(existing, { valuesOnly: useValuesOnly, includeNotes: false })) {
-              setGridMemoryCache_(`${clientKeyLower}::client::${t}`, fullRec);
+          const eagerFullTabs = uncachedTabs.filter((t) => EAGER_FULL_LOAD_CLIENT_TABS.has(t));
+          const otherUncachedTabs = uncachedTabs.filter((t) => !EAGER_FULL_LOAD_CLIENT_TABS.has(t));
+          const [eagerMap, otherMap] = await Promise.all([
+            eagerFullTabs.length > 0
+              ? loadNativeClientTabRecordsBatch(ctx, eagerFullTabs, {
+                  source: "db",
+                  valuesOnly: false,
+                  includeNotes: true,
+                })
+              : Promise.resolve({}),
+            otherUncachedTabs.length > 0
+              ? loadNativeClientTabRecordsBatch(ctx, otherUncachedTabs, {
+                  source: "db",
+                  valuesOnly: useValuesOnly,
+                  includeNotes: !useValuesOnly,
+                })
+              : Promise.resolve({}),
+          ]);
+          const applyLoadedNativeBatch_ = (tabList, loadedMap, recValuesOnly, recIncludeNotes) => {
+            for (const t of tabList) {
+              const rec = loadedMap?.[t];
+              if (!rec || !Array.isArray(rec.values_grid) || rec.values_grid.length === 0) continue;
+              const fullRec = {
+                client_id: ctx.clientId,
+                client_name: ctx.clientName,
+                sheet_role: "client",
+                tab_name: t,
+                ...rec,
+                _valuesOnlyLoaded: recValuesOnly,
+                _notesLoaded: recIncludeNotes,
+              };
+              byTab.set(t, fullRec);
+              const existing = _gridMemoryCache.get(`${clientKeyLower}::client::${t}`);
+              if (shouldStoreClientRecordInCache_(existing, { valuesOnly: recValuesOnly, includeNotes: recIncludeNotes })) {
+                setGridMemoryCache_(`${clientKeyLower}::client::${t}`, fullRec);
+              }
             }
-          }
+          };
+          applyLoadedNativeBatch_(eagerFullTabs, eagerMap, false, true);
+          applyLoadedNativeBatch_(otherUncachedTabs, otherMap, useValuesOnly, !useValuesOnly);
         } catch (natErr) {
           console.warn(`[masterEngineService] Native client batchGet fallback (${ctx.clientName}):`, natErr?.message);
         }
@@ -4980,7 +5073,9 @@ export async function handleVirtualSheetsCall({
     const includeGridData = Boolean(params.includeGridData || requestedRanges.length > 0);
     if (sheetRole === "client" && includeGridData && ctx.sheetBridgeMode === "live") {
       await import("./clientSheetBridgeService.js")
-        .then(({ ensureClientSheetBridgeFreshOnRead }) => ensureClientSheetBridgeFreshOnRead(ctx))
+        .then(({ ensureClientSheetBridgeFreshOnRead }) =>
+          ensureClientSheetBridgeFreshOnRead(ctx, { background: !params._forceInboundBridgeCheck })
+        )
         .catch((e) => console.warn("[masterEngineService] Bridge read check warning:", e.message));
     }
     if (

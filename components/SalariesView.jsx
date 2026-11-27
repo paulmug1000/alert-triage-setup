@@ -696,7 +696,7 @@ export default function SalariesView({
         throw new Error(data.error || "Failed to zero out employee amounts");
       }
       setSaveSuccessMsg(`Zeroed out ${ea.name} for ${currentMonth.label}.`);
-      await fetchSalaries(selectedClient, true, true);
+      fetchSalaries(selectedClient, true, true);
     } catch (err) {
       setError(err.message || "Failed to zero out employee amounts");
     } finally {

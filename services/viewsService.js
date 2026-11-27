@@ -724,6 +724,7 @@ export async function handleUpdateViewCell(req, res, sheets) {
         valueInputOption: "USER_ENTERED",
         includeValuesInResponse: true,
         responseValueRenderOption: "FORMATTED_VALUE",
+        _deferBackgroundRecompute: true,
         requestBody: { values: [[safeValue]] }
       })
     );
@@ -979,6 +980,7 @@ export async function handleSpreadViewRow(req, res, sheets) {
         spreadsheetId: sheetIdClean,
         range,
         valueInputOption: "USER_ENTERED",
+        _deferBackgroundRecompute: true,
         requestBody: { values: [safeValues] },
       })
     );
@@ -1193,9 +1195,12 @@ export async function handleUpdateCellNote(req, res, sheets) {
       cleanNote = [sanitizedUserText, ...preservedMetaLines].filter(Boolean).join("\n\n");
     }
 
+    const hasOutgMirror = targetTab === "Outgoings" && rowNum >= 1 && rowNum <= 111 && colIndex < 48;
+
     await withRetry(() =>
       sheets.spreadsheets.batchUpdate({
         spreadsheetId: sheetIdClean,
+        ...(hasOutgMirror ? { _skipFormulaRecompute: true } : { _deferBackgroundRecompute: true }),
         requestBody: {
           requests: [
             {
@@ -1216,13 +1221,17 @@ export async function handleUpdateCellNote(req, res, sheets) {
       })
     );
 
-    if (targetTab === "Outgoings" && rowNum >= 1 && rowNum <= 111 && colIndex < 48) {
+    if (hasOutgMirror) {
       const safeOutgNote = /^[\s'’]*[=+\-@]/.test(cleanNote)
         ? "'" + cleanNote.replace(/^[\s'’]+/, "")
         : cleanNote;
       const outgCellRange = `OutgNotes!${finalColLetter}${rowNum}`;
       const cIdClean = clientSheetId ? unwrapSheetId(extractSheetIdFromUrl(clientSheetId) || clientSheetId) : null;
       const mIdClean = masterSheetId ? unwrapSheetId(extractSheetIdFromUrl(masterSheetId) || masterSheetId) : null;
+      const sbCtx = mIdClean
+        ? await resolveSupabaseSheetContext({ spreadsheetId: sheetIdClean, clientName }).catch(() => null)
+        : null;
+      const shouldMirrorMasterOutgNotes = Boolean(mIdClean) && sbCtx?.masterComputeMode !== "native";
       const outgWrites = [];
       if (cIdClean) {
         outgWrites.push(
@@ -1230,16 +1239,18 @@ export async function handleUpdateCellNote(req, res, sheets) {
             spreadsheetId: cIdClean,
             range: outgCellRange,
             valueInputOption: "RAW",
+            _deferBackgroundRecompute: true,
             requestBody: { values: [[safeOutgNote]] }
           }).catch(() => { })
         );
       }
-      if (mIdClean) {
+      if (shouldMirrorMasterOutgNotes) {
         outgWrites.push(
           sheets.spreadsheets.values.update({
             spreadsheetId: mIdClean,
             range: outgCellRange,
             valueInputOption: "RAW",
+            _deferBackgroundRecompute: true,
             requestBody: { values: [[safeOutgNote]] }
           }).catch(() => { })
         );

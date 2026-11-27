@@ -20,7 +20,7 @@ import {
   isContiguousJobChildRow,
 } from "../../../utils/helpers.js";
 import { flushImmediateAndScheduleBackgroundClientRecomputes, resolveSupabaseSheetContext } from "../../../services/masterEngineService.js";
-import { resolveAuthoritativeJobAnchor, getClientRelationalJobsLookup } from "../../../services/relationalJobsService.js";
+import { resolveAuthoritativeJobAnchor, getClientRelationalJobsLookup, getRecentReconciledJobUuid } from "../../../services/relationalJobsService.js";
 import { relinkNotesForJobChange } from "../../../services/pulseNotesService.js";
 import { buildJobNoteKey, buildJobNoteLabel } from "../../../utils/pulseNotesKeys.js";
 
@@ -65,6 +65,7 @@ export default async function handler(req, res) {
     return res.status(400).json({ success: false, error: "Valid clientSheetId and confirmedRow (>= 2) are required" });
   }
 
+  let didFlushImmediate = false;
   try {
     const sheets = await getSheetsClient();
 
@@ -77,25 +78,27 @@ export default async function handler(req, res) {
     const liveGate = await assertClientPortalLive(sessionUser, verifiedClientName, res);
     if (!liveGate.allowed) return;
 
-    const relationalAnchor = await resolveAuthoritativeJobAnchor({
-      spreadsheetId: clientSheetId,
-      clientName: verifiedClientName,
-      jobUuid,
-      expectedTabName: "Confirmed",
-      fallbackRowNum: !isNaN(parsedCRow) && parsedCRow >= 2 ? parsedCRow : null,
-    });
+    const [relationalAnchor, metaResp] = await Promise.all([
+      resolveAuthoritativeJobAnchor({
+        spreadsheetId: clientSheetId,
+        clientName: verifiedClientName,
+        jobUuid,
+        expectedTabName: "Confirmed",
+        fallbackRowNum: !isNaN(parsedCRow) && parsedCRow >= 2 ? parsedCRow : null,
+      }),
+      withRetry(() =>
+        sheets.spreadsheets.get({
+          spreadsheetId: clientSheetId,
+          fields: "sheets(properties,rowGroups)",
+        })
+      ),
+    ]);
     const cRow = relationalAnchor?.rowNum;
     if (isNaN(cRow) || cRow < 2) {
       return res.status(400).json({ success: false, error: "Valid clientSheetId and confirmedRow (>= 2) are required" });
     }
 
     // 1. Get sheet metadata
-    const metaResp = await withRetry(() =>
-      sheets.spreadsheets.get({
-        spreadsheetId: clientSheetId,
-        fields: "sheets(properties,rowGroups)",
-      })
-    );
     const sheetMetaList = metaResp.data?.sheets || [];
     const confirmedSheetObj = resolveEditableJobSheetMeta(sheetMetaList, "confirmed");
     const pipelineSheetObj = resolveEditableJobSheetMeta(sheetMetaList, "pipeline");
@@ -596,6 +599,7 @@ export default async function handler(req, res) {
 
     // 8. Flush immediate recomputes BEFORE invalidating caches so Portal/PMA reads reflect the demoted job immediately
     await flushImmediateAndScheduleBackgroundClientRecomputes(sheets, verifiedClientName || clientName || "").catch(() => { });
+    didFlushImmediate = true;
 
     // 9. Invalidate In-Memory and Redis caches across both Portal and PMA
     try {
@@ -643,10 +647,12 @@ export default async function handler(req, res) {
       newJobLabel: buildJobNoteLabel({ client: parentClient, jobName: parentJobName }),
     }).catch(() => { });
 
-    await flushImmediateAndScheduleBackgroundClientRecomputes().catch(() => { });
-
-    let pipelineJobUuid = null;
-    if (relationalAnchor?.isRelational) {
+    let pipelineJobUuid = getRecentReconciledJobUuid(
+      verifiedClientName || clientName || parentClient || "",
+      "Pipeline",
+      pipelineRow
+    );
+    if (!pipelineJobUuid && relationalAnchor?.isRelational) {
       try {
         const relLookup = await getClientRelationalJobsLookup(verifiedClientName || clientName || parentClient || "");
         pipelineJobUuid = relLookup?.jobsByTabAndRow?.get(`pipeline:${pipelineRow}`)?.id || null;
@@ -668,6 +674,8 @@ export default async function handler(req, res) {
       error: sessionUser?.isAdmin ? err.message : sanitizeSpreadsheetTerms(err.message || "Request failed.")
     });
   } finally {
-    await flushImmediateAndScheduleBackgroundClientRecomputes().catch(() => { });
+    if (!didFlushImmediate) {
+      await flushImmediateAndScheduleBackgroundClientRecomputes().catch(() => { });
+    }
   }
 }

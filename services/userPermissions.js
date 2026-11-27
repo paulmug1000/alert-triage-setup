@@ -91,139 +91,159 @@ export async function ensureUsersTab(sheets) {
 
 let _usersMemoryCache = null;
 let _usersCachedAt = 0;
+let _inFlightGetAllUsers = null;
 
 /**
- * Get all users from the Users sheet (cached in Redis for 5 minutes and in-memory for 60 seconds)
+ * Get all users from the Users sheet (cached in Redis for 5 minutes and in-memory for 15 seconds)
  */
 export async function getAllUsers(sheets, _ignoredAcId = DEFAULT_AC_SHEET_ID, bypassCache = false) {
   const acId = getCanonicalAcSheetId();
   const now = Date.now();
 
-  if (!bypassCache && _usersMemoryCache && (now - _usersCachedAt < 2000)) {
+  if (!bypassCache && _usersMemoryCache && (now - _usersCachedAt < 15000)) {
     return _usersMemoryCache;
   }
 
-  // Try Redis cache
-  if (!bypassCache) {
-    try {
-      const cached = await redisClient.get(REDIS_USERS_KEY);
-      if (cached) {
-        const parsed = JSON.parse(cached);
-        _usersMemoryCache = parsed;
-        _usersCachedAt = now;
-        return parsed;
-      }
-    } catch (e) {
-      console.warn("⚠️ Redis get users cache error:", e.message);
-    }
+  if (!bypassCache && _inFlightGetAllUsers) {
+    return _inFlightGetAllUsers;
   }
 
-  // Try Supabase users table when active
-  if (await isSupabaseControlPlaneActive()) {
+  const runLoad = async () => {
+    const loadNow = Date.now();
+    // Try Redis cache
+    if (!bypassCache) {
+      try {
+        const cached = await redisClient.get(REDIS_USERS_KEY);
+        if (cached) {
+          const parsed = JSON.parse(cached);
+          _usersMemoryCache = parsed;
+          _usersCachedAt = loadNow;
+          return parsed;
+        }
+      } catch (e) {
+        console.warn("⚠️ Redis get users cache error:", e.message);
+      }
+    }
+
+    // Try Supabase users table when active
+    if (await isSupabaseControlPlaneActive()) {
+      try {
+        const sb = getSupabaseAdmin();
+        const { data: rows, error } = await sb
+          .from("users")
+          .select("*")
+          .order("sheet_row_index", { ascending: true });
+        if (!error && Array.isArray(rows) && rows.length > 0) {
+          const users = rows.map((r, idx) => {
+            const email = String(r.email || "").toLowerCase().trim();
+            const role = r.role || "ClientUser";
+            const assignedArr = Array.isArray(r.assigned_clients) ? r.assigned_clients : [];
+            const assignedClients = (role === "Admin" && assignedArr.includes("*"))
+              ? "*"
+              : assignedArr.filter(c => c && c !== "*");
+            return {
+              rowIndex: r.sheet_row_index || idx + 2,
+              email,
+              name: r.full_name || email.split("@")[0],
+              role,
+              isAdmin: role === "Admin",
+              isSenior: role === "Senior (Restricted)",
+              isClientUser: role === "ClientUser",
+              assignedClients,
+              status: r.status === "Suspended" ? "Suspended" : "Active",
+              createdAt: r.created_at || "",
+              lastLoginAt: r.last_login_at || "",
+              dailyAlertsEmail: r.daily_alerts_email === "No" ? "No" : "Yes",
+            };
+          });
+          _usersMemoryCache = users;
+          _usersCachedAt = loadNow;
+          try {
+            await redisClient.set(REDIS_USERS_KEY, JSON.stringify(users), { EX: REDIS_USERS_TTL_SECS });
+          } catch (_) { }
+          return users;
+        }
+      } catch (sbErr) {
+        console.warn("⚠️ Supabase getAllUsers fallback to sheet:", sbErr.message);
+      }
+    }
+
+    const activeSheets = sheets || (await getSheetsClient());
+    await ensureUsersTab(activeSheets);
+
     try {
-      const sb = getSupabaseAdmin();
-      const { data: rows, error } = await sb
-        .from("users")
-        .select("*")
-        .order("sheet_row_index", { ascending: true });
-      if (!error && Array.isArray(rows) && rows.length > 0) {
-        const users = rows.map((r, idx) => {
-          const email = String(r.email || "").toLowerCase().trim();
-          const role = r.role || "ClientUser";
-          const assignedArr = Array.isArray(r.assigned_clients) ? r.assigned_clients : [];
-          const assignedClients = (role === "Admin" && assignedArr.includes("*"))
-            ? "*"
-            : assignedArr.filter(c => c && c !== "*");
+      const resp = await withRetry(() => activeSheets.spreadsheets.values.get({
+        spreadsheetId: acId,
+        range: `${USERS_TAB}!A2:H500`
+      }));
+
+      const rows = resp.data.values || [];
+      const users = rows
+        .map((row, idx) => {
+          if (!row || !row[0] || String(row[0]).trim().length === 0) return null;
+          const email = String(row[0] || "").toLowerCase().trim();
+          const name = String(row[1] || "").trim();
+          const roleRaw = String(row[2] || "").trim();
+          const roleLower = roleRaw.toLowerCase();
+          let role = "ClientUser";
+          if (roleLower === "admin") {
+            role = "Admin";
+          } else if (roleLower.includes("senior")) {
+            role = "Senior (Restricted)";
+          } else if (roleLower === "clientmanager" || roleLower === "client manager" || roleLower === "manager") {
+            role = "ClientManager";
+          } else if (roleLower === "clientuser" || roleLower === "client user" || roleLower === "client") {
+            role = "ClientUser";
+          }
+
+          const assignedRaw = String(row[3] || "").trim();
+          const assignedClients = (role === "Admin" && assignedRaw === "*") ? "*" : assignedRaw.split(",").map(c => c.trim()).filter(Boolean && (c => c !== "*"));
+          const status = String(row[4] || "").trim().toLowerCase() === "suspended" ? "Suspended" : "Active";
+          const createdAt = row[5] || "";
+          const lastLoginAt = row[6] || "";
+          const dailyAlertsEmail = String(row[7] || "").trim().toLowerCase() === "no" ? "No" : "Yes";
+
           return {
-            rowIndex: r.sheet_row_index || idx + 2,
+            rowIndex: idx + 2, // 1-indexed spreadsheet row matching A2:H500 offset
             email,
-            name: r.full_name || email.split("@")[0],
+            name: name || email.split("@")[0],
             role,
             isAdmin: role === "Admin",
             isSenior: role === "Senior (Restricted)",
             isClientUser: role === "ClientUser",
             assignedClients,
-            status: r.status === "Suspended" ? "Suspended" : "Active",
-            createdAt: r.created_at || "",
-            lastLoginAt: r.last_login_at || "",
-            dailyAlertsEmail: r.daily_alerts_email === "No" ? "No" : "Yes",
+            status,
+            createdAt,
+            lastLoginAt,
+            dailyAlertsEmail
           };
-        });
-        _usersMemoryCache = users;
-        _usersCachedAt = now;
-        try {
-          await redisClient.set(REDIS_USERS_KEY, JSON.stringify(users), { EX: REDIS_USERS_TTL_SECS });
-        } catch (_) { }
-        return users;
+        })
+        .filter(Boolean);
+
+      _usersMemoryCache = users;
+      _usersCachedAt = loadNow;
+      // Save to Redis
+      try {
+        await redisClient.set(REDIS_USERS_KEY, JSON.stringify(users), { EX: REDIS_USERS_TTL_SECS });
+      } catch (e) {
+        console.warn("⚠️ Redis set users cache error:", e.message);
       }
-    } catch (sbErr) {
-      console.warn("⚠️ Supabase getAllUsers fallback to sheet:", sbErr.message);
+
+      return users;
+    } catch (err) {
+      console.error("❌ Error fetching users from database:", err.message);
+      return [];
     }
+  };
+
+  if (bypassCache) {
+    return runLoad();
   }
-
-  const activeSheets = sheets || (await getSheetsClient());
-  await ensureUsersTab(activeSheets);
-
+  _inFlightGetAllUsers = runLoad();
   try {
-    const resp = await withRetry(() => activeSheets.spreadsheets.values.get({
-      spreadsheetId: acId,
-      range: `${USERS_TAB}!A2:H500`
-    }));
-
-    const rows = resp.data.values || [];
-    const users = rows
-      .map((row, idx) => {
-        if (!row || !row[0] || String(row[0]).trim().length === 0) return null;
-        const email = String(row[0] || "").toLowerCase().trim();
-        const name = String(row[1] || "").trim();
-        const roleRaw = String(row[2] || "").trim();
-        const roleLower = roleRaw.toLowerCase();
-        let role = "ClientUser";
-        if (roleLower === "admin") {
-          role = "Admin";
-        } else if (roleLower.includes("senior")) {
-          role = "Senior (Restricted)";
-        } else if (roleLower === "clientmanager" || roleLower === "client manager" || roleLower === "manager") {
-          role = "ClientManager";
-        } else if (roleLower === "clientuser" || roleLower === "client user" || roleLower === "client") {
-          role = "ClientUser";
-        }
-
-        const assignedRaw = String(row[3] || "").trim();
-        const assignedClients = (role === "Admin" && assignedRaw === "*") ? "*" : assignedRaw.split(",").map(c => c.trim()).filter(Boolean && (c => c !== "*"));
-        const status = String(row[4] || "").trim().toLowerCase() === "suspended" ? "Suspended" : "Active";
-        const createdAt = row[5] || "";
-        const lastLoginAt = row[6] || "";
-        const dailyAlertsEmail = String(row[7] || "").trim().toLowerCase() === "no" ? "No" : "Yes";
-
-        return {
-          rowIndex: idx + 2, // 1-indexed spreadsheet row matching A2:H500 offset
-          email,
-          name: name || email.split("@")[0],
-          role,
-          isAdmin: role === "Admin",
-          isSenior: role === "Senior (Restricted)",
-          isClientUser: role === "ClientUser",
-          assignedClients,
-          status,
-          createdAt,
-          lastLoginAt,
-          dailyAlertsEmail
-        };
-      })
-      .filter(Boolean);
-
-    // Save to Redis
-    try {
-      await redisClient.set(REDIS_USERS_KEY, JSON.stringify(users), { EX: REDIS_USERS_TTL_SECS });
-    } catch (e) {
-      console.warn("⚠️ Redis set users cache error:", e.message);
-    }
-
-    return users;
-  } catch (err) {
-    console.error("❌ Error fetching users from database:", err.message);
-    return [];
+    return await _inFlightGetAllUsers;
+  } finally {
+    _inFlightGetAllUsers = null;
   }
 }
 
@@ -370,89 +390,152 @@ export function matchesClientName(assignedIdentifier, actualClientName) {
 const clientSheetIdToNameCache = new Map();
 const clientNameToMasterIdCache = new Map();
 const clientNameToClientIdCache = new Map();
+let _sheetMappingsCachedAt = 0;
+let _inFlightSheetMappings = null;
+
+export function clearUserPermissionsClientMappingCache() {
+  _sheetMappingsCachedAt = 0;
+  clientSheetIdToNameCache.clear();
+  clientNameToMasterIdCache.clear();
+  clientNameToClientIdCache.clear();
+}
 
 function normalizeClientKeyForLookup(str) {
   return String(str || "").trim().toLowerCase().replace(/[^a-z0-9_-]/g, "_");
 }
 
-async function refreshAutoUpdatesSheetMappings(sheets) {
-  if (await isSupabaseControlPlaneActive()) {
-    try {
-      const sb = getSupabaseAdmin();
-      const { data: clients, error } = await sb
-        .from("clients")
-        .select("client_name, normalized_key, client_sheet_id, master_sheet_id, recon_sheet_id, client_mode, master_mode, metadata");
-      if (!error && Array.isArray(clients) && clients.length > 0) {
-        for (const c of clients) {
-          const cName = String(c.client_name || "").trim();
-          const normKey = String(c.normalized_key || normalizeClientKeyForLookup(cName)).trim();
-          const rId =
-            String(c.recon_sheet_id || "").trim() ||
-            ((c.metadata?.reconMode === "supabase" || c.master_mode === "supabase") && normKey
-              ? `sb-recon-${normKey}`
-              : "");
-          const cId =
-            String(c.client_sheet_id || "").trim() ||
-            (c.client_mode === "supabase" && normKey ? `sb-client-${normKey}` : "");
-          const mId =
-            String(c.master_sheet_id || "").trim() ||
-            (c.master_mode === "supabase" && normKey ? `sb-master-${normKey}` : "");
-          if (rId && cName) clientSheetIdToNameCache.set(rId, cName);
-          if (cId && cName) {
-            clientSheetIdToNameCache.set(cId, cName);
-            clientNameToClientIdCache.set(cName.toLowerCase(), cId);
-            clientNameToClientIdCache.set(normalizeClientKeyForLookup(cName), cId);
-          }
-          if (mId && cName) {
-            clientSheetIdToNameCache.set(mId, cName);
-            clientNameToMasterIdCache.set(cName.toLowerCase(), mId);
-            clientNameToMasterIdCache.set(normalizeClientKeyForLookup(cName), mId);
-          }
-          if (cName && normKey) {
-            if (c.client_mode === "supabase") {
-              clientSheetIdToNameCache.set(`sb-client-${normKey}`, cName);
-            }
-            if (c.master_mode === "supabase") {
-              clientSheetIdToNameCache.set(`sb-master-${normKey}`, cName);
-              clientSheetIdToNameCache.set(`sb-recon-${normKey}`, cName);
-            }
-          }
-        }
-        return;
-      }
-    } catch (_) { }
+async function refreshAutoUpdatesSheetMappings(sheets, { force = false } = {}) {
+  const now = Date.now();
+  if (!force && _sheetMappingsCachedAt && now - _sheetMappingsCachedAt < 30000 && clientSheetIdToNameCache.size > 0) {
+    return;
+  }
+  if (_inFlightSheetMappings) {
+    return _inFlightSheetMappings;
   }
 
-  if (!sheets) return;
-  const acId = getCanonicalAcSheetId();
-  const resp = await withRetry(() =>
-    sheets.spreadsheets.values.get({
-      spreadsheetId: acId,
-      range: "AutoUpdates!A2:N500"
-    })
-  );
-  const rows = resp.data.values || [];
-  for (const r of rows) {
-    const cName = String(r[0] || "").trim();
-    const reconUrl = String(r[9] || "").trim();
-    const clientUrl = String(r[11] || "").trim();
-    const masterUrl = String(r[12] || "").trim();
-    const rId = extractSheetIdFromUrl(reconUrl) || reconUrl;
-    const cId = extractSheetIdFromUrl(clientUrl) || clientUrl;
-    const mId = extractSheetIdFromUrl(masterUrl) || masterUrl;
-    if (rId && cName) {
-      clientSheetIdToNameCache.set(rId, cName);
+  _inFlightSheetMappings = (async () => {
+    if (await isSupabaseControlPlaneActive()) {
+      try {
+        const { getAllCachedSupabaseSheetContexts } = await import("./masterEngineService.js");
+        const cachedContexts = await getAllCachedSupabaseSheetContexts().catch(() => []);
+        if (Array.isArray(cachedContexts) && cachedContexts.length > 0) {
+          for (const ctx of cachedContexts) {
+            const cName = String(ctx.clientName || "").trim();
+            const normKey = String(ctx.normalizedKey || normalizeClientKeyForLookup(cName)).trim();
+            const rId = String(ctx.reconSheetId || "").trim();
+            const cId = String(ctx.clientSheetId || "").trim();
+            const mId = String(ctx.masterSheetId || "").trim();
+            if (rId && cName) clientSheetIdToNameCache.set(rId, cName);
+            if (cId && cName) {
+              clientSheetIdToNameCache.set(cId, cName);
+              clientNameToClientIdCache.set(cName.toLowerCase(), cId);
+              clientNameToClientIdCache.set(normalizeClientKeyForLookup(cName), cId);
+            }
+            if (mId && cName) {
+              clientSheetIdToNameCache.set(mId, cName);
+              clientNameToMasterIdCache.set(cName.toLowerCase(), mId);
+              clientNameToMasterIdCache.set(normalizeClientKeyForLookup(cName), mId);
+            }
+            if (cName && normKey) {
+              if (ctx.clientMode === "supabase") {
+                clientSheetIdToNameCache.set(`sb-client-${normKey}`, cName);
+              }
+              if (ctx.masterMode === "supabase") {
+                clientSheetIdToNameCache.set(`sb-master-${normKey}`, cName);
+                clientSheetIdToNameCache.set(`sb-recon-${normKey}`, cName);
+              }
+            }
+          }
+          _sheetMappingsCachedAt = Date.now();
+          return;
+        }
+      } catch (_) { }
+
+      try {
+        const sb = getSupabaseAdmin();
+        const { data: clients, error } = await sb
+          .from("clients")
+          .select("client_name, normalized_key, client_sheet_id, master_sheet_id, recon_sheet_id, client_mode, master_mode, metadata");
+        if (!error && Array.isArray(clients) && clients.length > 0) {
+          for (const c of clients) {
+            const cName = String(c.client_name || "").trim();
+            const normKey = String(c.normalized_key || normalizeClientKeyForLookup(cName)).trim();
+            const rId =
+              String(c.recon_sheet_id || "").trim() ||
+              ((c.metadata?.reconMode === "supabase" || c.master_mode === "supabase") && normKey
+                ? `sb-recon-${normKey}`
+                : "");
+            const cId =
+              String(c.client_sheet_id || "").trim() ||
+              (c.client_mode === "supabase" && normKey ? `sb-client-${normKey}` : "");
+            const mId =
+              String(c.master_sheet_id || "").trim() ||
+              (c.master_mode === "supabase" && normKey ? `sb-master-${normKey}` : "");
+            if (rId && cName) clientSheetIdToNameCache.set(rId, cName);
+            if (cId && cName) {
+              clientSheetIdToNameCache.set(cId, cName);
+              clientNameToClientIdCache.set(cName.toLowerCase(), cId);
+              clientNameToClientIdCache.set(normalizeClientKeyForLookup(cName), cId);
+            }
+            if (mId && cName) {
+              clientSheetIdToNameCache.set(mId, cName);
+              clientNameToMasterIdCache.set(cName.toLowerCase(), mId);
+              clientNameToMasterIdCache.set(normalizeClientKeyForLookup(cName), mId);
+            }
+            if (cName && normKey) {
+              if (c.client_mode === "supabase") {
+                clientSheetIdToNameCache.set(`sb-client-${normKey}`, cName);
+              }
+              if (c.master_mode === "supabase") {
+                clientSheetIdToNameCache.set(`sb-master-${normKey}`, cName);
+                clientSheetIdToNameCache.set(`sb-recon-${normKey}`, cName);
+              }
+            }
+          }
+          _sheetMappingsCachedAt = Date.now();
+          return;
+        }
+      } catch (_) { }
     }
-    if (cId && cName) {
-      clientSheetIdToNameCache.set(cId, cName);
-      clientNameToClientIdCache.set(cName.toLowerCase(), cId);
-      clientNameToClientIdCache.set(normalizeClientKeyForLookup(cName), cId);
+
+    if (!sheets) return;
+    const acId = getCanonicalAcSheetId();
+    const resp = await withRetry(() =>
+      sheets.spreadsheets.values.get({
+        spreadsheetId: acId,
+        range: "AutoUpdates!A2:N500"
+      })
+    );
+    const rows = resp.data.values || [];
+    for (const r of rows) {
+      const cName = String(r[0] || "").trim();
+      const reconUrl = String(r[9] || "").trim();
+      const clientUrl = String(r[11] || "").trim();
+      const masterUrl = String(r[12] || "").trim();
+      const rId = extractSheetIdFromUrl(reconUrl) || reconUrl;
+      const cId = extractSheetIdFromUrl(clientUrl) || clientUrl;
+      const mId = extractSheetIdFromUrl(masterUrl) || masterUrl;
+      if (rId && cName) {
+        clientSheetIdToNameCache.set(rId, cName);
+      }
+      if (cId && cName) {
+        clientSheetIdToNameCache.set(cId, cName);
+        clientNameToClientIdCache.set(cName.toLowerCase(), cId);
+        clientNameToClientIdCache.set(normalizeClientKeyForLookup(cName), cId);
+      }
+      if (mId && cName) {
+        clientSheetIdToNameCache.set(mId, cName);
+        clientNameToMasterIdCache.set(cName.toLowerCase(), mId);
+        clientNameToMasterIdCache.set(normalizeClientKeyForLookup(cName), mId);
+      }
     }
-    if (mId && cName) {
-      clientSheetIdToNameCache.set(mId, cName);
-      clientNameToMasterIdCache.set(cName.toLowerCase(), mId);
-      clientNameToMasterIdCache.set(normalizeClientKeyForLookup(cName), mId);
-    }
+    _sheetMappingsCachedAt = Date.now();
+  })();
+
+  try {
+    await _inFlightSheetMappings;
+  } finally {
+    _inFlightSheetMappings = null;
   }
 }
 
@@ -468,7 +551,7 @@ export async function resolveClientNameBySheetId(sheets, sheetId, _ignoredAcId =
     return clientSheetIdToNameCache.get(cleanId);
   }
   try {
-    await refreshAutoUpdatesSheetMappings(sheets);
+    await refreshAutoUpdatesSheetMappings(sheets, { force: true });
     if (clientSheetIdToNameCache.has(cleanId)) {
       return clientSheetIdToNameCache.get(cleanId);
     }
@@ -488,7 +571,7 @@ export async function resolveClientSheetIdByClientName(sheets, clientNameOrKey) 
   if (clientNameToClientIdCache.has(rawLower)) return clientNameToClientIdCache.get(rawLower);
   if (clientNameToClientIdCache.has(normKey)) return clientNameToClientIdCache.get(normKey);
   try {
-    await refreshAutoUpdatesSheetMappings(sheets);
+    await refreshAutoUpdatesSheetMappings(sheets, { force: true });
     if (clientNameToClientIdCache.has(rawLower)) return clientNameToClientIdCache.get(rawLower);
     if (clientNameToClientIdCache.has(normKey)) return clientNameToClientIdCache.get(normKey);
   } catch (err) {
@@ -507,7 +590,7 @@ export async function resolveMasterSheetIdByClientName(sheets, clientNameOrKey) 
   if (clientNameToMasterIdCache.has(rawLower)) return clientNameToMasterIdCache.get(rawLower);
   if (clientNameToMasterIdCache.has(normKey)) return clientNameToMasterIdCache.get(normKey);
   try {
-    await refreshAutoUpdatesSheetMappings(sheets);
+    await refreshAutoUpdatesSheetMappings(sheets, { force: true });
     if (clientNameToMasterIdCache.has(rawLower)) return clientNameToMasterIdCache.get(rawLower);
     if (clientNameToMasterIdCache.has(normKey)) return clientNameToMasterIdCache.get(normKey);
   } catch (err) {
@@ -539,8 +622,11 @@ export async function verifyUserAuthorizedForSheet(arg1, arg2, arg3, arg4, _igno
   }
 
   // Refresh permissions from live user directory so client assignment / role / suspension changes apply immediately
+  // (Skip duplicate lookup when resolveLiveSessionUser just verified this user on the active request.)
   let effectiveUser = sessionUser;
-  if (sessionUser.email) {
+  const recentlyVerified =
+    sessionUser._liveVerifiedAt && Date.now() - sessionUser._liveVerifiedAt < 5000;
+  if (sessionUser.email && !recentlyVerified) {
     try {
       const users = await getAllUsers(sheets, getCanonicalAcSheetId());
       if (Array.isArray(users) && users.length > 0) {

@@ -871,6 +871,7 @@ export async function handleRenameRetainerJob(req, res, sheets) {
       if (data.length > 0) {
         await sheets.spreadsheets.values.batchUpdate({
           spreadsheetId: sheetIdClean,
+          _skipFormulaRecompute: true,
           requestBody: { valueInputOption: "USER_ENTERED", data },
         });
       }
@@ -892,6 +893,7 @@ export async function handleRenameRetainerJob(req, res, sheets) {
     const data = targetRows.map(rn => ({ range: `Confirmed!B${rn}`, values: [[newJobName]] }));
     await sheets.spreadsheets.values.batchUpdate({
       spreadsheetId: sheetIdClean,
+      _skipFormulaRecompute: true,
       requestBody: { valueInputOption: "RAW", data },
     });
 
@@ -1052,7 +1054,7 @@ export async function executeChangeRetainerEndDate(sheets, params = {}) {
       if (toTrim.length === 0) {
         await sheets.spreadsheets.values.update({
           spreadsheetId: sheetIdClean, range: `Confirmed!${endDateCol}${parentRowNum}`,
-          valueInputOption: "USER_ENTERED", requestBody: { values: [[sanitizeFormulaInput(formattedNewEndDate)]] },
+          valueInputOption: "USER_ENTERED", _skipFormulaRecompute: true, requestBody: { values: [[sanitizeFormulaInput(formattedNewEndDate)]] },
         });
         await flushAndInvalidateRetainerCache_(sheets, sheetIdClean, masterSheetId, ["jobs", "invoices", "retainers", "cash"]).catch(e => console.warn("Cache invalidate failed in executeChangeRetainerEndDate:", e.message));
         return { success: true, trimmed: 0, grown: 0, trimmedRowNums: [], addedChildRows: [] };
@@ -1191,6 +1193,7 @@ export async function executeChangeRetainerEndDate(sheets, params = {}) {
       ];
       await sheets.spreadsheets.values.batchUpdate({
         spreadsheetId: sheetIdClean,
+        _skipFormulaRecompute: true,
         requestBody: { valueInputOption: "USER_ENTERED", data: parentUpdateData },
       });
 
@@ -1223,7 +1226,7 @@ export async function executeChangeRetainerEndDate(sheets, params = {}) {
       if (childRows.length >= targetCount) {
         await sheets.spreadsheets.values.update({
           spreadsheetId: sheetIdClean, range: `Confirmed!${endDateCol}${parentRowNum}`,
-          valueInputOption: "USER_ENTERED", requestBody: { values: [[formattedNewEndDate]] },
+          valueInputOption: "USER_ENTERED", _skipFormulaRecompute: true, requestBody: { values: [[formattedNewEndDate]] },
         });
         await flushAndInvalidateRetainerCache_(sheets, sheetIdClean, masterSheetId, ["jobs", "invoices", "retainers", "cash"]).catch(e => console.warn("Cache invalidate failed in executeChangeRetainerEndDate:", e.message));
         return { success: true, trimmed: 0, grown: 0, trimmedRowNums: [], addedChildRows: [] };
@@ -1271,7 +1274,7 @@ export async function executeChangeRetainerEndDate(sheets, params = {}) {
       if (newRowDates.length === 0) {
         await sheets.spreadsheets.values.update({
           spreadsheetId: sheetIdClean, range: `Confirmed!${endDateCol}${parentRowNum}`,
-          valueInputOption: "USER_ENTERED", requestBody: { values: [[formattedNewEndDate]] },
+          valueInputOption: "USER_ENTERED", _skipFormulaRecompute: true, requestBody: { values: [[formattedNewEndDate]] },
         });
         await flushAndInvalidateRetainerCache_(sheets, sheetIdClean, masterSheetId, ["jobs", "invoices", "retainers", "cash"]).catch(e => console.warn("Cache invalidate failed in executeChangeRetainerEndDate:", e.message));
         return { success: true, trimmed: 0, grown: 0, trimmedRowNums: [], addedChildRows: [] };
@@ -1433,6 +1436,7 @@ export async function executeChangeRetainerEndDate(sheets, params = {}) {
 
       await sheets.spreadsheets.values.batchUpdate({
         spreadsheetId: sheetIdClean,
+        _skipFormulaRecompute: true,
         requestBody: { valueInputOption: "USER_ENTERED", data: allWrites },
       });
 
@@ -1759,6 +1763,7 @@ export async function executeChangeRetainerStartDate(sheets, params = {}) {
       }
       await sheets.spreadsheets.values.batchUpdate({
         spreadsheetId: sheetIdClean,
+        _skipFormulaRecompute: true,
         requestBody: { valueInputOption: "USER_ENTERED", data: allUpdates },
       });
 
@@ -1917,6 +1922,7 @@ export async function executeChangeRetainerStartDate(sheets, params = {}) {
 
       await sheets.spreadsheets.values.batchUpdate({
         spreadsheetId: sheetIdClean,
+        _skipFormulaRecompute: true,
         requestBody: { valueInputOption: "USER_ENTERED", data: allUpdates },
       });
 
@@ -1941,6 +1947,7 @@ export async function executeChangeRetainerStartDate(sheets, params = {}) {
       }
       await sheets.spreadsheets.values.batchUpdate({
         spreadsheetId: sheetIdClean,
+        _skipFormulaRecompute: true,
         requestBody: { valueInputOption: "USER_ENTERED", data: allUpdates },
       });
     }
@@ -2175,6 +2182,7 @@ export async function handleChangeRetainerSendDates(req, res, sheets) {
     if (batchData.length > 0) {
       await sheets.spreadsheets.values.batchUpdate({
         spreadsheetId: sheetIdClean,
+        _skipFormulaRecompute: true,
         requestBody: { valueInputOption: "USER_ENTERED", data: batchData },
       });
     }
@@ -2291,6 +2299,7 @@ export async function handleChangeRetainerMonthlyAmount(req, res, sheets) {
 
       await sheets.spreadsheets.values.batchUpdate({
         spreadsheetId: sheetIdClean,
+        _skipFormulaRecompute: true,
         requestBody: { valueInputOption: "RAW", data: updateData },
       });
 
@@ -2615,16 +2624,18 @@ export async function handleChangeRetainerMonthlyAmount(req, res, sheets) {
     await sheets.spreadsheets.values.batchUpdate({
       spreadsheetId: sheetIdClean,
       requestBody: { valueInputOption: "USER_ENTERED", data: allWriteData },
-      _skipFormulaRecompute: clearRanges.length > 0,
+      _skipFormulaRecompute: true,
     });
     if (clearRanges.length > 0) {
       await sheets.spreadsheets.values.batchClear({
         spreadsheetId: sheetIdClean,
+        _skipFormulaRecompute: true,
         requestBody: { ranges: clearRanges },
       });
       if (restoreAfterClear.length > 0) {
         await sheets.spreadsheets.values.batchUpdate({
           spreadsheetId: sheetIdClean,
+          _skipFormulaRecompute: true,
           requestBody: { valueInputOption: "USER_ENTERED", data: restoreAfterClear },
         });
       }
@@ -3943,6 +3954,7 @@ export async function createVariableRetainerSeries_(sheets, params = {}) {
   await withRetry(() =>
     sheets.spreadsheets.values.batchUpdate({
       spreadsheetId: sheetIdClean,
+      _skipFormulaRecompute: true,
       requestBody: { valueInputOption: "USER_ENTERED", data: allWriteData },
     })
   );
@@ -4112,6 +4124,7 @@ export async function handleCreateRetainerJob(req, res, sheets) {
     await withRetry(() =>
       sheets.spreadsheets.values.batchUpdate({
         spreadsheetId: sheetIdClean,
+        _skipFormulaRecompute: true,
         requestBody: { valueInputOption: "USER_ENTERED", data: allWriteData },
       })
     );
@@ -4973,7 +4986,7 @@ export async function handleApplyRetainerSplitInvoice(req, res, sheets) {
       }
 
       await sheets.spreadsheets.values.batchUpdate({
-        spreadsheetId: sheetIdClean, requestBody: { valueInputOption: "USER_ENTERED", data: rechWriteData },
+        spreadsheetId: sheetIdClean, _skipFormulaRecompute: true, requestBody: { valueInputOption: "USER_ENTERED", data: rechWriteData },
       });
 
       await flushAndInvalidateRetainerCache_(sheets, sheetIdClean, masterSheetId, ["jobs", "invoices", "retainers", "cash"]).catch(() => { });
@@ -5026,7 +5039,7 @@ export async function handleApplyRetainerSplitInvoice(req, res, sheets) {
         { range: `Confirmed!AP${existingConfirmedRow}`, values: [[diffNum]] },
       );
       await sheets.spreadsheets.values.batchUpdate({
-        spreadsheetId: sheetIdClean, requestBody: { valueInputOption: "USER_ENTERED", data: writeData },
+        spreadsheetId: sheetIdClean, _skipFormulaRecompute: true, requestBody: { valueInputOption: "USER_ENTERED", data: writeData },
       });
       await flushAndInvalidateRetainerCache_(sheets, sheetIdClean, masterSheetId, ["jobs", "invoices", "retainers", "cash"]).catch(() => { });
       return res.status(200).json({
@@ -5078,7 +5091,7 @@ export async function handleApplyRetainerSplitInvoice(req, res, sheets) {
       if (parsedAltSentDate) writeData.push({ range: `Confirmed!AR${newRowNum}`, values: [[retFmtDate(parsedAltSentDate)]] });
 
       await sheets.spreadsheets.values.batchUpdate({
-        spreadsheetId: sheetIdClean, requestBody: { valueInputOption: "USER_ENTERED", data: writeData },
+        spreadsheetId: sheetIdClean, _skipFormulaRecompute: true, requestBody: { valueInputOption: "USER_ENTERED", data: writeData },
       });
 
       await flushAndInvalidateRetainerCache_(sheets, sheetIdClean, masterSheetId, ["jobs", "invoices", "retainers", "cash"]).catch(() => { });
@@ -5242,6 +5255,7 @@ export async function handleDeleteRetainer(req, res, sheets) {
       await withRetry(() =>
         sheets.spreadsheets.values.batchClear({
           spreadsheetId: sheetIdClean,
+          _skipFormulaRecompute: true,
           requestBody: { ranges: clearRanges },
         })
       );
@@ -5249,6 +5263,7 @@ export async function handleDeleteRetainer(req, res, sheets) {
         await withRetry(() =>
           sheets.spreadsheets.values.batchUpdate({
             spreadsheetId: sheetIdClean,
+            _skipFormulaRecompute: true,
             requestBody: { valueInputOption: "USER_ENTERED", data: restoreData },
           })
         );
@@ -5375,6 +5390,7 @@ export async function handleDeleteRetainer(req, res, sheets) {
     await withRetry(() =>
       sheets.spreadsheets.values.batchClear({
         spreadsheetId: sheetIdClean,
+        _skipFormulaRecompute: true,
         requestBody: { ranges: clearRanges },
       })
     );
@@ -5382,6 +5398,7 @@ export async function handleDeleteRetainer(req, res, sheets) {
       await withRetry(() =>
         sheets.spreadsheets.values.batchUpdate({
           spreadsheetId: sheetIdClean,
+          _skipFormulaRecompute: true,
           requestBody: { valueInputOption: "USER_ENTERED", data: restoreData },
         })
       );
@@ -5591,6 +5608,7 @@ export async function handleUpdateVariableRetainerBase(req, res, sheets) {
       await withRetry(() =>
         sheets.spreadsheets.values.batchClear({
           spreadsheetId: sheetIdClean,
+          _skipFormulaRecompute: true,
           requestBody: { ranges: clearRanges },
         })
       );
@@ -5598,6 +5616,7 @@ export async function handleUpdateVariableRetainerBase(req, res, sheets) {
         await withRetry(() =>
           sheets.spreadsheets.values.batchUpdate({
             spreadsheetId: sheetIdClean,
+            _skipFormulaRecompute: true,
             requestBody: { valueInputOption: "USER_ENTERED", data: restoreData },
           })
         );
@@ -5711,6 +5730,7 @@ export async function handleUpdateVariableRetainerBase(req, res, sheets) {
       await withRetry(() =>
         sheets.spreadsheets.values.batchUpdate({
           spreadsheetId: sheetIdClean,
+          _skipFormulaRecompute: true,
           requestBody: { valueInputOption: "USER_ENTERED", data: batchData },
         })
       );
@@ -5807,6 +5827,7 @@ export async function handleUpdateVariableRetainerMonth(req, res, sheets) {
     await withRetry(() =>
       sheets.spreadsheets.values.batchUpdate({
         spreadsheetId: sheetIdClean,
+        _skipFormulaRecompute: true,
         requestBody: { valueInputOption: "USER_ENTERED", data: batchData },
       })
     );
@@ -6388,6 +6409,7 @@ export async function handleSaveVariableRetainerSeries_(req, res, sheets, { veri
       await withRetry(() =>
         sheets.spreadsheets.values.batchClear({
           spreadsheetId: sheetIdClean,
+          _skipFormulaRecompute: true,
           requestBody: { ranges: clearRanges },
         })
       );
@@ -6395,6 +6417,7 @@ export async function handleSaveVariableRetainerSeries_(req, res, sheets, { veri
         await withRetry(() =>
           sheets.spreadsheets.values.batchUpdate({
             spreadsheetId: sheetIdClean,
+            _skipFormulaRecompute: true,
             requestBody: { valueInputOption: "USER_ENTERED", data: restoreData },
           })
         );
@@ -6490,6 +6513,7 @@ export async function handleSaveVariableRetainerSeries_(req, res, sheets, { veri
       await withRetry(() =>
         sheets.spreadsheets.values.batchUpdate({
           spreadsheetId: sheetIdClean,
+          _skipFormulaRecompute: true,
           requestBody: { valueInputOption: "USER_ENTERED", data: batchData },
         })
       );

@@ -605,7 +605,20 @@ export async function checkRetainerInvoices_(clientName, clientSheetId, masterSh
         ? new Date(endDate.getFullYear(), endDate.getMonth() + intervalMonths + 1, 0, 23, 59, 59)
         : endDate;
 
-      if (today > expectedBy && effectiveEndForSchedule > nextPeriodStart) {
+      const contractFullyInvoiced =
+        totalContractValue > 0 && totalInvoiced >= totalContractValue - 0.01;
+      const expectedTotalPeriods =
+        startDate && intervalMonths > 0 ? Math.max(1, Math.ceil(contractMonths / intervalMonths)) : 0;
+      const sentInvoiceRowCount = allJobRows.filter((jr) => sumRealInvSlotAmounts_(jr).netFeeTotal > 0).length;
+      const allExpectedPeriodsSent =
+        expectedTotalPeriods > 0 && sentInvoiceRowCount >= expectedTotalPeriods;
+
+      if (
+        today > expectedBy &&
+        effectiveEndForSchedule > nextPeriodStart &&
+        !contractFullyInvoiced &&
+        !allExpectedPeriodsSent
+      ) {
         const possibleMatch2 = await findPossibleRetainerInvoice_(masterSheetId, clientSheetId, clientNameRow, expectedBy, sharedData, sheets, r);
         let detail2 = `${clientNameRow} - ${jobName}, last invoice sent ${fmtDate(lastInvoice)}, next one had been expected by ${fmtDate(expectedBy)}. Check whether retainer has ended.`;
         let possibleMatchCase = "";

@@ -3317,7 +3317,7 @@ export async function handleUpdateJobFields(req, res, sheets) {
     }
   }
 
-  const normalizedUpdates = [];
+  let normalizedUpdates = [];
   for (const u of safeUpdates) {
     const coord = resolveValidatedJobEditCoord_(tabName, {
       cellRef: u?.cellRef,
@@ -3375,14 +3375,15 @@ export async function handleUpdateJobFields(req, res, sheets) {
       }
     }
 
+    const isSysAdmin = Boolean(!req._liveSessionUser?.isReadOnly && (req._liveSessionUser?.isAdmin || req._liveSessionUser?.role === "Admin"));
     const findUpdateByCol = (cols) => normalizedUpdates.find(u => cols.includes(u._coord.colLetters));
     const typeUpdate = findUpdateByCol(["AJ"]);
     const revUpdate = findUpdateByCol(["AG", "I"]);
     const rechUpdate = tabName === "Confirmed" ? findUpdateByCol(["R"]) : null;
     const costUpdate = findUpdateByCol(["AH", "K"]);
-    const startDateUpdate = findUpdateByCol(["AL", "F"]);
-    const endDateUpdate = findUpdateByCol(["AM", "G"]);
-    const dateUpdate = startDateUpdate || endDateUpdate;
+    let startDateUpdate = findUpdateByCol(["AL", "F"]);
+    let endDateUpdate = findUpdateByCol(["AM", "G"]);
+    let dateUpdate = startDateUpdate || endDateUpdate;
     const isPureConfirmedRetainerDateEdit =
       tabName === "Confirmed" &&
       Boolean(targetRowNum) &&
@@ -3447,7 +3448,7 @@ export async function handleUpdateJobFields(req, res, sheets) {
       const pRow = preloadedGroup?.parentRow || null;
       let existingStart = pRow ? pickDateVal_(pRow[37], pRow[5]) : "";
       let existingEnd = pRow ? pickDateVal_(pRow[38], pRow[6]) : "";
-      if ((!pRow || isFormulaDateStr_(existingStart) || isFormulaDateStr_(existingEnd)) && targetRowNum && (!startDateUpdate || !endDateUpdate)) {
+      if ((!pRow || isFormulaDateStr_(existingStart) || isFormulaDateStr_(existingEnd)) && targetRowNum) {
         try {
           const dateResp = await withRetry(() =>
             sheets.spreadsheets.values.batchGet({
@@ -3465,6 +3466,38 @@ export async function handleUpdateJobFields(req, res, sheets) {
             existingEnd = alAmRow[1] !== undefined && alAmRow[1] !== "" ? alAmRow[1] : (fgRow[1] ?? "");
           }
         } catch (_) { }
+      }
+      if (startDateUpdate && !isFormulaDateStr_(startDateUpdate.value) && !isFormulaDateStr_(existingStart)) {
+        const dNewStart = parseSheetDate(startDateUpdate.value);
+        const dOldStart = parseSheetDate(existingStart);
+        if (dNewStart && dOldStart && dNewStart.getTime() === dOldStart.getTime()) {
+          normalizedUpdates = normalizedUpdates.filter(u => u !== startDateUpdate);
+          startDateUpdate = null;
+        }
+      }
+      if (endDateUpdate && !isFormulaDateStr_(endDateUpdate.value) && !isFormulaDateStr_(existingEnd)) {
+        const nextNoEnd = isNoEndDateSentinel(endDateUpdate.value);
+        const prevNoEnd = isNoEndDateSentinel(existingEnd);
+        const dNewEnd = nextNoEnd ? null : parseSheetDate(endDateUpdate.value);
+        const dOldEnd = prevNoEnd ? null : parseSheetDate(existingEnd);
+        if ((nextNoEnd && prevNoEnd) || (!nextNoEnd && !prevNoEnd && dNewEnd && dOldEnd && dNewEnd.getTime() === dOldEnd.getTime())) {
+          normalizedUpdates = normalizedUpdates.filter(u => u !== endDateUpdate);
+          endDateUpdate = null;
+        }
+      }
+      dateUpdate = startDateUpdate || endDateUpdate;
+      if (normalizedUpdates.length === 0 && !hasInvoices) {
+        return res.status(200).json({
+          success: true,
+          noOp: true,
+          invoiceSlotUpdates: [],
+          expenseSlotUpdates: [],
+          trimmed: 0,
+          grown: 0,
+          trimmedRowNums: [],
+          addedChildRows: [],
+          isRetainer: isRetainerJob,
+        });
       }
       const effStart = startDateUpdate ? startDateUpdate.value : existingStart;
       const effEnd = endDateUpdate ? endDateUpdate.value : existingEnd;
@@ -3588,6 +3621,7 @@ export async function handleUpdateJobFields(req, res, sheets) {
     let retainerGrown = 0;
     let retainerTrimmedRowNums = [];
     let retainerAddedChildRows = [];
+    let retainerShiftedExistingRows = false;
 
     let resolvedClient = req.body.clientName || "";
     if (!resolvedClient) {
@@ -3636,16 +3670,19 @@ export async function handleUpdateJobFields(req, res, sheets) {
           parentRowNum: targetRowNum,
           newStartDate: startDateUpdate.value,
           newEndDate: endDateUpdate ? endDateUpdate.value : undefined,
+          noEndDate: endDateUpdate ? isNoEndDateSentinel(endDateUpdate.value) : undefined,
           newMonthlyAmount: revUpdate ? revUpdate.value : undefined,
           clientName: resolvedClient,
           automationCommanderSheetId: req.body.automationCommanderSheetId,
           preloadedTolerances,
+          isAdmin: isSysAdmin,
         });
         if (retStartResult && !retStartResult.success) {
           return res.status(200).json(retStartResult);
         }
         retainerTrimmed = retStartResult?.trimmed || 0;
         retainerGrown = retStartResult?.grown || 0;
+        retainerShiftedExistingRows = Boolean(retStartResult?.shiftedExistingRows);
         if (Array.isArray(retStartResult?.trimmedRowNums)) retainerTrimmedRowNums = retStartResult.trimmedRowNums;
         if (Array.isArray(retStartResult?.addedChildRows)) retainerAddedChildRows = retStartResult.addedChildRows;
         if (Array.isArray(retStartResult?.updatedChildSlots)) {
@@ -3663,6 +3700,7 @@ export async function handleUpdateJobFields(req, res, sheets) {
           clientName: resolvedClient,
           automationCommanderSheetId: req.body.automationCommanderSheetId,
           preloadedTolerances,
+          isAdmin: isSysAdmin,
         });
         if (retEndResult && !retEndResult.success) {
           return res.status(200).json(retEndResult);
@@ -3932,6 +3970,7 @@ export async function handleUpdateJobFields(req, res, sheets) {
       grown: retainerGrown,
       trimmedRowNums: retainerTrimmedRowNums,
       addedChildRows: retainerAddedChildRows,
+      shiftedExistingRows: retainerShiftedExistingRows,
       isRetainer: isRetainerJob
     });
   } catch (err) {

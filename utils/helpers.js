@@ -709,6 +709,8 @@ export function stripRowInfo(text) {
     .replace(/\bcells?\s+[A-Z]{1,3}\d+\b/gi, "")
     .replace(/\b(?:in|into|on|at)\s+slots?\s+\d+\b/gi, "")
     .replace(/\b(?:in|into|on|at)\s+(?:sheet\s+)?rows?\s+\d+\b/gi, "")
+    .replace(/\s*-\s*(?:sheet\s+)?rows?\s+\d+\b/gi, "")
+    .replace(/\b(?:sheet\s+)?rows?\s+\d+\b/gi, "this entry")
     .replace(/\bslots?\s+\d+\b/gi, "")
     .replace(/\bslot\s+amount\b/gi, "expected amount")
     .replace(/\b(?:invoice|expense)\s+slots?\b/gi, "entry")

@@ -1997,6 +1997,7 @@ export default async function handler(req, res) {
       });
     } else if (willSyncPortalRetainerSchedule) {
       let portalScheduleRes = null;
+      const isPortalSysAdmin = Boolean(!sessionUser?.isReadOnly && (sessionUser?.isAdmin || sessionUser?.role === "Admin"));
       if (didPortalRetainerStartChange) {
         portalScheduleRes = await executeChangeRetainerStartDate(sheets, {
           clientSheetId,
@@ -2006,8 +2007,10 @@ export default async function handler(req, res) {
           parentRowNum: parentRow,
           newStartDate: nextStartStr,
           newEndDate: nextEndStr,
+          noEndDate: Boolean(job.noEndDate || isNoEndDateSentinel(nextEndStr)),
           newMonthlyAmount: nextRevNum > 0 ? nextRevNum : undefined,
           clientName: verifiedClientName || clientName || "",
+          isAdmin: isPortalSysAdmin,
         });
       } else if (didPortalRetainerEndChange) {
         portalScheduleRes = await executeChangeRetainerEndDate(sheets, {
@@ -2020,6 +2023,7 @@ export default async function handler(req, res) {
           noEndDate: Boolean(job.noEndDate || isNoEndDateSentinel(nextEndStr)),
           previousEndDate: prevEndStr,
           clientName: verifiedClientName || clientName || "",
+          isAdmin: isPortalSysAdmin,
         });
       }
       if (portalScheduleRes && !portalScheduleRes.success) {

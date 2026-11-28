@@ -1180,7 +1180,7 @@ const detectRetainerTimingOffsetUi = (allInvoiceDates, jobStartDate, intervalMon
  * Optimistically projects retainer child rows when a retainer's end date is changed in the UI,
  * mirroring `executeChangeRetainerEndDate` so the invoice placeholder list updates immediately.
  */
-export const projectRetainerRowsForEndDate = (job, targetEndDateVal, overrideRevenueVal) => {
+export const projectRetainerRowsForEndDate = (job, targetEndDateVal, overrideRevenueVal, overrideStartDateVal) => {
   if (!job || !Array.isArray(job.rows) || job.rows.length === 0) return job?.rows || [];
   const parentRow = job.rows[0];
   const childRows = job.rows.slice(1);
@@ -1188,7 +1188,7 @@ export const projectRetainerRowsForEndDate = (job, targetEndDateVal, overrideRev
   const newEnd = isNoEndDateSentinel(targetEndDateVal) ? new Date(2050, 11, 31) : parseSheetDate(targetEndDateVal);
   if (!newEnd) return job.rows;
 
-  const startDate = parseSheetDate(parentRow.startDate);
+  const startDate = overrideStartDateVal !== undefined ? parseSheetDate(overrideStartDateVal) : parseSheetDate(parentRow.startDate);
   const childDates = childRows.map((cr) => parseSheetDate(cr.invoiceSlots?.[0]?.sentDate)).filter(Boolean);
   const intervalMonths = detectRetainerIntervalMonthsUi(childDates);
   const invoiceTimingOffset = detectRetainerTimingOffsetUi(childDates, startDate, intervalMonths);
@@ -2119,8 +2119,12 @@ export default function JobsView({
       const meta = FIELD_MAP[fieldKey];
       if (!meta) return;
       let val = currentDraft[fieldKey];
-      if (meta.isDate && val) {
-        val = toSheetDateFormat(val);
+      if (meta.isDate) {
+        const formattedNext = isNoEndDateSentinel(val) ? NO_END_DATE_SHEET_VALUE : (val ? toSheetDateFormat(val) : "");
+        const rawPrev = parentRow[fieldKey] ?? "";
+        const formattedPrev = isNoEndDateSentinel(rawPrev) ? NO_END_DATE_SHEET_VALUE : (rawPrev ? toSheetDateFormat(rawPrev) : "");
+        if (formattedNext === formattedPrev) return;
+        val = formattedNext;
       } else if (fieldKey === "likelihood") {
         val = normalizeLikelihoodInput(val);
       }
@@ -2808,8 +2812,12 @@ export default function JobsView({
       const meta = FIELD_MAP[fieldKey];
       if (!meta) return;
       let val = currentDraft[fieldKey];
-      if (meta.isDate && val) {
-        val = toSheetDateFormat(val);
+      if (meta.isDate) {
+        const formattedNext = isNoEndDateSentinel(val) ? NO_END_DATE_SHEET_VALUE : (val ? toSheetDateFormat(val) : "");
+        const rawPrev = parentRow[fieldKey] ?? "";
+        const formattedPrev = isNoEndDateSentinel(rawPrev) ? NO_END_DATE_SHEET_VALUE : (rawPrev ? toSheetDateFormat(rawPrev) : "");
+        if (formattedNext === formattedPrev) return;
+        val = formattedNext;
       } else if (fieldKey === "likelihood") {
         val = normalizeLikelihoodInput(val);
       }
@@ -2835,7 +2843,15 @@ export default function JobsView({
       }
     });
 
-    if (updates.length === 0) return;
+    if (updates.length === 0) {
+      setDraftEdits((prev) => {
+        if (!prev[jobKey]) return prev;
+        const next = { ...prev };
+        delete next[jobKey];
+        return next;
+      });
+      return;
+    }
 
     setActionError(null);
     setSavingJobKeys((prev) => new Set(prev).add(jobKey));
@@ -2844,9 +2860,11 @@ export default function JobsView({
       ? currentDraft.projectRetainer
       : (parentRow.projectRetainer || job.projectRetainer || "");
     const isRetainerJob = String(parentTypeVal).trim().toLowerCase().includes("retainer");
-    const isRetainerEndDateEdit = isConfirmed && isRetainerJob && currentDraft.endDate !== undefined;
-    const preSaveJobSnapshot = isRetainerEndDateEdit ? job : null;
-    const preSaveDraftSnapshot = isRetainerEndDateEdit ? { ...currentDraft } : null;
+    const hasStartUpdate = updates.some((u) => u.colLetter === "AL");
+    const hasEndUpdate = updates.some((u) => u.colLetter === "AM");
+    const isRetainerScheduleEdit = isConfirmed && isRetainerJob && (hasStartUpdate || hasEndUpdate);
+    const preSaveJobSnapshot = isRetainerScheduleEdit ? job : null;
+    const preSaveDraftSnapshot = isRetainerScheduleEdit ? { ...currentDraft } : null;
 
     const applyDraftFieldsToJob = (baseJob, baseRows, invUpdatesMap, expUpdatesMap) => {
       const updatedRows = baseRows.map((r, rIdx) => {
@@ -2889,11 +2907,12 @@ export default function JobsView({
 
     // Optimistically reflect retainer end-date placeholder changes on screen immediately
     // before the backend row add/trim finishes.
-    if (isRetainerEndDateEdit) {
+    if (isConfirmed && isRetainerJob && hasEndUpdate) {
       const projectedRows = projectRetainerRowsForEndDate(
         job,
         currentDraft.endDate,
-        currentDraft.revenue
+        currentDraft.revenue,
+        hasStartUpdate ? currentDraft.startDate : undefined
       );
       setJobsData((prevJobs) => {
         if (!prevJobs) return prevJobs;
@@ -3008,7 +3027,9 @@ export default function JobsView({
         });
       }, 3000);
 
-      if (data.backgroundProvisioning) {
+      if (data.shiftedExistingRows) {
+        loadJobsData(jobsClient, "All", true, true);
+      } else if (data.backgroundProvisioning) {
         setTimeout(() => loadJobsData(jobsClient, "All", true, true), 4000);
         setTimeout(() => loadJobsData(jobsClient, "All", true, true), 8000);
       }
@@ -4522,8 +4543,8 @@ export default function JobsView({
           )}
         </div>
 
-        {/* Global Error Banner if any */}
-        {actionError && (
+        {/* Global Error Banner if any (modern workspace renders its own inline banner below toolbar) */}
+        {(noJobsClient || effectiveViewMode !== "modern") && actionError && (
           <div style={{ background: "#fef2f2", border: "1px solid #fecaca", borderRadius: "8px", padding: "10px 14px", marginBottom: "16px", color: "#991b1b", fontSize: "13px", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
             <span>{actionError}</span>
             <button onClick={() => setActionError(null)} style={{ background: "none", border: "none", color: "#991b1b", fontSize: "16px", cursor: "pointer" }}>✕</button>
@@ -4883,7 +4904,6 @@ export default function JobsView({
                     }}
                   >
                     <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-                      <span>❌</span>
                       <span>{actionError}</span>
                     </div>
                     <button

@@ -183,7 +183,7 @@ export default function RetainersEditModal({ job, clientName, clientSheetId, mas
   const saveNameAndDate = async () => {
     setError("");
     const nameChanged = jobName.trim() !== job.jobName;
-    const startChanged = !hasRealInvoices && startDate !== jobStartISO;
+    const startChanged = startDate !== jobStartISO;
     const endChanged = (noEndDate !== initialNoEndDate) || (!noEndDate && endDate !== jobEndISO);
     const effectiveNewEndSheet = noEndDate ? NO_END_DATE_SHEET_VALUE : isoToSheetDate(endDate);
 
@@ -709,17 +709,11 @@ export default function RetainersEditModal({ job, clientName, clientSheetId, mas
                 <label style={labelStyle}>Start date</label>
                 <DateInput
                   outputFormat="iso"
-                  style={{ ...inputStyle, ...(hasRealInvoices ? { background: "#f9fafb", color: "#888", cursor: "not-allowed" } : {}) }}
+                  style={inputStyle}
                   value={startDate}
                   onChange={e => setStartDate(e.target.value)}
-                  disabled={hasRealInvoices}
                   max={endDate || undefined}
                 />
-                {hasRealInvoices && (
-                  <div style={{ fontSize: "11px", color: "#6b7280", marginTop: "3px" }}>
-                    🔒 Start date is locked because invoices have already been issued.
-                  </div>
-                )}
               </div>
               <div>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "3px" }}>

@@ -927,7 +927,7 @@ export async function handleRenameRetainerJob(req, res, sheets) {
 }
 
 export async function executeChangeRetainerEndDate(sheets, params = {}) {
-  let { clientSheetId, masterSheetId, client, jobName, parentRowNum, newEndDate: rawNewEndDate, noEndDate, clientName, automationCommanderSheetId, preloadedTolerances, previousEndDate } = params;
+  let { clientSheetId, masterSheetId, client, jobName, parentRowNum, newEndDate: rawNewEndDate, noEndDate, clientName, automationCommanderSheetId, preloadedTolerances, previousEndDate, isAdmin = false } = params;
   const newEndDate = (noEndDate || isNoEndDateSentinel(rawNewEndDate)) ? NO_END_DATE_SHEET_VALUE : rawNewEndDate;
   if (!clientSheetId || !jobName || !parentRowNum || !newEndDate) {
     return { success: false, error: "Missing required fields" };
@@ -1048,7 +1048,9 @@ export async function executeChangeRetainerEndDate(sheets, params = {}) {
       if (blockedRow) {
         return {
           success: false, blocked: true,
-          error: `Cannot shorten this retainer - row ${blockedRow.rowNum} already has a real invoice or expense recorded.`,
+          error: isAdmin
+            ? `Cannot shorten this retainer - row ${blockedRow.rowNum} already has a real invoice or expense recorded.`
+            : "Cannot shorten this retainer because a billing period after that end date already has an invoice or expense recorded.",
         };
       }
 
@@ -1472,8 +1474,10 @@ export async function executeChangeRetainerEndDate(sheets, params = {}) {
 
 export async function handleChangeRetainerEndDate(req, res, sheets) {
   try {
+    const isAdmin = Boolean(!req._liveSessionUser?.isReadOnly && (req._liveSessionUser?.isAdmin || req._liveSessionUser?.role === "Admin"));
     const result = await executeChangeRetainerEndDate(sheets, {
       ...req.body,
+      isAdmin,
       automationCommanderSheetId: req.body.automationCommanderSheetId
     });
     if (!result.success && !result.blocked) {
@@ -1489,8 +1493,8 @@ export async function handleChangeRetainerEndDate(req, res, sheets) {
 export async function executeChangeRetainerStartDate(sheets, params = {}) {
   let {
     clientSheetId, masterSheetId, client, jobName, parentRowNum,
-    newStartDate, newEndDate, newMonthlyAmount,
-    clientName, automationCommanderSheetId, preloadedTolerances
+    newStartDate, newEndDate, noEndDate, newMonthlyAmount,
+    clientName, automationCommanderSheetId, preloadedTolerances, isAdmin = false,
   } = params;
   if (!clientSheetId || !jobName || !parentRowNum || !newStartDate) {
     return { success: false, error: "Missing required fields" };
@@ -1532,13 +1536,21 @@ export async function executeChangeRetainerStartDate(sheets, params = {}) {
 
     const newStart = retParseSheetDate(newStartDate);
     if (!newStart) return { success: false, error: "Invalid new start date" };
+    const formattedNewStart = retFmtDate(newStart);
 
     const currentEndDate = retParseSheetDate(parentRow[38]);
-    const finalEnd = newEndDate ? retParseSheetDate(newEndDate) : (currentEndDate || new Date(2050, 11, 31));
-    if (finalEnd && newStart > finalEnd) {
+    const effectiveNoEndDate = Boolean(noEndDate) || (
+      newEndDate !== undefined ? isNoEndDateSentinel(newEndDate) : isNoEndDateSentinel(parentRow[38])
+    );
+    const finalEnd = effectiveNoEndDate
+      ? new Date(2050, 11, 31)
+      : (newEndDate ? retParseSheetDate(newEndDate) : (currentEndDate || new Date(2050, 11, 31)));
+    if (!effectiveNoEndDate && finalEnd && newStart.getTime() > finalEnd.getTime()) {
       return { success: false, error: "Start date cannot be after end date." };
     }
-    const formattedFinalEnd = finalEnd ? retFmtDate(finalEnd) : NO_END_DATE_SHEET_VALUE;
+    const formattedFinalEnd = effectiveNoEndDate
+      ? NO_END_DATE_SHEET_VALUE
+      : (finalEnd ? retFmtDate(finalEnd) : NO_END_DATE_SHEET_VALUE);
 
     // Find child rows
     const childRows = [];
@@ -1552,74 +1564,480 @@ export async function executeChangeRetainerStartDate(sheets, params = {}) {
       } else break;
     }
 
-    // Safety check: ensure NO real invoices or expenses exist on parent or child rows
-    const allRows = [{ rowNum: parentRowNum, row: parentRow }].concat(childRows);
-    const blockedRow = allRows.find(r => retRowHasRealData(r.row));
-    if (blockedRow) {
-      return {
-        success: false,
-        blocked: true,
-        error: `Cannot change start date - row ${blockedRow.rowNum} already has a real invoice or expense recorded.`,
-      };
-    }
-
     const isJobCosting = isJobCostingStyle({ headers: rows[0] || [] });
     const startDateCol = isJobCosting ? "F" : "AL";
     const endDateCol = isJobCosting ? "G" : "AM";
     const revCol = isJobCosting ? "I" : "AG";
     const oldStartDate = retParseSheetDate(parentRow[37]);
     const childDates = childRows.map(cr => retParseSheetDate(cr.row[43])).filter(Boolean);
-    const intervalMonths = retDetectIntervalMonths(childDates, parentRow[35]) || 1;
+    const realChildRows = childRows.filter(cr => retRowHasRealData(cr.row));
+    const realChildDates = realChildRows
+      .map(cr => RET_INV_SLOTS.map(s => retParseSheetDate(cr.row[s.sent])).find(Boolean))
+      .filter(Boolean);
+
+    const intervalMonths = retDetectIntervalMonths(realChildDates.length > 0 ? realChildDates : childDates, parentRow[35]) || 1;
     const b51TargetDay = parseInt(tolerance?.retainerInvoiceDay, 10) > 0 ? parseInt(tolerance.retainerInvoiceDay, 10) : 28;
     const parsedExplicitDay = parseInt(params?.invoiceSendDay, 10);
     const defaultSendDay = (!isNaN(parsedExplicitDay) && parsedExplicitDay >= 1 && parsedExplicitDay <= 31)
       ? parsedExplicitDay
-      : (childDates.length > 0 && (!oldStartDate || childDates[0].getDate() !== oldStartDate.getDate()))
-        ? childDates[0].getDate()
-        : b51TargetDay;
-    const invoiceTimingOffset = retDetectInvoiceTimingOffset_(childDates, oldStartDate, intervalMonths);
-    const timingMonthAdjust = invoiceTimingOffset === "before" ? -1 : (invoiceTimingOffset === "after" ? 1 : 0);
+      : realChildDates.length > 0
+        ? realChildDates[realChildDates.length - 1].getDate()
+        : (childDates.length > 0 && (!oldStartDate || childDates[0].getDate() !== oldStartDate.getDate()))
+          ? childDates[childDates.length - 1].getDate()
+          : b51TargetDay;
 
-    const revenue = (newMonthlyAmount !== undefined && newMonthlyAmount !== null && newMonthlyAmount !== "")
-      ? parseFloat(newMonthlyAmount)
-      : retParseMoney(parentRow[32]);
-    const perInvoiceAmount = revenue * intervalMonths;
+    const timingSampleDates = childDates.length > 0 ? childDates : realChildDates;
+    const invoiceTimingOffset = retDetectInvoiceTimingOffset_(timingSampleDates, oldStartDate || newStart, intervalMonths);
+    const invToPeriodAdjust = invoiceTimingOffset === "before" ? 1 : (invoiceTimingOffset === "after" ? -1 : 0);
+    const periodToInvAdjust = -invToPeriodAdjust;
+
+    const hasExplicitAmount = newMonthlyAmount !== undefined && newMonthlyAmount !== null && newMonthlyAmount !== "";
+    const revenue = hasExplicitAmount ? parseFloat(newMonthlyAmount) : retParseMoney(parentRow[32]);
+    const perInvoiceAmount = Math.round(revenue * intervalMonths * 100) / 100;
     const vat = parentRow[34];
 
     const rawDefaultDaysToPay = tolerance?.defaultDaysToPay;
     const defaultDaysToPay = parseInt(String(rawDefaultDaysToPay || "").replace(/[^\d.-]/g, ""), 10) || 30;
 
-    // Calculate target periods (open-ended retainers default to 2050-12-31 and are capped by pastCount + 18m horizon)
-    const periodStarts = [];
-    let cursor = new Date(newStart.getFullYear(), newStart.getMonth(), 1);
-    const hasFiniteEnd = Boolean(finalEnd && !isNoEndDateSentinel(newEndDate || parentRow[38]));
+    // Calculate target service periods (inclusive calendar months; open-ended capped at pastCount + 18m horizon)
+    const periodMonths = [];
+    const firstTargetYm = newStart.getFullYear() * 12 + newStart.getMonth();
+    let cursorYm = firstTargetYm;
+    const hasFiniteEnd = Boolean(finalEnd && !effectiveNoEndDate && finalEnd.getFullYear() < 2035);
     const endMonthVal = hasFiniteEnd
-      ? (newStart.getFullYear() * 12 + newStart.getMonth() + computeInclusiveRetainerMonths(newStart, finalEnd) - 1)
+      ? (firstTargetYm + computeInclusiveRetainerMonths(newStart, finalEnd) - 1)
       : (2050 * 12 + 11);
-    while (true) {
-      const cursorMonthVal = cursor.getFullYear() * 12 + cursor.getMonth();
-      if (cursorMonthVal > endMonthVal) break;
-      periodStarts.push(new Date(cursor));
-      cursor = new Date(cursor.getFullYear(), cursor.getMonth() + intervalMonths, 1);
+    while (cursorYm <= endMonthVal) {
+      periodMonths.push(cursorYm);
+      cursorYm += intervalMonths;
     }
 
-    const today = new Date(); today.setHours(0, 0, 0, 0);
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
     const currentMonthVal = today.getFullYear() * 12 + today.getMonth();
-    const pastCount = periodStarts.filter(d => (d.getFullYear() * 12 + d.getMonth()) <= currentMonthVal).length;
-    const targetPeriodCount = Math.min(periodStarts.length, pastCount + Math.ceil(18 / intervalMonths));
+    const pastCount = periodMonths.filter(ym => ym <= currentMonthVal).length;
+    const targetPeriodCount = Math.min(periodMonths.length, pastCount + Math.ceil(18 / intervalMonths));
+    const cappedPeriodMonths = periodMonths.slice(0, targetPeriodCount);
 
-    const newRowDates = periodStarts.slice(0, targetPeriodCount).map(p => {
-      const targetYear = p.getFullYear();
-      const targetMonth = p.getMonth() + timingMonthAdjust;
+    const makeInvDateForPeriodYm = (ym) => {
+      const invTotal = ym + periodToInvAdjust;
+      const targetYear = Math.floor(invTotal / 12);
+      const targetMonth = ((invTotal % 12) + 12) % 12;
       const maxDays = new Date(targetYear, targetMonth + 1, 0).getDate();
       return new Date(targetYear, targetMonth, Math.min(defaultSendDay, maxDays));
-    });
+    };
 
+    const newRowDates = cappedPeriodMonths.map(makeInvDateForPeriodYm);
     const targetCount = newRowDates.length;
     const currentCount = childRows.length;
     let trimmedRowNums = [];
     const addedChildRows = [];
     const updatedChildSlots = [];
+    let shiftedExistingRows = false;
+    const shouldWriteEndCol = newEndDate !== undefined || noEndDate !== undefined || !currentEndDate;
+
+    if (realChildRows.length > 0) {
+      // Invoice-preserving start-date schedule reconciliation:
+      // Real Xero/QuickBooks invoices and expenses stay untouched; only placeholder periods around them adjust.
+      const expSentIndices = [78, 85, 92];
+      const annotatedChildren = childRows.map(cr => {
+        const hasReal = retRowHasRealData(cr.row);
+        const invSent = RET_INV_SLOTS.map(s => retParseSheetDate(cr.row[s.sent])).find(Boolean);
+        const expSent = expSentIndices.map(idx => retParseSheetDate(cr.row[idx])).find(Boolean);
+        const rowDate = invSent || expSent || null;
+        const rawYm = rowDate ? (rowDate.getFullYear() * 12 + rowDate.getMonth() + invToPeriodAdjust) : null;
+        return { ...cr, _hasReal: hasReal, _rawYm: rawYm, _effYm: null };
+      });
+
+      const hasDirectFirstYm = annotatedChildren.some(cr => cr._hasReal && cr._rawYm === firstTargetYm);
+      for (const cr of annotatedChildren) {
+        if (!cr._hasReal) continue;
+        const effYm = (cr._rawYm === firstTargetYm - 1 && !hasDirectFirstYm) ? firstTargetYm : cr._rawYm;
+        if (effYm !== null && effYm < firstTargetYm) {
+          return {
+            success: false,
+            blocked: true,
+            error: isAdmin
+              ? `Cannot change start date - row ${cr.rowNum} already has a real invoice or expense recorded before ${formattedNewStart}.`
+              : `Cannot move start date to ${formattedNewStart} because an earlier billing period already has an invoice or expense recorded.`,
+          };
+        }
+        if (hasFiniteEnd && effYm !== null && effYm > endMonthVal) {
+          return {
+            success: false,
+            blocked: true,
+            error: isAdmin
+              ? `Cannot shorten this retainer - row ${cr.rowNum} already has a real invoice or expense recorded.`
+              : "Cannot shorten this retainer because a billing period after that end date already has an invoice or expense recorded.",
+          };
+        }
+        cr._effYm = effYm;
+      }
+
+      const coveredSet = new Set(annotatedChildren.filter(cr => cr._hasReal && cr._effYm !== null).map(cr => cr._effYm));
+      for (const cr of annotatedChildren) {
+        if (cr._hasReal && cr._effYm === null) {
+          const fallbackYm = cappedPeriodMonths.find(ym => !coveredSet.has(ym));
+          if (fallbackYm !== undefined) {
+            cr._effYm = fallbackYm;
+            coveredSet.add(fallbackYm);
+          }
+        }
+      }
+
+      const firstRealIdx = annotatedChildren.findIndex(cr => cr._hasReal);
+      const lastRealIdx = annotatedChildren.map(cr => cr._hasReal).lastIndexOf(true);
+      const realYms = [...coveredSet].sort((a, b) => a - b);
+      const minRealYm = realYms.length > 0 ? realYms[0] : firstTargetYm;
+      const maxRealYm = realYms.length > 0 ? realYms[realYms.length - 1] : firstTargetYm;
+
+      const uncoveredPeriods = cappedPeriodMonths.filter(ym => !coveredSet.has(ym));
+      const leadingPeriods = uncoveredPeriods.filter(ym => ym < minRealYm);
+      const middlePeriodsRaw = uncoveredPeriods.filter(ym => ym >= minRealYm && ym <= maxRealYm);
+      const trailingPeriodsRaw = uncoveredPeriods.filter(ym => ym > maxRealYm);
+
+      const leadingPlaceholders = annotatedChildren.slice(0, firstRealIdx);
+      const middlePlaceholders = annotatedChildren.slice(firstRealIdx, lastRealIdx + 1).filter(cr => !cr._hasReal);
+      const trailingPlaceholders = annotatedChildren.slice(lastRealIdx + 1);
+
+      const middlePeriods = middlePeriodsRaw.slice(0, middlePlaceholders.length);
+      const trailingPeriods = [...middlePeriodsRaw.slice(middlePlaceholders.length), ...trailingPeriodsRaw];
+
+      const L_want = leadingPeriods.length;
+      const L_have = leadingPlaceholders.length;
+      const T_want = trailingPeriods.length;
+      const T_have = trailingPlaceholders.length;
+
+      let trueLastRow = await retFindTrueLastRow(null, null, rows);
+      const totalExtraRowsNeeded = Math.max(0, L_want - L_have) + Math.max(0, T_want - T_have);
+      if (totalExtraRowsNeeded > 0 && (currentMaxRows - (trueLastRow + 1)) < totalExtraRowsNeeded) {
+        const toAdd = totalExtraRowsNeeded - (currentMaxRows - (trueLastRow + 1)) + 5;
+        await sheets.spreadsheets.batchUpdate({
+          spreadsheetId: sheetIdClean,
+          requestBody: {
+            requests: [{
+              insertDimension: {
+                range: { sheetId: gridSheetId, dimension: "ROWS", startIndex: currentMaxRows, endIndex: currentMaxRows + toAdd },
+                inheritFromBefore: true,
+              },
+            }],
+          },
+          _skipFormulaRecompute: true,
+        });
+        currentMaxRows += toAdd;
+      }
+
+      let rowShiftAfterLeading = 0;
+      const restoreDataAll = [];
+
+      // Leading structural adjustment
+      if (L_want < L_have) {
+        const trimL = L_have - L_want;
+        const toTrimLead = leadingPlaceholders.slice(0, trimL);
+        const blockStartIdx0 = toTrimLead[0].rowNum - 1;
+        const blockEndIdx0 = toTrimLead[toTrimLead.length - 1].rowNum;
+        trimmedRowNums.push(...toTrimLead.map(cr => cr.rowNum));
+
+        const leadReqs = [{
+          updateDimensionProperties: {
+            range: { sheetId: gridSheetId, dimension: "ROWS", startIndex: blockStartIdx0, endIndex: blockEndIdx0 },
+            properties: { hiddenByUser: false },
+            fields: "hiddenByUser",
+          },
+        }];
+        const movedToEnd = blockStartIdx0 <= trueLastRow;
+        if (movedToEnd) {
+          leadReqs.push({
+            moveDimension: {
+              source: { sheetId: gridSheetId, dimension: "ROWS", startIndex: blockStartIdx0, endIndex: blockEndIdx0 },
+              destinationIndex: trueLastRow + trimL,
+            },
+          });
+        }
+        await sheets.spreadsheets.batchUpdate({
+          spreadsheetId: sheetIdClean,
+          requestBody: { requests: leadReqs },
+          _skipFormulaRecompute: true,
+        });
+
+        const clearLeadRows = movedToEnd
+          ? Array.from({ length: trimL }, (_, i) => trueLastRow + 1 + i)
+          : toTrimLead.map(cr => cr.rowNum);
+        const leadClearPlan = buildJobRowClearAndRestorePlan({
+          sheetName: "Confirmed",
+          rowNums: clearLeadRows,
+          isJobCosting,
+          includeCopiedCol: false,
+        });
+        await sheets.spreadsheets.values.batchClear({
+          spreadsheetId: sheetIdClean,
+          requestBody: { ranges: leadClearPlan.clearRanges },
+          _skipFormulaRecompute: true,
+        });
+        if (leadClearPlan.restoreData.length > 0) restoreDataAll.push(...leadClearPlan.restoreData);
+        if (movedToEnd) trueLastRow = Math.max(0, trueLastRow - trimL);
+        rowShiftAfterLeading = -trimL;
+        shiftedExistingRows = true;
+      } else if (L_want > L_have) {
+        const addL = L_want - L_have;
+        const insertAfterLead = parentRowNum + L_have;
+        if (trueLastRow > insertAfterLead) {
+          await sheets.spreadsheets.batchUpdate({
+            spreadsheetId: sheetIdClean,
+            requestBody: {
+              requests: [{
+                moveDimension: {
+                  source: { sheetId: gridSheetId, dimension: "ROWS", startIndex: trueLastRow, endIndex: trueLastRow + addL },
+                  destinationIndex: insertAfterLead,
+                },
+              }],
+            },
+            _skipFormulaRecompute: true,
+          });
+          trueLastRow += addL;
+        }
+        rowShiftAfterLeading = addL;
+        shiftedExistingRows = true;
+      }
+
+      // Trailing structural adjustment (using row numbers shifted by rowShiftAfterLeading)
+      const lastRealRowShifted = annotatedChildren[lastRealIdx].rowNum + rowShiftAfterLeading;
+      let insertAfterTrail = T_have > 0
+        ? (trailingPlaceholders[T_have - 1].rowNum + rowShiftAfterLeading)
+        : lastRealRowShifted;
+
+      if (T_want < T_have) {
+        const trimT = T_have - T_want;
+        const toTrimTrail = trailingPlaceholders.slice(T_want);
+        const shiftedTrimNums = toTrimTrail.map(cr => cr.rowNum + rowShiftAfterLeading);
+        if (rowShiftAfterLeading === 0) {
+          trimmedRowNums.push(...toTrimTrail.map(cr => cr.rowNum));
+        }
+        const blockStartIdx0 = shiftedTrimNums[0] - 1;
+        const blockEndIdx0 = shiftedTrimNums[shiftedTrimNums.length - 1];
+        const trailReqs = [{
+          updateDimensionProperties: {
+            range: { sheetId: gridSheetId, dimension: "ROWS", startIndex: blockStartIdx0, endIndex: blockEndIdx0 },
+            properties: { hiddenByUser: false },
+            fields: "hiddenByUser",
+          },
+        }];
+        const movedToEnd = blockStartIdx0 <= trueLastRow;
+        if (movedToEnd) {
+          trailReqs.push({
+            moveDimension: {
+              source: { sheetId: gridSheetId, dimension: "ROWS", startIndex: blockStartIdx0, endIndex: blockEndIdx0 },
+              destinationIndex: trueLastRow + trimT,
+            },
+          });
+        }
+        await sheets.spreadsheets.batchUpdate({
+          spreadsheetId: sheetIdClean,
+          requestBody: { requests: trailReqs },
+          _skipFormulaRecompute: true,
+        });
+
+        const clearTrailRows = movedToEnd
+          ? Array.from({ length: trimT }, (_, i) => trueLastRow + 1 + i)
+          : shiftedTrimNums;
+        const trailClearPlan = buildJobRowClearAndRestorePlan({
+          sheetName: "Confirmed",
+          rowNums: clearTrailRows,
+          isJobCosting,
+          includeCopiedCol: false,
+        });
+        await sheets.spreadsheets.values.batchClear({
+          spreadsheetId: sheetIdClean,
+          requestBody: { ranges: trailClearPlan.clearRanges },
+          _skipFormulaRecompute: true,
+        });
+        if (trailClearPlan.restoreData.length > 0) restoreDataAll.push(...trailClearPlan.restoreData);
+        if (movedToEnd) trueLastRow = Math.max(0, trueLastRow - trimT);
+      } else if (T_want > T_have) {
+        const addT = T_want - T_have;
+        if (trueLastRow > insertAfterTrail) {
+          await sheets.spreadsheets.batchUpdate({
+            spreadsheetId: sheetIdClean,
+            requestBody: {
+              requests: [{
+                moveDimension: {
+                  source: { sheetId: gridSheetId, dimension: "ROWS", startIndex: trueLastRow, endIndex: trueLastRow + addT },
+                  destinationIndex: insertAfterTrail,
+                },
+              }],
+            },
+            _skipFormulaRecompute: true,
+          });
+          trueLastRow += addT;
+        }
+      }
+
+      const finalTotalChildren = L_want + (lastRealIdx - firstRealIdx + 1) + T_want;
+      if (L_want !== L_have || T_want !== T_have) {
+        try {
+          const freshMeta = await sheets.spreadsheets.get({
+            spreadsheetId: sheetIdClean,
+            fields: "sheets(properties.sheetId,properties.title,rowGroups)",
+          });
+          const freshConfSheet = (freshMeta.data.sheets || []).find(s => s.properties.title === "Confirmed");
+          const freshGroups = freshConfSheet?.rowGroups || [];
+          const spanStart = parentRowNum;
+          const spanEnd = parentRowNum + Math.max(finalTotalChildren, childRows.length, 1) + Math.max(L_have, L_want, T_have, T_want, 1);
+          const overlappingGroups = freshGroups.filter(
+            g => g.range?.endIndex > spanStart && g.range?.startIndex < spanEnd
+          );
+          const preCollapsed = rowGroups.find(
+            g => g.range?.startIndex <= parentRowNum && g.range?.endIndex > parentRowNum
+          )?.collapsed;
+          const keepCollapsed = preCollapsed !== undefined ? Boolean(preCollapsed) : true;
+          const groupReqs = overlappingGroups.map(g => ({
+            deleteDimensionGroup: {
+              range: { sheetId: gridSheetId, dimension: "ROWS", startIndex: g.range.startIndex, endIndex: g.range.endIndex },
+            },
+          }));
+          if (finalTotalChildren > 0) {
+            const newGroupEnd = parentRowNum + finalTotalChildren;
+            groupReqs.push(
+              {
+                addDimensionGroup: {
+                  range: { sheetId: gridSheetId, dimension: "ROWS", startIndex: parentRowNum, endIndex: newGroupEnd },
+                },
+              },
+              {
+                updateDimensionGroup: {
+                  dimensionGroup: {
+                    range: { sheetId: gridSheetId, dimension: "ROWS", startIndex: parentRowNum, endIndex: newGroupEnd },
+                    depth: 1,
+                    collapsed: keepCollapsed,
+                  },
+                  fields: "collapsed",
+                },
+              },
+              {
+                updateDimensionProperties: {
+                  range: { sheetId: gridSheetId, dimension: "ROWS", startIndex: parentRowNum, endIndex: newGroupEnd },
+                  properties: { hiddenByUser: keepCollapsed },
+                  fields: "hiddenByUser",
+                },
+              }
+            );
+          }
+          if (groupReqs.length > 0) {
+            await sheets.spreadsheets.batchUpdate({
+              spreadsheetId: sheetIdClean,
+              requestBody: { requests: groupReqs },
+            });
+          }
+        } catch (groupErr) {
+          console.log("  ⚠ Row grouping reconciliation failed:", groupErr.message);
+        }
+      }
+
+      const allUpdates = [];
+      const pushPlaceholderRowUpdate = (rn, rawRow, ym) => {
+        const formattedSent = retFmtDate(makeInvDateForPeriodYm(ym));
+        allUpdates.push({ range: `Confirmed!AR${rn}`, values: [[formattedSent]] });
+        const slotUpdate = { rowNum: rn, slotNum: 1, sentDate: formattedSent };
+        if (hasExplicitAmount || !String(rawRow?.[41] ?? "").trim()) {
+          allUpdates.push({ range: `Confirmed!AP${rn}`, values: [[perInvoiceAmount]] });
+          slotUpdate.amount = String(perInvoiceAmount);
+        }
+        updatedChildSlots.push(slotUpdate);
+      };
+      const pushNewChildRowWrites = (rn, ym) => {
+        const formattedSent = retFmtDate(makeInvDateForPeriodYm(ym));
+        allUpdates.push(
+          { range: `Confirmed!A${rn}`, values: [[sanitizeFormulaInput(String(client || ""))]] },
+          { range: `Confirmed!B${rn}`, values: [[sanitizeFormulaInput(String(jobName || ""))]] },
+          { range: `Confirmed!AI${rn}`, values: [[sanitizeFormulaInput(String(vat || ""))]] },
+          { range: `Confirmed!AP${rn}`, values: [[perInvoiceAmount]] },
+          { range: `Confirmed!AS${rn}`, values: [[defaultDaysToPay]] },
+          { range: `Confirmed!AR${rn}`, values: [[formattedSent]] }
+        );
+        addedChildRows.push(
+          buildRetainerUiChildRow_({
+            rowNum: rn,
+            client,
+            jobName,
+            vat,
+            isJobCosting,
+            amount: perInvoiceAmount,
+            sentDate: formattedSent,
+            daysToPay: defaultDaysToPay,
+          })
+        );
+      };
+
+      const keptLeading = leadingPlaceholders.slice(Math.max(0, L_have - L_want));
+      for (let i = 0; i < keptLeading.length; i++) {
+        const rn = keptLeading[i].rowNum + rowShiftAfterLeading;
+        pushPlaceholderRowUpdate(rn, keptLeading[i].row, leadingPeriods[i]);
+      }
+      for (let m = L_have; m < L_want; m++) {
+        const rn = parentRowNum + m + 1;
+        pushNewChildRowWrites(rn, leadingPeriods[m]);
+      }
+      for (let i = 0; i < middlePeriods.length; i++) {
+        const cr = middlePlaceholders[i];
+        const rn = cr.rowNum + rowShiftAfterLeading;
+        pushPlaceholderRowUpdate(rn, cr.row, middlePeriods[i]);
+      }
+      const keptTrailCount = Math.min(T_want, T_have);
+      for (let i = 0; i < keptTrailCount; i++) {
+        const cr = trailingPlaceholders[i];
+        const rn = cr.rowNum + rowShiftAfterLeading;
+        pushPlaceholderRowUpdate(rn, cr.row, trailingPeriods[i]);
+      }
+      for (let m = T_have; m < T_want; m++) {
+        const rn = insertAfterTrail + 1 + (m - T_have);
+        pushNewChildRowWrites(rn, trailingPeriods[m]);
+      }
+
+      allUpdates.push({ range: `Confirmed!${startDateCol}${parentRowNum}`, values: [[sanitizeFormulaInput(formattedNewStart)]] });
+      if (shouldWriteEndCol) {
+        allUpdates.push({ range: `Confirmed!${endDateCol}${parentRowNum}`, values: [[sanitizeFormulaInput(formattedFinalEnd)]] });
+      }
+      if (hasExplicitAmount) {
+        allUpdates.push({ range: `Confirmed!${revCol}${parentRowNum}`, values: [[revenue]] });
+      }
+      if (restoreDataAll.length > 0) {
+        allUpdates.push(...restoreDataAll);
+      }
+
+      await sheets.spreadsheets.values.batchUpdate({
+        spreadsheetId: sheetIdClean,
+        _skipFormulaRecompute: true,
+        requestBody: { valueInputOption: "USER_ENTERED", data: allUpdates },
+      });
+
+      let tenantClient = clientName || "";
+      if (!tenantClient) {
+        tenantClient = await resolveClientNameBySheetId(sheets, sheetIdClean, automationCommanderSheetId);
+      }
+      const endClient = client || "";
+      const jobIdentifier = endClient ? `"${endClient} - ${jobName}"` : `"${jobName}"`;
+
+      logPmaActivity(sheets, {
+        automationCommanderSheetId: automationCommanderSheetId,
+        clientName: tenantClient,
+        category: "RETAINER",
+        action: "Retainer Start Date Changed",
+        summary: `Changed start date for ${jobIdentifier} to ${formattedNewStart}`,
+        details: { jobName, newStartDate: formattedNewStart, newEndDate: formattedFinalEnd, newMonthlyAmount, endClient, clientName: tenantClient },
+      }).catch(e => console.error("PMA log failed:", e));
+
+      await flushAndInvalidateRetainerCache_(sheets, sheetIdClean, masterSheetId, ["jobs", "invoices", "retainers", "cash"]);
+
+      return {
+        success: true,
+        trimmed: Math.max(0, L_have - L_want) + Math.max(0, T_have - T_want),
+        grown: Math.max(0, L_want - L_have) + Math.max(0, T_want - T_have),
+        trimmedRowNums,
+        addedChildRows,
+        updatedChildSlots,
+        shiftedExistingRows,
+      };
+    }
 
     if (targetCount < currentCount) {
       // Need to trim excess rows from the end of childRows
@@ -1629,7 +2047,9 @@ export async function executeChangeRetainerStartDate(sheets, params = {}) {
         return {
           success: false,
           blocked: true,
-          error: `Cannot change start date - row ${blockedRow.rowNum} already has a real invoice or expense recorded.`,
+          error: isAdmin
+            ? `Cannot change start date - row ${blockedRow.rowNum} already has a real invoice or expense recorded.`
+            : "Cannot shorten this retainer because a billing period already has an invoice or expense recorded.",
         };
       }
       const groupTrimCounts = new Map();
@@ -1766,11 +2186,11 @@ export async function executeChangeRetainerStartDate(sheets, params = {}) {
         );
         updatedChildSlots.push({ rowNum: rn, slotNum: 1, amount: String(perInvoiceAmount), sentDate: formattedSent });
       }
-      allUpdates.push({ range: `Confirmed!${startDateCol}${parentRowNum}`, values: [[sanitizeFormulaInput(String(newStartDate || ""))]] });
-      if (newEndDate || !currentEndDate) {
+      allUpdates.push({ range: `Confirmed!${startDateCol}${parentRowNum}`, values: [[sanitizeFormulaInput(formattedNewStart)]] });
+      if (shouldWriteEndCol) {
         allUpdates.push({ range: `Confirmed!${endDateCol}${parentRowNum}`, values: [[sanitizeFormulaInput(formattedFinalEnd)]] });
       }
-      if (newMonthlyAmount !== undefined && newMonthlyAmount !== null && newMonthlyAmount !== "") {
+      if (hasExplicitAmount) {
         allUpdates.push({ range: `Confirmed!${revCol}${parentRowNum}`, values: [[revenue]] });
       }
       if (restoreData.length > 0) {
@@ -1927,11 +2347,11 @@ export async function executeChangeRetainerStartDate(sheets, params = {}) {
           })
         );
       }
-      allUpdates.push({ range: `Confirmed!${startDateCol}${parentRowNum}`, values: [[sanitizeFormulaInput(String(newStartDate || ""))]] });
-      if (newEndDate || !currentEndDate) {
+      allUpdates.push({ range: `Confirmed!${startDateCol}${parentRowNum}`, values: [[sanitizeFormulaInput(formattedNewStart)]] });
+      if (shouldWriteEndCol) {
         allUpdates.push({ range: `Confirmed!${endDateCol}${parentRowNum}`, values: [[sanitizeFormulaInput(formattedFinalEnd)]] });
       }
-      if (newMonthlyAmount !== undefined && newMonthlyAmount !== null && newMonthlyAmount !== "") {
+      if (hasExplicitAmount) {
         allUpdates.push({ range: `Confirmed!${revCol}${parentRowNum}`, values: [[revenue]] });
       }
 
@@ -1953,11 +2373,11 @@ export async function executeChangeRetainerStartDate(sheets, params = {}) {
         );
         updatedChildSlots.push({ rowNum: rn, slotNum: 1, amount: String(perInvoiceAmount), sentDate: formattedSent });
       }
-      allUpdates.push({ range: `Confirmed!${startDateCol}${parentRowNum}`, values: [[sanitizeFormulaInput(String(newStartDate || ""))]] });
-      if (newEndDate || !currentEndDate) {
+      allUpdates.push({ range: `Confirmed!${startDateCol}${parentRowNum}`, values: [[sanitizeFormulaInput(formattedNewStart)]] });
+      if (shouldWriteEndCol) {
         allUpdates.push({ range: `Confirmed!${endDateCol}${parentRowNum}`, values: [[sanitizeFormulaInput(formattedFinalEnd)]] });
       }
-      if (newMonthlyAmount !== undefined && newMonthlyAmount !== null && newMonthlyAmount !== "") {
+      if (hasExplicitAmount) {
         allUpdates.push({ range: `Confirmed!${revCol}${parentRowNum}`, values: [[revenue]] });
       }
       await sheets.spreadsheets.values.batchUpdate({
@@ -1979,8 +2399,8 @@ export async function executeChangeRetainerStartDate(sheets, params = {}) {
       clientName: tenantClient,
       category: "RETAINER",
       action: "Retainer Start Date Changed",
-      summary: `Changed start date for ${jobIdentifier} to ${newStartDate}`,
-      details: { jobName, newStartDate, newEndDate, newMonthlyAmount, endClient, clientName: tenantClient }
+      summary: `Changed start date for ${jobIdentifier} to ${formattedNewStart}`,
+      details: { jobName, newStartDate: formattedNewStart, newEndDate: formattedFinalEnd, newMonthlyAmount, endClient, clientName: tenantClient }
     }).catch(e => console.error("PMA log failed:", e));
 
     await flushAndInvalidateRetainerCache_(sheets, sheetIdClean, masterSheetId, ["jobs", "invoices", "retainers", "cash"]);
@@ -1992,6 +2412,7 @@ export async function executeChangeRetainerStartDate(sheets, params = {}) {
       trimmedRowNums,
       addedChildRows,
       updatedChildSlots,
+      shiftedExistingRows,
     };
   } catch (err) {
     console.error("❌ executeChangeRetainerStartDate error:", err);
@@ -2001,8 +2422,10 @@ export async function executeChangeRetainerStartDate(sheets, params = {}) {
 
 export async function handleChangeRetainerStartDate(req, res, sheets) {
   try {
+    const isAdmin = Boolean(!req._liveSessionUser?.isReadOnly && (req._liveSessionUser?.isAdmin || req._liveSessionUser?.role === "Admin"));
     const result = await executeChangeRetainerStartDate(sheets, {
       ...req.body,
+      isAdmin,
       automationCommanderSheetId: req.body.automationCommanderSheetId
     });
     if (!result.success && !result.blocked) {

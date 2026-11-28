@@ -87,25 +87,50 @@ export function resetSheetBridgeBaselinesTableCache() {
   _baselinesTableCache = { checkedAt: 0, ready: null };
 }
 
-async function isSheetBridgeBaselinesTableReady_(supabase) {
+async function withSupabaseBaselineRetry_(fn, label = "baseline query", { retries = 3, baseDelayMs = 400 } = {}) {
+  let lastErr = null;
+  const maxAttempts = Math.max(1, Number(retries) || 1);
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    try {
+      const res = await fn();
+      const err = res?.error;
+      if (!err) return res;
+      if (isMissingRelationErr_(err) || /column .* does not exist/i.test(String(err.message || ""))) {
+        return res;
+      }
+      lastErr = err;
+    } catch (caught) {
+      lastErr = caught;
+    }
+    if (attempt < maxAttempts - 1 && baseDelayMs > 0) {
+      await new Promise((r) => setTimeout(r, baseDelayMs * Math.pow(2, attempt)));
+    }
+  }
+  const msg = lastErr?.message || String(lastErr || "Unknown database error");
+  throw new Error(`${label} failed after ${maxAttempts} attempt(s): ${msg}`);
+}
+
+async function isSheetBridgeBaselinesTableReady_(supabase, retryOpts = {}) {
   if (!supabase) return false;
   const now = Date.now();
   const ttl = _baselinesTableCache.ready ? 300000 : 30000;
   if (_baselinesTableCache.ready !== null && now - _baselinesTableCache.checkedAt < ttl) {
     return _baselinesTableCache.ready;
   }
-  try {
-    const { error } = await supabase
-      .from("pulse_sheet_bridge_baselines")
-      .select("client_id")
-      .limit(1);
-    const ready = !error;
-    _baselinesTableCache = { checkedAt: now, ready };
-    return ready;
-  } catch {
+  const { error } = await withSupabaseBaselineRetry_(
+    () => supabase.from("pulse_sheet_bridge_baselines").select("client_id").limit(1),
+    "pulse_sheet_bridge_baselines readiness check",
+    retryOpts
+  );
+  if (!error) {
+    _baselinesTableCache = { checkedAt: now, ready: true };
+    return true;
+  }
+  if (isMissingRelationErr_(error)) {
     _baselinesTableCache = { checkedAt: now, ready: false };
     return false;
   }
+  throw new Error(`pulse_sheet_bridge_baselines readiness check failed: ${error.message}`);
 }
 let _coreClientTabSet = null;
 function getCoreClientTabSet_() {
@@ -1215,59 +1240,81 @@ async function fetchDriveVersionMeta_(rawDrive, spreadsheetId) {
   };
 }
 
-async function loadBaselineRecord_(supabase, ctx) {
+export async function loadBaselineRecord_(supabase, ctx, retryOpts = {}) {
   if (!supabase || !ctx?.clientName) return { driveVersion: "", updatedAt: null, tabs: createSafeMap_() };
 
   let baselinePayload = null;
   let updatedAt = null;
-  const dedicatedReady = ctx.clientId ? await isSheetBridgeBaselinesTableReady_(supabase) : false;
+  const dedicatedReady = ctx.clientId ? await isSheetBridgeBaselinesTableReady_(supabase, retryOpts) : false;
 
   if (ctx.clientId && dedicatedReady) {
-    try {
-      const { data: dedData, error: dedErr } = await supabase
-        .from("pulse_sheet_bridge_baselines")
-        .select("drive_version, note_bounds_version, tabs, updated_at")
-        .eq("client_id", ctx.clientId)
-        .maybeSingle();
-      if (!dedErr && dedData && typeof dedData.tabs === "object" && dedData.tabs !== null) {
-        baselinePayload = {
-          driveVersion: dedData.drive_version || "",
-          noteBoundsVersion: dedData.note_bounds_version || CURRENT_NOTE_BOUNDS_VERSION,
-          tabs: dedData.tabs,
-          updatedAt: dedData.updated_at || null,
-        };
-        updatedAt = dedData.updated_at || null;
-      } else if (dedErr && isMissingRelationErr_(dedErr)) {
-        _baselinesTableCache = { checkedAt: Date.now(), ready: false };
+    const { data: dedData, error: dedErr } = await withSupabaseBaselineRetry_(
+      () =>
+        supabase
+          .from("pulse_sheet_bridge_baselines")
+          .select("drive_version, note_bounds_version, tabs, updated_at")
+          .eq("client_id", ctx.clientId)
+          .maybeSingle(),
+      `pulse_sheet_bridge_baselines read (${ctx.clientName})`,
+      retryOpts
+    );
+    if (!dedErr && dedData && typeof dedData.tabs === "object" && dedData.tabs !== null) {
+      baselinePayload = {
+        driveVersion: dedData.drive_version || "",
+        noteBoundsVersion: dedData.note_bounds_version || CURRENT_NOTE_BOUNDS_VERSION,
+        tabs: dedData.tabs,
+        updatedAt: dedData.updated_at || null,
+      };
+      updatedAt = dedData.updated_at || null;
+    } else if (dedErr) {
+      if (!isMissingRelationErr_(dedErr)) {
+        throw new Error(`pulse_sheet_bridge_baselines read failed (${ctx.clientName}): ${dedErr.message}`);
       }
-    } catch (_) { }
+      _baselinesTableCache = { checkedAt: Date.now(), ready: false };
+    }
   }
 
   if (!baselinePayload && ctx.clientId) {
-    try {
-      const { data: cfgData, error: cfgErr } = await supabase
-        .from("pulse_master_sync_configs")
-        .select("sheet_bridge_baseline, updated_at")
-        .eq("client_id", ctx.clientId)
-        .maybeSingle();
-      if (!cfgErr && cfgData?.sheet_bridge_baseline && typeof cfgData.sheet_bridge_baseline === "object") {
-        baselinePayload = cfgData.sheet_bridge_baseline;
-        updatedAt = cfgData.updated_at || null;
-      }
-    } catch (_) { }
+    const { data: cfgData, error: cfgErr } = await withSupabaseBaselineRetry_(
+      () =>
+        supabase
+          .from("pulse_master_sync_configs")
+          .select("sheet_bridge_baseline, updated_at")
+          .eq("client_id", ctx.clientId)
+          .maybeSingle(),
+      `pulse_master_sync_configs baseline read (${ctx.clientName})`,
+      retryOpts
+    );
+    if (!cfgErr && cfgData?.sheet_bridge_baseline && typeof cfgData.sheet_bridge_baseline === "object") {
+      baselinePayload = cfgData.sheet_bridge_baseline;
+      updatedAt = cfgData.updated_at || null;
+    } else if (
+      cfgErr &&
+      !isMissingRelationErr_(cfgErr) &&
+      !/column .* does not exist/i.test(String(cfgErr.message || ""))
+    ) {
+      throw new Error(`pulse_master_sync_configs baseline read failed (${ctx.clientName}): ${cfgErr.message}`);
+    }
   }
 
   if (!baselinePayload && !ctx.gridStorageRetired) {
-    const { data } = await supabase
-      .from("master_sheet_grids")
-      .select("notes_grid, updated_at")
-      .eq("client_name", ctx.clientName)
-      .eq("sheet_role", "master")
-      .eq("tab_name", BASELINE_TAB_NAME)
-      .maybeSingle();
-    if (data?.notes_grid && typeof data.notes_grid === "object") {
+    const { data, error: gridErr } = await withSupabaseBaselineRetry_(
+      () =>
+        supabase
+          .from("master_sheet_grids")
+          .select("notes_grid, updated_at")
+          .eq("client_name", ctx.clientName)
+          .eq("sheet_role", "master")
+          .eq("tab_name", BASELINE_TAB_NAME)
+          .maybeSingle(),
+      `master_sheet_grids baseline read (${ctx.clientName})`,
+      retryOpts
+    );
+    if (!gridErr && data?.notes_grid && typeof data.notes_grid === "object") {
       baselinePayload = data.notes_grid;
       updatedAt = data.updated_at || null;
+    } else if (gridErr && !isMissingRelationErr_(gridErr)) {
+      throw new Error(`master_sheet_grids baseline read failed (${ctx.clientName}): ${gridErr.message}`);
     }
   }
 
@@ -1292,10 +1339,11 @@ async function loadBaselineRecord_(supabase, ctx) {
   };
 }
 
-async function saveBaselineRecord_(
+export async function saveBaselineRecord_(
   supabase,
   ctx,
-  { driveVersion = "", tabs = {}, noteBoundsVersion = CURRENT_NOTE_BOUNDS_VERSION }
+  { driveVersion = "", tabs = {}, noteBoundsVersion = CURRENT_NOTE_BOUNDS_VERSION },
+  retryOpts = {}
 ) {
   if (!supabase || !ctx?.clientName) return;
   const compactedTabs = createSafeMap_();
@@ -1310,20 +1358,25 @@ async function saveBaselineRecord_(
   const cleanDriveVer = String(driveVersion || "");
   const cleanBoundsVer = Number(noteBoundsVersion || CURRENT_NOTE_BOUNDS_VERSION);
 
-  if (ctx.clientId && (await isSheetBridgeBaselinesTableReady_(supabase))) {
-    const { error: dedErr } = await supabase
-      .from("pulse_sheet_bridge_baselines")
-      .upsert(
-        {
-          client_id: ctx.clientId,
-          client_name: ctx.clientName,
-          drive_version: cleanDriveVer,
-          note_bounds_version: cleanBoundsVer,
-          tabs: compactedTabs,
-          updated_at: nowIso,
-        },
-        { onConflict: "client_id" }
-      );
+  if (ctx.clientId && (await isSheetBridgeBaselinesTableReady_(supabase, retryOpts))) {
+    const { error: dedErr } = await withSupabaseBaselineRetry_(
+      () =>
+        supabase
+          .from("pulse_sheet_bridge_baselines")
+          .upsert(
+            {
+              client_id: ctx.clientId,
+              client_name: ctx.clientName,
+              drive_version: cleanDriveVer,
+              note_bounds_version: cleanBoundsVer,
+              tabs: compactedTabs,
+              updated_at: nowIso,
+            },
+            { onConflict: "client_id" }
+          ),
+      `pulse_sheet_bridge_baselines upsert (${ctx.clientName})`,
+      retryOpts
+    );
     if (!dedErr) {
       // Opportunistically clear legacy pulse_master_sync_configs JSONB blob once per client
       if (!_clearedLegacyBaselineClients.has(ctx.clientId)) {
@@ -1371,36 +1424,46 @@ async function saveBaselineRecord_(
   };
 
   if (ctx.clientId) {
-    const { error: cfgErr } = await supabase
-      .from("pulse_master_sync_configs")
-      .upsert(
-        {
-          client_id: ctx.clientId,
-          client_name: ctx.clientName,
-          sheet_bridge_baseline: payload,
-        },
-        { onConflict: "client_id" }
-      );
+    const { error: cfgErr } = await withSupabaseBaselineRetry_(
+      () =>
+        supabase
+          .from("pulse_master_sync_configs")
+          .upsert(
+            {
+              client_id: ctx.clientId,
+              client_name: ctx.clientName,
+              sheet_bridge_baseline: payload,
+            },
+            { onConflict: "client_id" }
+          ),
+      `pulse_master_sync_configs baseline upsert (${ctx.clientName})`,
+      retryOpts
+    );
     if (!cfgErr) return;
     if (ctx.gridStorageRetired) {
       throw new Error(`pulse_master_sync_configs baseline upsert failed: ${cfgErr.message}`);
     }
   }
 
-  await supabase.from("master_sheet_grids").upsert(
-    {
-      client_id: ctx.clientId,
-      client_name: ctx.clientName,
-      sheet_role: "master",
-      tab_name: BASELINE_TAB_NAME,
-      values_grid: [],
-      formulas_grid: [],
-      notes_grid: payload,
-      row_count: 0,
-      col_count: 0,
-      updated_at: payload.updatedAt,
-    },
-    { onConflict: "client_name,sheet_role,tab_name" }
+  await withSupabaseBaselineRetry_(
+    () =>
+      supabase.from("master_sheet_grids").upsert(
+        {
+          client_id: ctx.clientId,
+          client_name: ctx.clientName,
+          sheet_role: "master",
+          tab_name: BASELINE_TAB_NAME,
+          values_grid: [],
+          formulas_grid: [],
+          notes_grid: payload,
+          row_count: 0,
+          col_count: 0,
+          updated_at: payload.updatedAt,
+        },
+        { onConflict: "client_name,sheet_role,tab_name" }
+      ),
+    `master_sheet_grids baseline upsert (${ctx.clientName})`,
+    retryOpts
   );
 }
 

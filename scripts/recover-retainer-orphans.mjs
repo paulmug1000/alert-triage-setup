@@ -212,7 +212,7 @@ async function releaseClientBridgeLock({ lockKey, token }) {
     if (!redisClient.isOpen) return;
     const cur = await redisClient.get(lockKey).catch(() => null);
     if (cur === token) {
-      await redisClient.del(lockKey).catch(() => {});
+      await redisClient.del(lockKey).catch(() => { });
     }
   } catch {
     // ignore release failures
@@ -222,7 +222,7 @@ async function releaseClientBridgeLock({ lockKey, token }) {
 async function clearBridgeQueuesForClient(clientKey) {
   await clearPendingStructuralOpsById_(clientKey, null);
   if (redisClient.isOpen) {
-    await redisClient.del(`pulse:sheet_bridge_dirty:${clientKey}`).catch(() => {});
+    await redisClient.del(`pulse:sheet_bridge_dirty:${clientKey}`).catch(() => { });
   }
 }
 
@@ -402,8 +402,8 @@ async function moveGapOrphansToBottomAndClear({
     const tag = moveRowNums.includes(g.rowNum)
       ? "MOVE+CLEAR"
       : clearInPlaceRowNums.includes(g.rowNum)
-      ? "CLEAR_IN_PLACE_SEPARATOR"
-      : "KEEP_BLANK_SEPARATOR";
+        ? "CLEAR_IN_PLACE_SEPARATOR"
+        : "KEEP_BLANK_SEPARATOR";
     console.log(`    Gap [${tag}] ${summarizeRow(g.rowNum, g.row)}`);
   }
 
@@ -925,7 +925,7 @@ async function main() {
       else await planAndApplyThrive(rawSheets, ctx.clientSheetId, true);
 
       // Flush any in-memory virtual client recomputes then reseed atomically from the live Google Sheet
-      await flushImmediateAndScheduleBackgroundClientRecomputes(sheets, clientName).catch(() => {});
+      await flushImmediateAndScheduleBackgroundClientRecomputes(sheets, clientName).catch(() => { });
       const seedRes = await seedClientSheetToSupabase(sheets, clientName);
       console.log(`  [${clientName}] Reseeded Supabase + baseline + relational jobs:`, JSON.stringify(seedRes));
 

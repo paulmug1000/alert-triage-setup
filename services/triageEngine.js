@@ -7936,7 +7936,7 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
         const tabName = alertType === "crmPipeAppDiscr" ? "Pipeline" : "Confirmed";
         const src = alert.data?.sheetData || [];
         // sheetData: EF=client[0], EG=job[1], EH=code[2], EI=revenue[3], EJ=dirCosts[4], EK=start[5], EL=end[6], EM=likelihood[7]
-        const client = src[0] || alert.clientName || "";
+        let client = String(src[0] || "").trim();
         const jobName = src[1] || "";
         const projectCode = src[2] || "";
         const revenue = src[3] || "";
@@ -7944,7 +7944,7 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
         const startDate = src[5] || "";
         const endDate = src[6] || "";
         const likelihood = src[7] || "";
-        const jobDesc = [client, jobName, projectCode].filter(Boolean).join(" - ");
+        let jobDesc = [client, jobName, projectCode].filter(Boolean).join(" - ");
 
         let options = [];
         let jobRow = null;      // declared here so both branches can set it and the DD read below can use it
@@ -8062,6 +8062,7 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
                 btnText = `Update fields in Pulse`;
               }
 
+              const summaryClient = client || crmClient || String(tabRows[jobRow - 1]?.[0] || "").trim() || "(No client)";
               options.push({
                 optionId: 1,
                 title: titleStr,
@@ -8071,7 +8072,7 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
                 jobName: jobName || crmJob,
                 explanation: `Update ${tabName} to match CRM data: ${explanations.join("; ")}`,
                 matchingDetails: {
-                  unmatchedJobSummary: { clientName: client || crmClient, jobName: jobName || crmJob, projectCode: projectCode || crmCode },
+                  unmatchedJobSummary: { clientName: summaryClient, jobName: jobName || crmJob, projectCode: projectCode || crmCode },
                 },
                 matchAnalysis: {
                   matchConfidence: "High",
@@ -8087,6 +8088,7 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
           }
 
           // Always add Option 2: Ignore discrepancy
+          const ignoreSummaryClient = client || crmClient || (jobRow ? String(tabRows[jobRow - 1]?.[0] || "").trim() : "") || "(No client)";
           options.push({
             optionId: options.length + 1,
             title: `Ignore discrepancy (keep Pulse value)`,
@@ -8095,7 +8097,7 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
             jobRow: jobRow || null,
             jobName: jobName || crmJob,
             matchingDetails: {
-              unmatchedJobSummary: { clientName: client || crmClient, jobName: jobName || crmJob, projectCode: projectCode || crmCode },
+              unmatchedJobSummary: { clientName: ignoreSummaryClient, jobName: jobName || crmJob, projectCode: projectCode || crmCode },
             },
             explanation: `Mark this discrepancy as ignored. No changes will be made to either Pulse or CRM.`,
             recommendedActions: [`Mark this field mismatch as ignored - no changes will be made`],
@@ -8104,6 +8106,7 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
         } else {
           // not_found: job in sheet but not in CRM
           // Search the tab to find the actual Pipeline/Confirmed row number
+          let resolvedNotFoundClient = client;
           if (client || jobName || projectCode) {
             try {
               let tabSearchRows = [];
@@ -8139,8 +8142,14 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
                   }
                 }
               }
+              if (!resolvedNotFoundClient && jobRow) {
+                resolvedNotFoundClient = String(tabSearchRows[jobRow - 1]?.[0] || "").trim();
+              }
             } catch (e) { console.log("  not_found tab search failed:", e.message); }
           }
+
+          const displayClient = resolvedNotFoundClient || "(No client)";
+          jobDesc = [displayClient, jobName, projectCode].filter(Boolean).join(" - ");
 
           options = [
             {
@@ -8151,7 +8160,7 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
               jobRow: jobRow || null,
               jobName,
               explanation: `Mark this CRM discrepancy as ignored to prevent it recurring. "${jobDesc}" will remain in the ${tabName} tab with no changes made to CRM.`,
-              matchingDetails: { unmatchedJobSummary: { clientName: client, jobName, projectCode, revenue, startDate, endDate, likelihood } },
+              matchingDetails: { unmatchedJobSummary: { clientName: displayClient, jobName, projectCode, revenue, startDate, endDate, likelihood } },
               recommendedActions: [
                 `Verify that "${jobDesc}" is intentionally absent from the CRM`,
                 `If confirmed, mark this alert as ignored to prevent it recurring`,
@@ -8165,7 +8174,7 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
               jobRow: jobRow || null,
               jobName,
               explanation: `Remove "${jobDesc}" and all of its associated rows from the ${tabName} tab. Please verify that no real invoices or expenses are linked before accepting.`,
-              matchingDetails: { unmatchedJobSummary: { clientName: client, jobName, projectCode, revenue, startDate, endDate, likelihood } },
+              matchingDetails: { unmatchedJobSummary: { clientName: displayClient, jobName, projectCode, revenue, startDate, endDate, likelihood } },
               recommendedActions: [
                 `Blank all cells for "${jobDesc}" and its child rows in the ${tabName} tab`,
                 `All columns ${tabName === "Confirmed" ? "A:G, R, AG:AM, AN, AP:BJ, BX:CR, DD" : "A:G, AG:AM, AN, AP:BH, BX:CR, DD"} will be cleared across the parent row and all child rows`,

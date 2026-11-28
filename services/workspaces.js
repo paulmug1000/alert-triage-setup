@@ -819,30 +819,19 @@ export async function handleGetInvoicesInbox(req, res, sheets) {
 
     if (!bypassCache) {
       const cached = await get2TierCache(cacheKey);
-      if (cached && Array.isArray(cached.inbox)) {
+      const hasEpochDateArtifact = Array.isArray(cached?.inbox) && cached.inbox.some(
+        (item) => item?.sentDate === "1-Jan-70" || item?.dueDate === "1-Jan-70" || item?.fullyPaidOn === "1-Jan-70"
+      );
+      if (cached && Array.isArray(cached.inbox) && !hasEpochDateArtifact) {
         return res.status(200).json(cached);
       }
     }
 
-    const fmtDate = (dStr) => {
-      if (!dStr) return "";
-      const nativeParsed = new Date(dStr);
-      let d = null;
-      if (!isNaN(nativeParsed.getTime())) d = nativeParsed;
-      else {
-        const MONTHS_MAP = { jan: 0, feb: 1, mar: 2, apr: 3, may: 4, jun: 5, jul: 6, aug: 7, sep: 8, oct: 9, nov: 10, dec: 11 };
-        const parts = String(dStr).split(/[-\/]/);
-        if (parts.length === 3) {
-          const mNum = MONTHS_MAP[parts[1]?.toLowerCase()?.substring(0, 3)];
-          if (mNum !== undefined) {
-            const yr = parts[2].length === 2 ? 2000 + parseInt(parts[2]) : parseInt(parts[2]);
-            d = new Date(yr, mNum, parseInt(parts[0]));
-          }
-        }
-      }
-      if (!d) return String(dStr).trim();
-      const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
-      return `${d.getDate()}-${months[d.getMonth()]}-${String(d.getFullYear()).slice(-2)}`;
+    const fmtDate = (val) => {
+      if (val === undefined || val === null || val === "" || val === 0 || val === "0") return "";
+      const s = String(val).trim();
+      if (!s || s === "0") return "";
+      return toSheetDateFormat(val);
     };
 
     const buildInboxEntry = (row, metaLookup) => {

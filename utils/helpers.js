@@ -1904,12 +1904,24 @@ export function parseSheetDate(dStr) {
   const months = { jan: 0, feb: 1, mar: 2, apr: 3, may: 4, jun: 5, jul: 6, aug: 7, sep: 8, oct: 9, nov: 10, dec: 11 };
 
   // 1. ISO format: YYYY-MM-DD (optionally with timestamp e.g. 2026-11-05T00:00:00.000Z)
-  const isoMatch = s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})(?:T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?)?$/);
+  const isoMatch = s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})(?:[T\s]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?)?$/);
   if (isoMatch) {
     const yr = parseInt(isoMatch[1], 10);
     const mIdx = parseInt(isoMatch[2], 10) - 1;
     const day = parseInt(isoMatch[3], 10);
     return buildValidatedDate_(yr, mIdx, day);
+  }
+
+  // 1b. Xero JSON date format: /Date(1763164800000+0000)/
+  const xeroMatch = s.match(/^\/Date\((-?\d+)(?:[+-]\d{4})?\)\/$/);
+  if (xeroMatch) {
+    const ms = parseInt(xeroMatch[1], 10);
+    if (Number.isFinite(ms)) {
+      const utc = new Date(ms);
+      if (!isNaN(utc.getTime())) {
+        return buildValidatedDate_(utc.getUTCFullYear(), utc.getUTCMonth(), utc.getUTCDate());
+      }
+    }
   }
 
   // 2. DD-Mon-YY or DD-Mon-YYYY (e.g. 15-Oct-26 or 1-Jan-2025)

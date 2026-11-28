@@ -1474,7 +1474,7 @@ export default function AlertSelectionView({
 
     if (isAppDiscr) {
       const sd = alert.data?.sheetData || [];
-      const client = sd[0] || alert.clientName || "";
+      const client = String(sd[0] || alert.data?.crmData?.[1] || alert.options?.[0]?.jobRowsData?.[0]?.client || "").trim() || "(No client)";
       const job = sd[1] || "";
       const code = sd[2] || "";
       const revVal = sd[3] ? parseFloat(String(sd[3]).replace(/[£$€,\s]/g, "")) : null;
@@ -1510,7 +1510,7 @@ export default function AlertSelectionView({
 
     if (isDashDiscr) {
       const cd = alert.data?.crmData || [];
-      const client = cd[0] || alert.clientName || "";
+      const client = String(cd[0] || alert.data?.sheetData?.[1] || alert.options?.[0]?.jobRowsData?.[0]?.client || "").trim() || "(No client)";
       const job = cd[1] || "";
       const code = cd[2] || "";
       const revVal = cd[3] ? parseFloat(String(cd[3]).replace(/[£$€,\s]/g, "")) : null;

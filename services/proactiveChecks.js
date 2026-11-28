@@ -257,8 +257,8 @@ export async function findPossibleRetainerInvoice_(masterSheetId, clientSheetId,
 
       const sentVal = row[6];
       if (!sentVal) continue;
-      const sentDate = sentVal instanceof Date ? sentVal : new Date(sentVal);
-      if (isNaN(sentDate.getTime())) continue;
+      const sentDate = parseConfirmedDate_(sentVal);
+      if (!sentDate || isNaN(sentDate.getTime())) continue;
       if (Math.abs(sentDate.getTime() - expectedTime) > windowMs) continue;
 
       const invoiceNo = String(row[5] || "").trim();

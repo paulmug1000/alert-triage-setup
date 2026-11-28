@@ -4634,6 +4634,12 @@ export async function resolveLiveInvoiceSlot_(sheets, sheetIdClean, targetTab, s
     r => r === group.parentRowNum || String(group.allRows?.[r - 1]?.[0] || "").trim() !== ""
   );
   const parentClient = String(group.parentRow?.[0] || "").trim();
+  const isMultiRowFixedRetainer = isFixedScheduleRetainer(group.parentRow) && group.allRowNums.length > 1;
+  const toYm_ = (val) => {
+    const d = val ? parseSheetDate(val) : null;
+    return d ? d.getFullYear() * 12 + d.getMonth() : null;
+  };
+  const incomingYm = toYm_(invoice?.sentDate || invoice?.sendDate);
 
   const invAmt = parseFloat(String(invoice?.amount || "0").replace(/[£$€,\s]/g, "")) || 0;
   const invRefClean = String(invoice?.invoiceNo || "").trim().toLowerCase();
@@ -4646,6 +4652,7 @@ export async function resolveLiveInvoiceSlot_(sheets, sheetIdClean, targetTab, s
       const baseCol = s === 1 ? 41 : s === 2 ? 48 : 55; // AP=41, AW=48, BD=55
       const amt = parseFloat(String(rowArr[baseCol] || "0").replace(/[£$€,\s]/g, "")) || 0;
       const ref = String(rowArr[baseCol + 1] || "").trim();
+      const sentRaw = rowArr[baseCol + 2];
       const st = String(rowArr[baseCol + 4] || "").trim();
 
       // Exact same invoice ref already placed on this job -> update in place
@@ -4653,10 +4660,17 @@ export async function resolveLiveInvoiceSlot_(sheets, sheetIdClean, targetTab, s
         return { rowNum: rNum, slotNum: s, createdNewRow: false, allRowNums: group.allRowNums, parentRowNum: group.parentRowNum, explicitClientRowNums, parentClient, group };
       }
 
+      // Multi-row fixed retainers never hold invoices on the parent row or in slots 2/3
+      if (isMultiRowFixedRetainer && (rNum === group.parentRowNum || s !== 1)) {
+        continue;
+      }
+
       const isEmpty = !ref && Math.abs(amt) < 0.005;
       const isAuto = isAutoInvoicePlaceholderRef_(ref);
       const isManualPlaceholder = !ref && Math.abs(amt) >= 0.005;
       const isRealOccupied = Boolean(ref && !isAuto);
+      const slotYm = toYm_(sentRaw);
+      const monthMatches = incomingYm !== null && slotYm !== null && slotYm === incomingYm;
 
       slotCandidates.push({
         rowNum: rNum,
@@ -4668,14 +4682,16 @@ export async function resolveLiveInvoiceSlot_(sheets, sheetIdClean, targetTab, s
         isAuto,
         isManualPlaceholder,
         isRealOccupied,
+        monthMatches,
         amtDiff: Math.abs(amt - invAmt),
         isRequested: rNum === Number(requestedRowNum) && s === Number(requestedSlotNum)
       });
     }
   }
 
-  // If editing a placeholder directly from JobDetailModal, keep the requested slot
-  if (isIncomingPlaceholder && requestedRowNum && requestedSlotNum) {
+  // If editing a placeholder directly from JobDetailModal, keep the requested slot (unless it violates retainer parent/slot rules)
+  const reqAllowedForRetainer = !isMultiRowFixedRetainer || (Number(requestedRowNum) !== Number(group.parentRowNum) && Number(requestedSlotNum) === 1);
+  if (isIncomingPlaceholder && requestedRowNum && requestedSlotNum && reqAllowedForRetainer) {
     return { rowNum: Number(requestedRowNum), slotNum: Number(requestedSlotNum), createdNewRow: false, allRowNums: group.allRowNums, parentRowNum: group.parentRowNum, explicitClientRowNums, parentClient, group };
   }
 
@@ -4687,36 +4703,35 @@ export async function resolveLiveInvoiceSlot_(sheets, sheetIdClean, targetTab, s
     }
   }
 
-  // Priority 1: Manual placeholder (amt > 0, blank ref) matching within £5.00
-  const p1 = slotCandidates
-    .filter(c => c.isManualPlaceholder && c.amtDiff <= 5.001)
-    .sort((a, b) => (a.isRequested === b.isRequested ? (a.amtDiff - b.amtDiff || a.rowNum - b.rowNum || a.slotNum - b.slotNum) : (a.isRequested ? -1 : 1)));
-  if (p1.length > 0) {
-    return { rowNum: p1[0].rowNum, slotNum: p1[0].slotNum, createdNewRow: false, allRowNums: group.allRowNums, parentRowNum: group.parentRowNum, explicitClientRowNums, parentClient, group };
-  }
+  const sortInvCandidates = (byAmtDiff) => (a, b) => {
+    if (a.isRequested !== b.isRequested) return a.isRequested ? -1 : 1;
+    if (isMultiRowFixedRetainer && a.monthMatches !== b.monthMatches) return a.monthMatches ? -1 : 1;
+    if (byAmtDiff && a.amtDiff !== b.amtDiff) return a.amtDiff - b.amtDiff;
+    return a.rowNum - b.rowNum || a.slotNum - b.slotNum;
+  };
 
-  // Priority 2: Automatic placeholder (PLACE-INV-...) buffer
-  const p2 = slotCandidates
-    .filter(c => c.isAuto)
-    .sort((a, b) => (a.isRequested === b.isRequested ? (a.rowNum - b.rowNum || a.slotNum - b.slotNum) : (a.isRequested ? -1 : 1)));
-  if (p2.length > 0) {
-    return { rowNum: p2[0].rowNum, slotNum: p2[0].slotNum, createdNewRow: false, allRowNums: group.allRowNums, parentRowNum: group.parentRowNum, explicitClientRowNums, parentClient, group };
-  }
+  const pickInvCandidate_ = (pool) => {
+    // Priority 1: Manual placeholder (amt > 0, blank ref) matching within £5.00
+    const p1 = pool.filter(c => c.isManualPlaceholder && c.amtDiff <= 5.001).sort(sortInvCandidates(true));
+    if (p1.length > 0) return p1[0];
+    // Priority 2: Automatic placeholder (PLACE-INV-...) buffer
+    const p2 = pool.filter(c => c.isAuto).sort(sortInvCandidates(false));
+    if (p2.length > 0) return p2[0];
+    // Priority 3: Any remaining Manual placeholder (amt > 0, blank ref) outside £5 — use up before empty slots
+    const p3 = pool.filter(c => c.isManualPlaceholder).sort(sortInvCandidates(true));
+    if (p3.length > 0) return p3[0];
+    // Priority 4: Completely Empty slot (amt === 0, blank ref)
+    const p4 = pool.filter(c => c.isEmpty).sort(sortInvCandidates(false));
+    if (p4.length > 0) return p4[0];
+    return null;
+  };
 
-  // Priority 3: Any remaining Manual placeholder (amt > 0, blank ref) outside £5 — use up before empty slots
-  const p3 = slotCandidates
-    .filter(c => c.isManualPlaceholder)
-    .sort((a, b) => (a.isRequested === b.isRequested ? (a.amtDiff - b.amtDiff || a.rowNum - b.rowNum || a.slotNum - b.slotNum) : (a.isRequested ? -1 : 1)));
-  if (p3.length > 0) {
-    return { rowNum: p3[0].rowNum, slotNum: p3[0].slotNum, createdNewRow: false, allRowNums: group.allRowNums, parentRowNum: group.parentRowNum, explicitClientRowNums, parentClient, group };
-  }
-
-  // Priority 4: Completely Empty slot (amt === 0, blank ref)
-  const p4 = slotCandidates
-    .filter(c => c.isEmpty)
-    .sort((a, b) => (a.isRequested === b.isRequested ? (a.rowNum - b.rowNum || a.slotNum - b.slotNum) : (a.isRequested ? -1 : 1)));
-  if (p4.length > 0) {
-    return { rowNum: p4[0].rowNum, slotNum: p4[0].slotNum, createdNewRow: false, allRowNums: group.allRowNums, parentRowNum: group.parentRowNum, explicitClientRowNums, parentClient, group };
+  // Multi-row fixed retainers: prioritize matching-month child row before falling back to other child rows
+  const chosenInv =
+    (isMultiRowFixedRetainer && incomingYm !== null ? pickInvCandidate_(slotCandidates.filter(c => c.monthMatches)) : null) ||
+    pickInvCandidate_(slotCandidates);
+  if (chosenInv) {
+    return { rowNum: chosenInv.rowNum, slotNum: chosenInv.slotNum, createdNewRow: false, allRowNums: group.allRowNums, parentRowNum: group.parentRowNum, explicitClientRowNums, parentClient, group };
   }
 
   // Priority 5: All existing slots across parent + child rows are occupied by real invoices -> insert new child row
@@ -4744,6 +4759,13 @@ export async function resolveLiveExpenseSlot_(sheets, sheetIdClean, targetTab, s
     return { rowNum: requestedRowNum, slotNum: requestedSlotNum || 1, createdNewRow: false, allRowNums: seedRowNums };
   }
 
+  const isMultiRowFixedRetainer = isFixedScheduleRetainer(group.parentRow) && group.allRowNums.length > 1;
+  const toYm_ = (val) => {
+    const d = val ? parseSheetDate(val) : null;
+    return d ? d.getFullYear() * 12 + d.getMonth() : null;
+  };
+  const incomingYm = toYm_(expense?.date || expense?.recDate);
+
   const expAmt = parseFloat(String(expense?.amount || "0").replace(/[£$€,\s]/g, "")) || 0;
   const expIdClean = String(expense?.appId || expense?.transactionId || "").trim();
   const expDescClean = String(expense?.description || expense?.contactName || "").trim().toLowerCase();
@@ -4752,15 +4774,22 @@ export async function resolveLiveExpenseSlot_(sheets, sheetIdClean, targetTab, s
   const slotCandidates = [];
   for (const rNum of group.allRowNums) {
     const rowArr = group.allRows[rNum - 1] || [];
+    const childInvYm = toYm_(rowArr[43]); // AR = Slot 1 invoice send date
     for (let s = 1; s <= 3; s++) {
       const baseCol = s === 1 ? 75 : s === 2 ? 82 : 89; // BX=75, CE=82, CL=89
       const desc = String(rowArr[baseCol] || "").trim();
       const amt = parseFloat(String(rowArr[baseCol + 1] || "0").replace(/[£$€,\s]/g, "")) || 0;
+      const recRaw = rowArr[baseCol + 3];
       const st = String(rowArr[baseCol + 5] || "").trim();
       const id = String(rowArr[baseCol + 6] || "").trim();
 
       if (!isIncomingPlaceholder && expIdClean && id === expIdClean) {
         return { rowNum: rNum, slotNum: s, createdNewRow: false, allRowNums: group.allRowNums, parentRowNum: group.parentRowNum, group };
+      }
+
+      // Multi-row fixed retainers must NEVER place direct costs onto the parent row
+      if (isMultiRowFixedRetainer && rNum === group.parentRowNum) {
+        continue;
       }
 
       const isEmpty = !desc && !id && Math.abs(amt) < 0.005;
@@ -4769,6 +4798,9 @@ export async function resolveLiveExpenseSlot_(sheets, sheetIdClean, targetTab, s
       const isRealOccupied = Boolean(id && !isAuto);
 
       const descMatches = Boolean(desc && expDescClean && (desc.toLowerCase().includes(expDescClean) || expDescClean.includes(desc.toLowerCase())));
+      const rowYm = childInvYm !== null ? childInvYm : toYm_(recRaw);
+      const monthMatches = incomingYm !== null && rowYm !== null && rowYm === incomingYm;
+      const monthDist = (incomingYm !== null && rowYm !== null) ? Math.abs(rowYm - incomingYm) : Infinity;
 
       slotCandidates.push({
         rowNum: rNum,
@@ -4782,13 +4814,16 @@ export async function resolveLiveExpenseSlot_(sheets, sheetIdClean, targetTab, s
         isManualPlaceholder,
         isRealOccupied,
         descMatches,
+        monthMatches,
+        monthDist,
         amtDiff: Math.abs(amt - expAmt),
         isRequested: rNum === Number(requestedRowNum) && s === Number(requestedSlotNum)
       });
     }
   }
 
-  if (isIncomingPlaceholder && requestedRowNum && requestedSlotNum) {
+  const reqAllowedForRetainer = !isMultiRowFixedRetainer || Number(requestedRowNum) !== Number(group.parentRowNum);
+  if (isIncomingPlaceholder && requestedRowNum && requestedSlotNum && reqAllowedForRetainer) {
     return { rowNum: Number(requestedRowNum), slotNum: Number(requestedSlotNum), createdNewRow: false, allRowNums: group.allRowNums, parentRowNum: group.parentRowNum, group };
   }
 
@@ -4799,40 +4834,39 @@ export async function resolveLiveExpenseSlot_(sheets, sheetIdClean, targetTab, s
     }
   }
 
-  // Priority 1: Manual placeholder (amt > 0, blank ID) matching within £5.00
-  const p1 = slotCandidates
-    .filter(c => c.isManualPlaceholder && c.amtDiff <= 5.001)
-    .sort((a, b) => {
-      if (a.descMatches !== b.descMatches) return a.descMatches ? -1 : 1;
-      if (a.isRequested !== b.isRequested) return a.isRequested ? -1 : 1;
-      return a.amtDiff - b.amtDiff || a.rowNum - b.rowNum || a.slotNum - b.slotNum;
-    });
-  if (p1.length > 0) {
-    return { rowNum: p1[0].rowNum, slotNum: p1[0].slotNum, createdNewRow: false, allRowNums: group.allRowNums, parentRowNum: group.parentRowNum, group };
-  }
+  const sortExpCandidates = (byAmtDiff, checkDesc) => (a, b) => {
+    if (checkDesc && a.descMatches !== b.descMatches) return a.descMatches ? -1 : 1;
+    if (a.isRequested !== b.isRequested) return a.isRequested ? -1 : 1;
+    if (isMultiRowFixedRetainer && incomingYm !== null) {
+      if (a.monthMatches !== b.monthMatches) return a.monthMatches ? -1 : 1;
+      if (a.monthDist !== b.monthDist) return a.monthDist - b.monthDist;
+    }
+    if (byAmtDiff && a.amtDiff !== b.amtDiff) return a.amtDiff - b.amtDiff;
+    return a.rowNum - b.rowNum || a.slotNum - b.slotNum;
+  };
 
-  // Priority 2: Automatic placeholder (PLACE-EXP-...) buffer
-  const p2 = slotCandidates
-    .filter(c => c.isAuto)
-    .sort((a, b) => (a.isRequested === b.isRequested ? (a.rowNum - b.rowNum || a.slotNum - b.slotNum) : (a.isRequested ? -1 : 1)));
-  if (p2.length > 0) {
-    return { rowNum: p2[0].rowNum, slotNum: p2[0].slotNum, createdNewRow: false, allRowNums: group.allRowNums, parentRowNum: group.parentRowNum, group };
-  }
+  const pickExpCandidate_ = (pool) => {
+    // Priority 1: Manual placeholder (amt > 0, blank ID) matching within £5.00
+    const p1 = pool.filter(c => c.isManualPlaceholder && c.amtDiff <= 5.001).sort(sortExpCandidates(true, true));
+    if (p1.length > 0) return p1[0];
+    // Priority 2: Automatic placeholder (PLACE-EXP-...) buffer
+    const p2 = pool.filter(c => c.isAuto).sort(sortExpCandidates(false, false));
+    if (p2.length > 0) return p2[0];
+    // Priority 3: Any remaining Manual placeholder (amt > 0, blank ID) outside £5 — use up before empty slots
+    const p3 = pool.filter(c => c.isManualPlaceholder).sort(sortExpCandidates(true, false));
+    if (p3.length > 0) return p3[0];
+    // Priority 4: Completely Empty slot (amt === 0, blank ID)
+    const p4 = pool.filter(c => c.isEmpty).sort(sortExpCandidates(false, false));
+    if (p4.length > 0) return p4[0];
+    return null;
+  };
 
-  // Priority 3: Any remaining Manual placeholder (amt > 0, blank ID) outside £5 — use up before empty slots
-  const p3 = slotCandidates
-    .filter(c => c.isManualPlaceholder)
-    .sort((a, b) => (a.isRequested === b.isRequested ? (a.amtDiff - b.amtDiff || a.rowNum - b.rowNum || a.slotNum - b.slotNum) : (a.isRequested ? -1 : 1)));
-  if (p3.length > 0) {
-    return { rowNum: p3[0].rowNum, slotNum: p3[0].slotNum, createdNewRow: false, allRowNums: group.allRowNums, parentRowNum: group.parentRowNum, group };
-  }
-
-  // Priority 4: Completely Empty slot (amt === 0, blank ID)
-  const p4 = slotCandidates
-    .filter(c => c.isEmpty)
-    .sort((a, b) => (a.isRequested === b.isRequested ? (a.rowNum - b.rowNum || a.slotNum - b.slotNum) : (a.isRequested ? -1 : 1)));
-  if (p4.length > 0) {
-    return { rowNum: p4[0].rowNum, slotNum: p4[0].slotNum, createdNewRow: false, allRowNums: group.allRowNums, parentRowNum: group.parentRowNum, group };
+  // Multi-row fixed retainers: prioritize matching-month child row before falling back to other child rows
+  const chosenExp =
+    (isMultiRowFixedRetainer && incomingYm !== null ? pickExpCandidate_(slotCandidates.filter(c => c.monthMatches)) : null) ||
+    pickExpCandidate_(slotCandidates);
+  if (chosenExp) {
+    return { rowNum: chosenExp.rowNum, slotNum: chosenExp.slotNum, createdNewRow: false, allRowNums: group.allRowNums, parentRowNum: group.parentRowNum, group };
   }
 
   // Priority 5: All existing slots across parent + child rows are occupied by real expenses -> insert new child row

@@ -2684,6 +2684,7 @@ export async function provisionRetainerChildRows_(sheets, params = {}) {
     invoiceIntervalMonths = null,
     invoiceSendDay,
     initialInvoices = [],
+    initialExpenses = [],
   } = params;
 
   if (!clientSheetId) {
@@ -2882,6 +2883,66 @@ export async function provisionRetainerChildRows_(sheets, params = {}) {
       initialInvoices.forEach(addRealInvoice);
     }
 
+    // Collect any direct expenses from parent row slots 1-3 (BX:CR) or initialExpenses,
+    // so multi-row retainers never retain direct costs on the parent row.
+    const expensesToPlace = [];
+    const seenExpKeys = new Set();
+    const addExpense = exp => {
+      if (!exp) return;
+      const desc = String(exp.desc ?? exp.description ?? "").trim();
+      const amt = retParseMoney(exp.amount);
+      const recRaw = exp.recDate || exp.date || "";
+      const appId = String(exp.appId ?? exp.transactionId ?? "").trim();
+      const status = String(exp.status ?? "").trim();
+      if (!desc && amt <= 0 && !recRaw && !appId) return;
+      const key = `${appId.toLowerCase()}|${desc.toLowerCase()}|${amt}|${String(recRaw).trim()}`;
+      if (seenExpKeys.has(key)) return;
+      seenExpKeys.add(key);
+
+      let days = defaultDaysToPay;
+      const rawDays = exp.days ?? exp.daysToPay;
+      if (rawDays !== undefined && rawDays !== null && rawDays !== "") {
+        const sDays = String(rawDays).trim();
+        if (!/^[0-9]{4}[-/]/.test(sDays) && !/[A-Za-z]{3}/.test(sDays)) {
+          const p = parseInt(sDays.replace(/[^\d-]/g, ""), 10);
+          if (!isNaN(p) && p >= 0 && p <= 365) days = p;
+        }
+      }
+      const parsedRec = retParseSheetDate(recRaw);
+      expensesToPlace.push({
+        desc,
+        amount: amt,
+        vat: String(exp.vat || vat || "No").trim() || "No",
+        recDate: parsedRec,
+        recDateFormatted: parsedRec ? retFmtDate(parsedRec) : sanitizeFormulaInput(String(recRaw || "").trim()),
+        daysToPay: days,
+        status: sanitizeFormulaInput(status),
+        appId: sanitizeFormulaInput(appId),
+      });
+    };
+
+    let parentHasExpenseData = false;
+    for (let c = 75; c <= 95; c++) {
+      if (parentRow[c] !== undefined && parentRow[c] !== null && String(parentRow[c]).trim() !== "") {
+        parentHasExpenseData = true;
+        break;
+      }
+    }
+    for (const base of [75, 82, 89]) {
+      addExpense({
+        desc: parentRow[base],
+        amount: parentRow[base + 1],
+        vat: parentRow[base + 2],
+        recDate: parentRow[base + 3],
+        days: parentRow[base + 4],
+        status: parentRow[base + 5],
+        appId: parentRow[base + 6],
+      });
+    }
+    if (Array.isArray(initialExpenses)) {
+      initialExpenses.forEach(addExpense);
+    }
+
     const explicitInterval = Number(invoiceIntervalMonths);
     const intervalMonths =
       Number.isFinite(explicitInterval) && explicitInterval >= 1
@@ -2975,7 +3036,7 @@ export async function provisionRetainerChildRows_(sheets, params = {}) {
     }
 
     const rowsToCreate = newRowDates.length;
-    if (rowsToCreate === 0 && !parentHasInvoiceData && !wroteFallbackStart && !wroteFallbackEnd) {
+    if (rowsToCreate === 0 && !parentHasInvoiceData && !parentHasExpenseData && !wroteFallbackStart && !wroteFallbackEnd) {
       return { success: true, parentRowNum: actualParentRowNum, childRowCount: 0 };
     }
 
@@ -3093,6 +3154,12 @@ export async function provisionRetainerChildRows_(sheets, params = {}) {
         values: [new Array(21).fill("")],
       });
     }
+    if (parentHasExpenseData && (rowsToCreate > 0 || existingChildRows.length > 0)) {
+      allWrites.push({
+        range: `${confirmedTabTitle}!BX${actualParentRowNum}:CR${actualParentRowNum}`,
+        values: [new Array(21).fill("")],
+      });
+    }
 
     if (rowsToCreate > 0) {
       const startWriteRow = insertAfterRowNum + 1;
@@ -3146,6 +3213,57 @@ export async function provisionRetainerChildRows_(sheets, params = {}) {
           values: invBlock,
         }
       );
+
+      if (expensesToPlace.length > 0) {
+        const expSlotsByChild = Array.from({ length: rowsToCreate }, () => []);
+        const newRowYms = newRowDates.map(d => d.getFullYear() * 12 + d.getMonth());
+        for (const exp of expensesToPlace) {
+          const expYm = exp.recDate ? exp.recDate.getFullYear() * 12 + exp.recDate.getMonth() : null;
+          let targetIdx = -1;
+          if (expYm !== null) {
+            targetIdx = newRowYms.findIndex((ym, idx) => ym === expYm && expSlotsByChild[idx].length < 3);
+          }
+          if (targetIdx === -1 && expYm !== null) {
+            let bestDist = Infinity;
+            for (let idx = 0; idx < newRowYms.length; idx++) {
+              if (expSlotsByChild[idx].length >= 3) continue;
+              const dist = Math.abs(newRowYms[idx] - expYm);
+              if (dist < bestDist) {
+                bestDist = dist;
+                targetIdx = idx;
+              }
+            }
+          }
+          if (targetIdx === -1) {
+            targetIdx = expSlotsByChild.findIndex(arr => arr.length < 3);
+          }
+          if (targetIdx !== -1) {
+            expSlotsByChild[targetIdx].push(exp);
+          }
+        }
+
+        const hasAnyPlacedExp = expSlotsByChild.some(arr => arr.length > 0);
+        if (hasAnyPlacedExp) {
+          const expBlock = expSlotsByChild.map(slotList => {
+            const row21 = new Array(21).fill("");
+            slotList.slice(0, 3).forEach((exp, sIdx) => {
+              const off = sIdx * 7;
+              row21[off] = sanitizeFormulaInput(exp.desc);
+              row21[off + 1] = exp.amount;
+              row21[off + 2] = sanitizeFormulaInput(exp.vat);
+              row21[off + 3] = exp.recDateFormatted || "";
+              row21[off + 4] = exp.daysToPay;
+              row21[off + 5] = exp.status;
+              row21[off + 6] = exp.appId;
+            });
+            return row21;
+          });
+          allWrites.push({
+            range: `${confirmedTabTitle}!BX${startWriteRow}:CR${endWriteRow}`,
+            values: expBlock,
+          });
+        }
+      }
     }
 
     if (rowsToCreate > 0) {

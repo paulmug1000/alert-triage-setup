@@ -1096,6 +1096,403 @@ async function fetchCapsuleCrm_({ accessToken, fetchImpl, sleepImpl, timeZone })
 }
 
 // ============================================================================
+// SHARED SPREADSHEET-BRIDGE MATCHING ENGINE (100% VERBATIM 6_Routing_Logic.gs)
+// ============================================================================
+
+export function isBridgeEmptyOrPlaceholder_(val) {
+  if (val === null || val === undefined) return true;
+  const s = String(val).trim();
+  if (!s) return true;
+  return /^(?:[-–—\s]*|n\/a|na|none|tbc|tbd|null|undefined)$/i.test(s);
+}
+
+function formatNodeYmdInTz_(d, timeZone = "Europe/London") {
+  try {
+    return new Intl.DateTimeFormat("en-CA", {
+      timeZone,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    }).format(d);
+  } catch {
+    return d.toISOString().slice(0, 10);
+  }
+}
+
+export function parseBridgeDateYmd_(val, timeZone = "Europe/London") {
+  if (isBridgeEmptyOrPlaceholder_(val)) return null;
+  const tz = timeZone || "Europe/London";
+  const MONTHS = {
+    jan: 1, january: 1, feb: 2, february: 2, mar: 3, march: 3,
+    apr: 4, april: 4, may: 5, jun: 6, june: 6, jul: 7, july: 7,
+    aug: 8, august: 8, sep: 9, sept: 9, september: 9, oct: 10, october: 10,
+    nov: 11, november: 11, dec: 12, december: 12,
+  };
+
+  if (Object.prototype.toString.call(val) === "[object Date]") {
+    return isNaN(val.getTime()) ? null : formatNodeYmdInTz_(val, tz);
+  }
+  if (typeof val === "number" || (typeof val === "string" && /^\d{5}(?:\.\d+)?$/.test(val.trim()))) {
+    const n = Number(val);
+    if (isFinite(n) && n > 20000 && n < 70000) {
+      return new Date(Date.UTC(1899, 11, 30) + Math.round(n) * 86400000).toISOString().slice(0, 10);
+    }
+  }
+  if (typeof val === "string") {
+    const s = val.trim();
+    const iso = s.match(/^(\d{4})[-/](\d{1,2})[-/](\d{1,2})(?:[T\s].*)?$/);
+    if (iso) {
+      const mon = parseInt(iso[2], 10);
+      const day = parseInt(iso[3], 10);
+      if (mon >= 1 && mon <= 12 && day >= 1 && day <= 31) {
+        return `${iso[1]}-${String(mon).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+      }
+    }
+    const dMonY = s.match(/^(\d{1,2})[\s\-/]([A-Za-z]{3,9})[\s\-/](\d{2,4})(?:\s.*)?$/);
+    if (dMonY && MONTHS[dMonY[2].toLowerCase()] !== undefined) {
+      let yr = parseInt(dMonY[3], 10);
+      if (dMonY[3].length === 2) yr += yr > 50 ? 1900 : 2000;
+      const mon = MONTHS[dMonY[2].toLowerCase()];
+      const day = parseInt(dMonY[1], 10);
+      if (day >= 1 && day <= 31) {
+        return `${yr}-${String(mon).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+      }
+    }
+    const monDY = s.match(/^([A-Za-z]{3,9})\s+(\d{1,2}),?\s+(\d{2,4})$/);
+    if (monDY && MONTHS[monDY[1].toLowerCase()] !== undefined) {
+      let yr = parseInt(monDY[3], 10);
+      if (monDY[3].length === 2) yr += yr > 50 ? 1900 : 2000;
+      const mon = MONTHS[monDY[1].toLowerCase()];
+      const day = parseInt(monDY[2], 10);
+      if (day >= 1 && day <= 31) {
+        return `${yr}-${String(mon).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+      }
+    }
+    const dmy = s.match(/^(\d{1,2})[-/](\d{1,2})[-/](\d{2,4})(?:\s.*)?$/);
+    if (dmy) {
+      let yr = parseInt(dmy[3], 10);
+      if (dmy[3].length === 2) yr += yr > 50 ? 1900 : 2000;
+      const p1 = parseInt(dmy[1], 10);
+      const p2 = parseInt(dmy[2], 10);
+      const day = p2 > 12 ? p2 : p1;
+      const mon = p2 > 12 ? p1 : p2;
+      if (mon >= 1 && mon <= 12 && day >= 1 && day <= 31) {
+        return `${yr}-${String(mon).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+      }
+    }
+    if (s.indexOf("GMT") !== -1 || /^[A-Z][a-z]{2}\s+[A-Z][a-z]{2}\s+\d{1,2}\s+\d{4}/.test(s)) {
+      const parsed = new Date(s.replace(/GMT.*$/, "").trim());
+      if (!isNaN(parsed.getTime())) {
+        return formatNodeYmdInTz_(parsed, tz);
+      }
+    }
+  }
+  return null;
+}
+
+export function parseBridgeCurrency_(val) {
+  if (isBridgeEmptyOrPlaceholder_(val)) return null;
+  if (typeof val === "number") return isFinite(val) ? val : null;
+  if (typeof val !== "string") return null;
+  let s = val.trim();
+  let isNeg = false;
+  if (/^\(.*\)$/.test(s)) {
+    isNeg = true;
+    s = s.slice(1, -1).trim();
+  }
+  s = s.replace(/\b(?:gbp|usd|eur)\b/gi, "").replace(/[£$€,\s]/g, "");
+  if (!/^[-+]?\d+(?:\.\d+)?$/.test(s)) return null;
+  const n = Number(s);
+  if (!isFinite(n)) return null;
+  return isNeg ? -Math.abs(n) : n;
+}
+
+export function parseBridgePercent_(val) {
+  if (isBridgeEmptyOrPlaceholder_(val)) return null;
+  if (typeof val === "number") {
+    if (!isFinite(val)) return null;
+    return val > 1 && val <= 100 ? val / 100 : val;
+  }
+  if (typeof val !== "string") return null;
+  const s = val.trim();
+  const hasPct = s.indexOf("%") !== -1;
+  const cleaned = s.replace(/[%,\s]/g, "");
+  if (!/^[-+]?\d+(?:\.\d+)?$/.test(cleaned)) return null;
+  const n = Number(cleaned);
+  if (!isFinite(n)) return null;
+  return hasPct || (n > 1 && n <= 100) ? n / 100 : n;
+}
+
+export function areBridgeFieldValuesEqual_(val1, val2, fieldKind, timeZone = "Europe/London") {
+  if (isBridgeEmptyOrPlaceholder_(val1) || isBridgeEmptyOrPlaceholder_(val2)) return false;
+  const stripAlnum = (v) => String(v || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+
+  if (fieldKind === "date") {
+    const d1 = parseBridgeDateYmd_(val1, timeZone);
+    const d2 = parseBridgeDateYmd_(val2, timeZone);
+    if (d1 !== null && d2 !== null) return d1 === d2;
+    if (d1 !== null || d2 !== null) return false;
+  } else if (fieldKind === "currency") {
+    const n1 = parseBridgeCurrency_(val1);
+    const n2 = parseBridgeCurrency_(val2);
+    if (n1 !== null && n2 !== null) {
+      if (Math.abs(n1) < 0.005 && Math.abs(n2) < 0.005) return false;
+      return Math.abs(n1 - n2) <= 0.01;
+    }
+    if (n1 !== null || n2 !== null) return false;
+  } else if (fieldKind === "likelihood") {
+    const p1 = parseBridgePercent_(val1);
+    const p2 = parseBridgePercent_(val2);
+    if (p1 !== null && p2 !== null) return Math.abs(p1 - p2) <= 0.001;
+    if (p1 !== null || p2 !== null) return false;
+  }
+
+  const s1 = stripAlnum(val1);
+  const s2 = stripAlnum(val2);
+  return s1 !== "" && s1 === s2;
+}
+
+export function computeBridgeJobSimilarity_(job1, job2) {
+  const STOPWORDS = new Set([
+    "a", "an", "the", "and", "or", "of", "to", "in", "for", "on",
+    "with", "at", "by", "from", "as", "is", "be", "esp", "inc", "plus", "re",
+  ]);
+  const tokenize = (str) => {
+    const clean = String(str || "").toLowerCase().replace(/['’`]/g, "").replace(/[^a-z0-9]+/g, " ").trim();
+    const allTokens = clean ? clean.split(" ").filter((t) => t.length >= 2) : [];
+    const filtered = allTokens.filter((t) => !STOPWORDS.has(t));
+    return filtered.length > 0 ? filtered : allTokens;
+  };
+  const set1 = new Set(tokenize(job1));
+  const set2 = new Set(tokenize(job2));
+  if (set1.size === 0 || set2.size === 0) {
+    return { points: 0, jaccard: 0, overlapCoeff: 0, inter: 0, maxSharedTokenLen: 0, sharedLongTokenCount: 0 };
+  }
+  let inter = 0;
+  let maxSharedTokenLen = 0;
+  let sharedLongTokenCount = 0;
+  set1.forEach((t) => {
+    if (set2.has(t)) {
+      inter++;
+      if (t.length > maxSharedTokenLen) maxSharedTokenLen = t.length;
+      if (t.length >= 4) sharedLongTokenCount++;
+    }
+  });
+  const union = set1.size + set2.size - inter;
+  const jaccard = union > 0 ? inter / union : 0;
+  const minSize = Math.min(set1.size, set2.size);
+  const overlapCoeff = minSize > 0 ? inter / minSize : 0;
+
+  let points = 0;
+  if (jaccard >= 0.5 || (inter >= 2 && overlapCoeff >= 0.75)) {
+    points = 2;
+  } else if ((overlapCoeff >= 0.65 && maxSharedTokenLen >= 4) || (jaccard >= 0.3 && maxSharedTokenLen >= 4)) {
+    points = 1;
+  }
+  return { points, jaccard, overlapCoeff, inter, maxSharedTokenLen, sharedLongTokenCount };
+}
+
+export function reconcileSpreadsheetBridgeRows_(opts) {
+  const incomingRows = opts.incomingRows || [];
+  const rawHeaders = opts.rawHeaders || [];
+  const bridgeData = Array.isArray(opts.bridgeData) ? opts.bridgeData : [];
+  const uuidColIdx = opts.uuidColIdx;
+  const inKeyIdx = opts.inKeyIdx;
+  const brKeyIdx = opts.brKeyIdx;
+  const startWeight = typeof opts.startWeight === "number" ? opts.startWeight : 1;
+  const timeZone = opts.timeZone || "Europe/London";
+  const generateUuid = opts.generateUuid;
+  const preserveExistingRowUuid = Boolean(opts.preserveExistingRowUuid);
+
+  const bridgeHeaders = bridgeData.length > 0 ? bridgeData[0] : [];
+  const bridgeUuidIdx = bridgeHeaders.findIndex((h) => String(h).trim() === "System ID (Do Not Edit)");
+  const bridgeHasAllKeys = bridgeUuidIdx !== -1 && brKeyIdx.client !== -1 && brKeyIdx.job !== -1;
+
+  if (bridgeData.length <= 1 || !bridgeHasAllKeys) {
+    let newCount = 0;
+    incomingRows.forEach((r) => {
+      if (!preserveExistingRowUuid || !r[uuidColIdx] || String(r[uuidColIdx]).trim() === "") {
+        r[uuidColIdx] = generateUuid();
+        newCount++;
+      }
+    });
+    return { bridgeRows: incomingRows, updatedCount: 0, newCount, fullReset: true };
+  }
+
+  const normHead = (h) => String(h || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+  const inUsed = new Set([uuidColIdx, inKeyIdx.client, inKeyIdx.job, inKeyIdx.rev, inKeyIdx.start, inKeyIdx.end, inKeyIdx.like].filter((i) => i >= 0));
+  const brUsed = new Set([bridgeUuidIdx, brKeyIdx.client, brKeyIdx.job, brKeyIdx.rev, brKeyIdx.start, brKeyIdx.end, brKeyIdx.like].filter((i) => i >= 0));
+  const brByNorm = new Map();
+  bridgeHeaders.forEach((h, idx) => {
+    if (brUsed.has(idx) || String(h || "").trim() === "System ID (Do Not Edit)") return;
+    const nh = normHead(h);
+    if (!nh || brByNorm.has(nh)) return;
+    brByNorm.set(nh, idx);
+  });
+  const secondaryColPairs = [];
+  rawHeaders.forEach((h, inIdx) => {
+    if (inUsed.has(inIdx) || String(h || "").trim() === "System ID (Do Not Edit)") return;
+    const nh = normHead(h);
+    if (!nh) return;
+    const brIdx = brByNorm.get(nh);
+    if (brIdx !== undefined) {
+      secondaryColPairs.push({ inIdx, brIdx });
+      brByNorm.delete(nh);
+    }
+  });
+
+  const oldBridgeRows = bridgeData.slice(1);
+  const fuzzyName = (str) =>
+    String(str || "")
+      .toLowerCase()
+      .replace(/[^a-z0-9]/g, "")
+      .replace(/(ltd|limited|inc|llc|corp|company)$/g, "");
+  const matchedIn = new Set();
+  const matchedBr = new Set();
+  let updatedCount = 0;
+
+  if (preserveExistingRowUuid) {
+    const brIdxByUuid = new Map();
+    oldBridgeRows.forEach((bRow, bIdx) => {
+      const uid = String(bRow[bridgeUuidIdx] || "").trim();
+      if (uid && !brIdxByUuid.has(uid)) brIdxByUuid.set(uid, bIdx);
+    });
+    incomingRows.forEach((inRow, inIdx) => {
+      const uid = String(inRow[uuidColIdx] || "").trim();
+      if (uid) {
+        matchedIn.add(inIdx);
+        const bIdx = brIdxByUuid.get(uid);
+        if (bIdx !== undefined && !matchedBr.has(bIdx)) {
+          matchedBr.add(bIdx);
+          updatedCount++;
+        }
+      }
+    });
+  }
+
+  const scoredPairs = [];
+  incomingRows.forEach((inRow, inIdx) => {
+    if (matchedIn.has(inIdx)) return;
+    const inClient = String(inRow[inKeyIdx.client] || "").trim();
+    const inJob = String((inKeyIdx.job >= 0 ? inRow[inKeyIdx.job] : "") || "").trim();
+    const inFuzzClient = fuzzyName(inClient);
+    const inFuzzJob = fuzzyName(inJob);
+
+    oldBridgeRows.forEach((brRow, brIdx) => {
+      if (matchedBr.has(brIdx)) return;
+      const brClient = String(brRow[brKeyIdx.client] || "").trim();
+      const brJob = String((brKeyIdx.job >= 0 ? brRow[brKeyIdx.job] : "") || "").trim();
+      const brFuzzClient = fuzzyName(brClient);
+      const brFuzzJob = fuzzyName(brJob);
+
+      let score = 0;
+      let clientMatched = false;
+
+      if (inClient && brClient && inClient.toLowerCase() === brClient.toLowerCase() && inJob.toLowerCase() === brJob.toLowerCase()) {
+        score += 5;
+        clientMatched = true;
+      } else if (inFuzzClient && brFuzzClient && inFuzzClient === brFuzzClient && inFuzzJob && brFuzzJob && inFuzzJob === brFuzzJob) {
+        score += 3;
+        clientMatched = true;
+      } else if (inFuzzClient && brFuzzClient && inFuzzClient === brFuzzClient) {
+        score += 1;
+        clientMatched = true;
+        score += computeBridgeJobSimilarity_(inJob, brJob).points;
+      }
+
+      if (inKeyIdx.rev !== -1 && brKeyIdx.rev !== -1 && areBridgeFieldValuesEqual_(inRow[inKeyIdx.rev], brRow[brKeyIdx.rev], "currency", timeZone)) score += 3;
+      if (inKeyIdx.start !== -1 && brKeyIdx.start !== -1 && areBridgeFieldValuesEqual_(inRow[inKeyIdx.start], brRow[brKeyIdx.start], "date", timeZone)) score += startWeight;
+      if (inKeyIdx.end !== -1 && brKeyIdx.end !== -1 && areBridgeFieldValuesEqual_(inRow[inKeyIdx.end], brRow[brKeyIdx.end], "date", timeZone)) score += 1;
+      if (inKeyIdx.like !== -1 && brKeyIdx.like !== -1 && areBridgeFieldValuesEqual_(inRow[inKeyIdx.like], brRow[brKeyIdx.like], "likelihood", timeZone)) score += 1;
+
+      if (score >= 2) {
+        let secondaryMatches = 0;
+        for (let s = 0; s < secondaryColPairs.length; s++) {
+          const p = secondaryColPairs[s];
+          if (areBridgeFieldValuesEqual_(inRow[p.inIdx], brRow[p.brIdx], "text", timeZone)) secondaryMatches++;
+        }
+        scoredPairs.push({ inIdx, brIdx, score, clientMatched, secondaryMatches, rowDistance: Math.abs(inIdx - brIdx) });
+      }
+    });
+  });
+
+  scoredPairs.sort((a, b) => (b.score - a.score) || (b.secondaryMatches - a.secondaryMatches) || (a.rowDistance - b.rowDistance));
+
+  for (let i = 0; i < scoredPairs.length; i++) {
+    const pair = scoredPairs[i];
+    if (pair.score >= 4 && !matchedIn.has(pair.inIdx) && !matchedBr.has(pair.brIdx)) {
+      matchedIn.add(pair.inIdx);
+      matchedBr.add(pair.brIdx);
+      incomingRows[pair.inIdx][uuidColIdx] = oldBridgeRows[pair.brIdx][bridgeUuidIdx];
+      updatedCount++;
+    }
+  }
+
+  for (let i = 0; i < scoredPairs.length; i++) {
+    const pair = scoredPairs[i];
+    if (pair.clientMatched && pair.score >= 2 && !matchedIn.has(pair.inIdx) && !matchedBr.has(pair.brIdx)) {
+      matchedIn.add(pair.inIdx);
+      matchedBr.add(pair.brIdx);
+      incomingRows[pair.inIdx][uuidColIdx] = oldBridgeRows[pair.brIdx][bridgeUuidIdx];
+      updatedCount++;
+    }
+  }
+
+  const unmatchedInByClient = new Map();
+  incomingRows.forEach((inRow, inIdx) => {
+    if (matchedIn.has(inIdx)) return;
+    const ck = fuzzyName(inRow[inKeyIdx.client]);
+    if (!ck) return;
+    if (!unmatchedInByClient.has(ck)) unmatchedInByClient.set(ck, []);
+    unmatchedInByClient.get(ck).push(inIdx);
+  });
+  const unmatchedBrByClient = new Map();
+  oldBridgeRows.forEach((brRow, brIdx) => {
+    if (matchedBr.has(brIdx)) return;
+    const ck = fuzzyName(brRow[brKeyIdx.client]);
+    if (!ck) return;
+    if (!unmatchedBrByClient.has(ck)) unmatchedBrByClient.set(ck, []);
+    unmatchedBrByClient.get(ck).push(brIdx);
+  });
+
+  unmatchedInByClient.forEach((inList, ck) => {
+    const brList = unmatchedBrByClient.get(ck);
+    if (inList.length !== 1 || !brList || brList.length !== 1) return;
+    const inIdx = inList[0];
+    const brIdx = brList[0];
+    const inRow = incomingRows[inIdx];
+    const brRow = oldBridgeRows[brIdx];
+    const inJob = String((inKeyIdx.job >= 0 ? inRow[inKeyIdx.job] : "") || "").trim();
+    const brJob = String((brKeyIdx.job >= 0 ? brRow[brKeyIdx.job] : "") || "").trim();
+    const jobSim = computeBridgeJobSimilarity_(inJob, brJob);
+    let secondaryMatches = 0;
+    for (let s = 0; s < secondaryColPairs.length; s++) {
+      const p = secondaryColPairs[s];
+      if (areBridgeFieldValuesEqual_(inRow[p.inIdx], brRow[p.brIdx], "text", timeZone)) secondaryMatches++;
+    }
+    const rowDistance = Math.abs(inIdx - brIdx);
+    if (jobSim.sharedLongTokenCount >= 1 || (secondaryMatches >= 2 && rowDistance <= 5) || (rowDistance === 0 && secondaryMatches >= 1)) {
+      matchedIn.add(inIdx);
+      matchedBr.add(brIdx);
+      inRow[uuidColIdx] = brRow[bridgeUuidIdx];
+      updatedCount++;
+    }
+  });
+
+  let newCount = 0;
+  incomingRows.forEach((inRow, inIdx) => {
+    if (!matchedIn.has(inIdx)) {
+      if (!inRow[uuidColIdx] || String(inRow[uuidColIdx]).trim() === "") {
+        inRow[uuidColIdx] = generateUuid();
+      }
+      newCount++;
+    }
+  });
+
+  return { bridgeRows: incomingRows, updatedCount, newCount, fullReset: false };
+}
+
+// ============================================================================
 // CONNECTOR #7: EXTERNAL GOOGLE SHEETS (`PullFromGoogleSheet_`, `6_Routing_Logic.gs:309-686`)
 // ============================================================================
 
@@ -1228,122 +1625,54 @@ async function fetchExternalGoogleSheetCrm_({
   }
 
   const normHead = (h) => String(h || "").toLowerCase().replace(/[^a-z0-9]/g, "");
-  let idxClient = -1;
-  let idxJob = -1;
-  let idxRev = -1;
-  let idxStart = -1;
-  let idxEnd = -1;
-  let idxLike = -1;
+  const resolveGoogleKeyIndices_ = (hdrs) => {
+    let c = -1;
+    let j = -1;
+    let r = -1;
+    let s = -1;
+    let e = -1;
+    let l = -1;
+    if (!Array.isArray(hdrs) || hdrs.length === 0) {
+      return { client: -1, job: -1, rev: -1, start: -1, end: -1, like: -1 };
+    }
+    if (matchColsStr) {
+      const keyIndices = matchColsStr.split(",").map((name) => {
+        const n = name.trim();
+        if (!n || n.toLowerCase() === "none" || n.toLowerCase() === "n/a") return -1;
+        const cleanName = normHead(n);
+        return hdrs.findIndex((h) => normHead(h) === cleanName);
+      });
+      [c, j, r, s, e, l] = keyIndices;
+    }
+    if (c === -1) c = hdrs.findIndex((h) => /^(?:client|lead|org|company|customer)/i.test(normHead(h)));
+    if (j === -1) j = hdrs.findIndex((h, i) => i !== c && /^(?:job|deal|opportunity|task|title|name|nature)/i.test(normHead(h)));
+    if (r === -1) r = hdrs.findIndex((h) => /^(?:value|amount|revenue|total|deal|fee)/i.test(normHead(h)));
+    if (s === -1) s = hdrs.findIndex((h) => /^(?:start|month|target|live|date)/i.test(normHead(h)));
+    if (e === -1) e = hdrs.findIndex((h, i) => i !== s && /^(?:end|close|completion)/i.test(normHead(h)));
+    if (l === -1) l = hdrs.findIndex((h) => /^(?:status|stage|milestone|prob|likelihood)/i.test(normHead(h)));
+    if (c === -1) c = 0;
+    if (j === -1) j = Math.min(1, hdrs.length - 1);
+    return { client: c, job: j, rev: r, start: s, end: e, like: l };
+  };
 
-  if (matchColsStr) {
-    const keyIndices = matchColsStr.split(",").map((name) => {
-      const n = name.trim();
-      if (!n || n.toLowerCase() === "none" || n.toLowerCase() === "n/a") return -1;
-      const cleanName = normHead(n);
-      return rawHeaders.findIndex((h) => normHead(h) === cleanName);
-    });
-    [idxClient, idxJob, idxRev, idxStart, idxEnd, idxLike] = keyIndices;
-  }
-
-  if (idxClient === -1) idxClient = rawHeaders.findIndex((h) => /^(?:client|lead|org|company|customer)/i.test(normHead(h)));
-  if (idxJob === -1) idxJob = rawHeaders.findIndex((h, i) => i !== idxClient && /^(?:job|deal|opportunity|task|title|name|nature)/i.test(normHead(h)));
-  if (idxRev === -1) idxRev = rawHeaders.findIndex((h) => /^(?:value|amount|revenue|total|deal|fee)/i.test(normHead(h)));
-  if (idxStart === -1) idxStart = rawHeaders.findIndex((h) => /^(?:start|month|target|live|date)/i.test(normHead(h)));
-  if (idxEnd === -1) idxEnd = rawHeaders.findIndex((h, i) => i !== idxStart && /^(?:end|close|completion)/i.test(normHead(h)));
-  if (idxLike === -1) idxLike = rawHeaders.findIndex((h) => /^(?:status|stage|milestone|prob|likelihood)/i.test(normHead(h)));
-  if (idxClient === -1) idxClient = 0;
-  if (idxJob === -1) idxJob = Math.min(1, rawHeaders.length - 1);
-
-  const areFuzzyEqual = (v1, v2) =>
-    String(v1 || "").toLowerCase().replace(/[^a-z0-9]/g, "") ===
-    String(v2 || "").toLowerCase().replace(/[^a-z0-9]/g, "");
-
+  const inKeyIdx = resolveGoogleKeyIndices_(rawHeaders);
   const bridgeData = Array.isArray(existingBridgeGrid) ? existingBridgeGrid : [];
   const bridgeHeaders = bridgeData.length > 0 ? bridgeData[0] : [];
-  const isBridgeHeadersMatch = JSON.stringify(rawHeaders) === JSON.stringify(bridgeHeaders);
-  const bridgeUuidIdx = bridgeHeaders.findIndex((h) => String(h).trim() === "System ID (Do Not Edit)");
+  const brKeyIdx = resolveGoogleKeyIndices_(bridgeHeaders);
 
-  let bridgeRows = [];
-  if (bridgeData.length <= 1 || bridgeUuidIdx === -1 || !isBridgeHeadersMatch) {
-    bridgeRows = googleRows.map((r) => {
-      if (!r[uuidColIdx] || String(r[uuidColIdx]).trim() === "") r[uuidColIdx] = crypto.randomUUID();
-      return r;
-    });
-  } else {
-    const oldBridgeRows = bridgeData.slice(1);
-    const fuzzyName = (str) =>
-      String(str || "")
-        .toLowerCase()
-        .replace(/[^a-z0-9]/g, "")
-        .replace(/(ltd|limited|inc|llc|corp|company)$/g, "");
-    const scoredPairs = [];
-
-    googleRows.forEach((gRow, gIdx) => {
-      if (gRow[uuidColIdx] && String(gRow[uuidColIdx]).trim() !== "") return;
-      const gClient = String(gRow[idxClient] || "").trim();
-      const gJob = String(gRow[idxJob] || "").trim();
-      const gFuzzClient = fuzzyName(gClient);
-      const gFuzzJob = fuzzyName(gJob);
-      const gBaseKey = `${gFuzzClient}|||${gFuzzJob}`;
-
-      oldBridgeRows.forEach((bRow, bIdx) => {
-        const bClient = String(bRow[idxClient] || "").trim();
-        const bJob = String(bRow[idxJob] || "").trim();
-        const bFuzzClient = fuzzyName(bClient);
-        const bFuzzJob = fuzzyName(bJob);
-        const bBaseKey = `${bFuzzClient}|||${bFuzzJob}`;
-
-        let score = 0;
-        let clientMatched = false;
-        if (gClient.toLowerCase() === bClient.toLowerCase() && gJob.toLowerCase() === bJob.toLowerCase()) {
-          score += 5;
-          clientMatched = true;
-        } else if (gBaseKey === bBaseKey) {
-          score += 3;
-          clientMatched = true;
-        } else if (gFuzzClient === bFuzzClient) {
-          score += 1;
-          clientMatched = true;
-        }
-
-        if (idxRev !== -1 && areFuzzyEqual(gRow[idxRev], bRow[idxRev])) score += 3;
-        if (idxStart !== -1 && areFuzzyEqual(gRow[idxStart], bRow[idxStart])) score += 2;
-        if (idxEnd !== -1 && areFuzzyEqual(gRow[idxEnd], bRow[idxEnd])) score += 1;
-        if (idxLike !== -1 && areFuzzyEqual(gRow[idxLike], bRow[idxLike])) score += 1;
-
-        if (score >= 2) scoredPairs.push({ gIdx, bIdx, score, clientMatched });
-      });
-    });
-
-    scoredPairs.sort((a, b) => b.score - a.score);
-    const matchedGoogleIndices = new Set();
-    const matchedBridgeIndices = new Set();
-
-    for (const pair of scoredPairs) {
-      if (pair.score >= 4 && !matchedGoogleIndices.has(pair.gIdx) && !matchedBridgeIndices.has(pair.bIdx)) {
-        matchedGoogleIndices.add(pair.gIdx);
-        matchedBridgeIndices.add(pair.bIdx);
-        const gRow = googleRows[pair.gIdx];
-        gRow[uuidColIdx] = oldBridgeRows[pair.bIdx][bridgeUuidIdx];
-        bridgeRows.push(gRow);
-      }
-    }
-    for (const pair of scoredPairs) {
-      if (pair.clientMatched && pair.score >= 2 && !matchedGoogleIndices.has(pair.gIdx) && !matchedBridgeIndices.has(pair.bIdx)) {
-        matchedGoogleIndices.add(pair.gIdx);
-        matchedBridgeIndices.add(pair.bIdx);
-        const gRow = googleRows[pair.gIdx];
-        gRow[uuidColIdx] = oldBridgeRows[pair.bIdx][bridgeUuidIdx];
-        bridgeRows.push(gRow);
-      }
-    }
-    googleRows.forEach((gRow, gIdx) => {
-      if (!matchedGoogleIndices.has(gIdx)) {
-        if (!gRow[uuidColIdx] || String(gRow[uuidColIdx]).trim() === "") gRow[uuidColIdx] = crypto.randomUUID();
-        bridgeRows.push(gRow);
-      }
-    });
-  }
+  const reconciled = reconcileSpreadsheetBridgeRows_({
+    incomingRows: googleRows,
+    rawHeaders,
+    bridgeData,
+    uuidColIdx,
+    inKeyIdx,
+    brKeyIdx,
+    startWeight: 2,
+    timeZone,
+    generateUuid: () => crypto.randomUUID(),
+    preserveExistingRowUuid: true,
+  });
+  const bridgeRows = reconciled.bridgeRows;
 
   const safeRawHeaders = sanitizeSheetMatrix_([rawHeaders])[0];
   const safeBridgeRows = sanitizeSheetMatrix_(bridgeRows);
@@ -1469,27 +1798,8 @@ async function fetchExternalExcelCrm_({ accessToken, keyInfoGrid, existingBridge
     throw new Error(`Could not find required Client ('${mClient}') and Job ('${mJob}') columns in Excel headers.`);
   }
 
-  const areFuzzyEqual = (val1, val2) => {
-    const toDateString = (v) => {
-      if (v instanceof Date) return isNaN(v.getTime()) ? null : formatDayMonYy_(v, timeZone);
-      if (typeof v === "string") {
-        const d = new Date(v.replace(/GMT.*$/, "").trim());
-        if (!isNaN(d.getTime())) return formatDayMonYy_(d, timeZone);
-      }
-      return null;
-    };
-    const d1 = toDateString(val1);
-    const d2 = toDateString(val2);
-    if (d1 && d2) return d1 === d2;
-    return (
-      String(val1 || "").toLowerCase().replace(/[^a-z0-9]/g, "") ===
-      String(val2 || "").toLowerCase().replace(/[^a-z0-9]/g, "")
-    );
-  };
-
   const bridgeData = Array.isArray(existingBridgeGrid) ? existingBridgeGrid : [];
   const bridgeHeaders = bridgeData.length > 0 ? bridgeData[0] : [];
-  const bridgeUuidIdx = bridgeHeaders.findIndex((h) => String(h).trim() === "System ID (Do Not Edit)");
   const bIdxClient = resolveIdx(mClient, bridgeHeaders);
   const bIdxJob = resolveIdx(mJob, bridgeHeaders);
   const bIdxRev = resolveIdx(mRev, bridgeHeaders);
@@ -1497,88 +1807,19 @@ async function fetchExternalExcelCrm_({ accessToken, keyInfoGrid, existingBridge
   const bIdxEnd = resolveIdx(mEnd, bridgeHeaders);
   const bIdxLike = resolveIdx(mLike, bridgeHeaders);
 
-  const bridgeHasAllKeys = bridgeUuidIdx !== -1 && bIdxClient !== -1 && bIdxJob !== -1;
-  let bridgeRows = [];
-
-  if (bridgeData.length <= 1 || !bridgeHasAllKeys) {
-    bridgeRows = excelRows.map((r) => {
-      r[uuidColIdx] = crypto.randomUUID();
-      return r;
-    });
-  } else {
-    const oldBridgeRows = bridgeData.slice(1);
-    const fuzzyName = (str) =>
-      String(str || "")
-        .toLowerCase()
-        .replace(/[^a-z0-9]/g, "")
-        .replace(/(ltd|limited|inc|llc|corp|company)$/g, "");
-    const scoredPairs = [];
-
-    excelRows.forEach((eRow, eIdx) => {
-      const eClient = String(eRow[idxClient] || "").trim();
-      const eJob = String(eRow[idxJob] || "").trim();
-      const eFuzzClient = fuzzyName(eClient);
-      const eFuzzJob = fuzzyName(eJob);
-      const eBaseKey = `${eFuzzClient}|||${eFuzzJob}`;
-
-      oldBridgeRows.forEach((bRow, bIdx) => {
-        const bClient = String(bRow[bIdxClient] || "").trim();
-        const bJob = String(bRow[bIdxJob] || "").trim();
-        const bFuzzClient = fuzzyName(bClient);
-        const bFuzzJob = fuzzyName(bJob);
-        const bBaseKey = `${bFuzzClient}|||${bFuzzJob}`;
-
-        let score = 0;
-        let clientMatched = false;
-        if (eClient.toLowerCase() === bClient.toLowerCase() && eJob.toLowerCase() === bJob.toLowerCase()) {
-          score += 5;
-          clientMatched = true;
-        } else if (eBaseKey === bBaseKey) {
-          score += 3;
-          clientMatched = true;
-        } else if (eFuzzClient === bFuzzClient) {
-          score += 1;
-          clientMatched = true;
-        }
-
-        if (idxRev !== -1 && bIdxRev !== -1 && areFuzzyEqual(eRow[idxRev], bRow[bIdxRev])) score += 3;
-        if (idxStart !== -1 && bIdxStart !== -1 && areFuzzyEqual(eRow[idxStart], bRow[bIdxStart])) score += 1;
-        if (idxEnd !== -1 && bIdxEnd !== -1 && areFuzzyEqual(eRow[idxEnd], bRow[bIdxEnd])) score += 1;
-        if (idxLike !== -1 && bIdxLike !== -1 && areFuzzyEqual(eRow[idxLike], bRow[bIdxLike])) score += 1;
-
-        if (score >= 2) scoredPairs.push({ eIdx, bIdx, score, clientMatched });
-      });
-    });
-
-    scoredPairs.sort((a, b) => b.score - a.score);
-    const matchedExcelIndices = new Set();
-    const matchedBridgeIndices = new Set();
-
-    for (const pair of scoredPairs) {
-      if (pair.score >= 4 && !matchedExcelIndices.has(pair.eIdx) && !matchedBridgeIndices.has(pair.bIdx)) {
-        matchedExcelIndices.add(pair.eIdx);
-        matchedBridgeIndices.add(pair.bIdx);
-        const eRow = excelRows[pair.eIdx];
-        eRow[uuidColIdx] = oldBridgeRows[pair.bIdx][bridgeUuidIdx];
-        bridgeRows.push(eRow);
-      }
-    }
-    for (const pair of scoredPairs) {
-      if (pair.clientMatched && pair.score >= 2 && !matchedExcelIndices.has(pair.eIdx) && !matchedBridgeIndices.has(pair.bIdx)) {
-        matchedExcelIndices.add(pair.eIdx);
-        matchedBridgeIndices.add(pair.bIdx);
-        const eRow = excelRows[pair.eIdx];
-        eRow[uuidColIdx] = oldBridgeRows[pair.bIdx][bridgeUuidIdx];
-        bridgeRows.push(eRow);
-      }
-    }
-    excelRows.forEach((eRow, eIdx) => {
-      if (!matchedExcelIndices.has(eIdx)) {
-        eRow[uuidColIdx] = crypto.randomUUID();
-        bridgeRows.push(eRow);
-      }
-    });
-  }
+  const reconciled = reconcileSpreadsheetBridgeRows_({
+    incomingRows: excelRows,
+    rawHeaders,
+    bridgeData,
+    uuidColIdx,
+    inKeyIdx: { client: idxClient, job: idxJob, rev: idxRev, start: idxStart, end: idxEnd, like: idxLike },
+    brKeyIdx: { client: bIdxClient, job: bIdxJob, rev: bIdxRev, start: bIdxStart, end: bIdxEnd, like: bIdxLike },
+    startWeight: 1,
+    timeZone,
+    generateUuid: () => crypto.randomUUID(),
+    preserveExistingRowUuid: false,
+  });
+  const bridgeRows = reconciled.bridgeRows;
 
   const safeExcelHeaders = sanitizeSheetMatrix_([rawHeaders])[0];
   const safeExcelBridgeRows = sanitizeSheetMatrix_(bridgeRows);

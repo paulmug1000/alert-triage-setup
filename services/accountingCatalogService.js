@@ -1433,10 +1433,12 @@ function findAvailableSlotInGroup_(group, kind, targetMonthKey = "") {
   const slotCols = isInv ? INV_SLOT_COLS : EXP_SLOT_COLS;
   const parentRow = group.parentRow || group.allRows[group.parentRowNum - 1] || [];
   const isRetainer = isFixedScheduleRetainer(parentRow);
+  const isMultiRowFixedRetainer = isRetainer && group.allRowNums.length > 1;
 
   const candidates = [];
   for (const rNum of group.allRowNums) {
     const rowArr = group.allRows[rNum - 1] || [];
+    const childInvMonthKey = toMonthKey_(normalizeStr_(rowArr[43]));
     for (let s = 1; s <= 3; s++) {
       const sc = slotCols[s];
       if (isInv) {
@@ -1460,6 +1462,7 @@ function findAvailableSlotInGroup_(group, kind, targetMonthKey = "") {
       } else {
         const desc = normalizeStr_(rowArr[sc.base]);
         const amt = parseMoney_(rowArr[sc.base + 1]);
+        const rec = normalizeStr_(rowArr[sc.base + 3]);
         const id = normalizeStr_(rowArr[sc.base + 6]);
         const isAuto = isAutoExpensePlaceholderId_(id) || (!id && /^placeholder/i.test(desc));
         const isManual = !id && !isAuto && Math.abs(amt) >= 0.005;
@@ -1472,13 +1475,21 @@ function findAvailableSlotInGroup_(group, kind, targetMonthKey = "") {
           isAuto,
           isManual,
           isEmpty,
+          monthKey: childInvMonthKey || toMonthKey_(rec),
           isParentRow: rNum === group.parentRowNum,
         });
       }
     }
   }
 
-  const free = candidates.filter((c) => !c.isReal);
+  let free = candidates.filter((c) => !c.isReal);
+  if (isMultiRowFixedRetainer) {
+    free = free.filter((c) => !c.isParentRow);
+    if (isInv) {
+      free = free.filter((c) => c.slotNum === 1);
+    }
+  }
+
   if (isInv && isRetainer && targetMonthKey) {
     // Prefer child row matching the invoice's sent month
     const monthMatch =
@@ -1488,6 +1499,12 @@ function findAvailableSlotInGroup_(group, kind, targetMonthKey = "") {
     // Next prefer empty slot 1 on a child row, then auto/manual placeholders on child rows
     const childEmpty = free.find((c) => !c.isParentRow && c.slotNum === 1 && c.isEmpty);
     if (childEmpty) return childEmpty;
+  } else if (!isInv && isRetainer && targetMonthKey) {
+    const monthMatch =
+      free.find((c) => !c.isParentRow && c.monthKey === targetMonthKey && c.isAuto) ||
+      free.find((c) => !c.isParentRow && c.monthKey === targetMonthKey && c.isEmpty) ||
+      free.find((c) => !c.isParentRow && c.monthKey === targetMonthKey && c.isManual);
+    if (monthMatch) return monthMatch;
   }
 
   return (
@@ -2146,7 +2163,7 @@ export async function moveAccountingItemToJob({
             sanitizeFormulaInput(canonicalizeExpenseStatus(rawRow[baseCol + 5] ?? "")),
             sanitizeFormulaInput(normalizeStr_(rawRow[baseCol + 6])),
           ];
-      const targetMonthKey = itemType === "invoice" ? toMonthKey_(rawRow[baseCol + 2]) : "";
+      const targetMonthKey = itemType === "invoice" ? toMonthKey_(rawRow[baseCol + 2]) : toMonthKey_(rawRow[baseCol + 3]);
       return { p, trancheVals, targetMonthKey };
     });
 
@@ -2511,7 +2528,7 @@ export async function moveAccountingItemToJob({
       status: firstMatch.block.status || "Received",
     };
 
-    const allocated = await allocateSlotWithSpill_(sheets, cleanClientSheetId, targetGroup, "directCost");
+    const allocated = await allocateSlotWithSpill_(sheets, cleanClientSheetId, targetGroup, "directCost", toMonthKey_(expPayload.date || ""));
     const confWriteData = [...allocated.deferredWrites];
     const slotVals = buildExpenseWriteValues_(expPayload);
     const slotWrite = applySlotWriteToGroup_(

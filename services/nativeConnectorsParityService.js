@@ -1238,6 +1238,172 @@ export async function verifyNativeConnectorsMockReplayParity() {
     suites.push({ id: 12, name: "External Excel CRM + ±25% Swing Guard & Override", matched: diffs.length === 0, diffs });
   }
 
+  // --- Suite 13: External Excel & Google Sheet Bridge Hardened Matching Parity ---
+  {
+    const diffs = [];
+
+    // Part A: Excel (Next 15, SMG, Channel 4 blank-rev rewrite, anti-false-merge, anti-phantom-blank)
+    const xlHeaders = [
+      "Client",
+      "Nature of the Work",
+      "BD Leads",
+      "Project type",
+      "Deal value",
+      "Est. start date",
+      "Est. end date",
+      "Probability",
+      "System ID (Do Not Edit)",
+    ];
+    const xlExistingBridge = [
+      xlHeaders,
+      // 0: Next 15 (serial dates + raw numbers stored in bridge)
+      ["Next 15 ", "Internal leadership events", "Patrick + Gareth", "Team Coaching", 45000, 46402, 46741, 0.5, "uuid-next15"],
+      // 1: SMG (all 5 key fields will be edited)
+      ["SMG", "Diagnostic", "Patrick + Gareth", "Team Coaching", 20000, 46402, 46445, 0.2, "uuid-smg"],
+      // 2: Channel 4 (blank revenue, rewritten job & dates, matching secondary cols & same row)
+      ["Channel 4", "Commercial team transformation support", "Charli + Patrick", "Business Advisory", "", 46357, 46448, "", "uuid-c4"],
+      // 3: Beta Ltd (all optional fields blank — must NOT phantom-match Gamma Ltd)
+      ["Beta Ltd", "Discovery", "", "", "", "", "", "", "uuid-beta"],
+      // 4: Acme Co (old unrelated deal at row index 4; incoming replacement will be at row index 10)
+      ["Acme Co", "Annual brand strategy workshop", "Alice", "Advisory", 30000, 46402, 46450, 0.5, "uuid-acme-old"],
+      // 5..9: Filler rows so rowDistance for Acme Co exceeds Pass 2b threshold
+      ["Filler 1", "Job F1", "Rep1", "Type1", 1000, 46402, 46410, 0.5, "uuid-f1"],
+      ["Filler 2", "Job F2", "Rep2", "Type2", 2000, 46402, 46410, 0.5, "uuid-f2"],
+      ["Filler 3", "Job F3", "Rep3", "Type3", 3000, 46402, 46410, 0.5, "uuid-f3"],
+      ["Filler 4", "Job F4", "Rep4", "Type4", 4000, 46402, 46410, 0.5, "uuid-f4"],
+      ["Filler 5", "Job F5", "Rep5", "Type5", 5000, 46402, 46410, 0.5, "uuid-f5"],
+    ];
+
+    const xlIncomingSheet = [
+      ["Client", "Nature of the Work", "BD Leads", "Project type", "Deal value", "Est. start date", "Est. end date", "Probability"],
+      // 0: Next 15 formatted display strings from Graph /usedRange text
+      ["Next 15 ", "Internal leadership support events", "Patrick + Gareth", "Team Coaching", "£25,000.00", "15/01/2027", "20/12/2027", "70%"],
+      // 1: SMG all 5 key columns changed
+      ["SMG", "Team diagnostic + coaching", "Patrick + Gareth", "Team Coaching", "£50,000.00", "01/02/2027", "27/04/2027", "40%"],
+      // 2: Channel 4 blank-value rewrite
+      ["Channel 4", "Branded content strategy planning", "Charli + Patrick", "Business Advisory", "-", "15/01/2027", "28/02/2027", "N/A"],
+      // 3: Gamma Ltd blank fields (must NOT match Beta Ltd)
+      ["Gamma Ltd", "Discovery", "", "", "", "", "", ""],
+      // 4: Filler 1..5 unchanged
+      ["Filler 1", "Job F1", "Rep1", "Type1", "£1,000.00", "15/01/2027", "23/01/2027", "50%"],
+      ["Filler 2", "Job F2", "Rep2", "Type2", "£2,000.00", "15/01/2027", "23/01/2027", "50%"],
+      ["Filler 3", "Job F3", "Rep3", "Type3", "£3,000.00", "15/01/2027", "23/01/2027", "50%"],
+      ["Filler 4", "Job F4", "Rep4", "Type4", "£4,000.00", "15/01/2027", "23/01/2027", "50%"],
+      ["Filler 5", "Job F5", "Rep5", "Type5", "£5,000.00", "15/01/2027", "23/01/2027", "50%"],
+      // 9: Extra filler to push Acme Co replacement to index 10 (rowDistance = 6 from bridge idx 4)
+      ["Filler 6", "Job F6", "Rep6", "Type6", "£6,000.00", "15/01/2027", "23/01/2027", "50%"],
+      // 10: Acme Co unrelated replacement deal (must get NEW UUID)
+      ["Acme Co", "Payroll software migration", "Bob", "Engineering", "£8,000.00", "01/09/2027", "30/09/2027", "20%"],
+    ];
+
+    const kiXl13 = makeKeyInfoBase_("Xero", "Excel", {
+      X36: "drive123",
+      X37: "file456",
+      X38: "Pipeline",
+      X40: 1,
+      X41: "Client, Nature of the Work, Deal value, Est. start date, Est. end date, Probability",
+    });
+    const routesXl13 = [
+      { match: "/api/integrations/token", body: { success: true, accessToken: "xl-tok" } },
+      { match: "graph.microsoft.com", body: { text: xlIncomingSheet, values: xlIncomingSheet } },
+    ];
+    const hXl13 = createMockGasHarness_({
+      initialTabs: { KeyInfo: kiXl13, CRMExcelBridge: xlExistingBridge, DataFromCRM: xlExistingBridge, CRMComp: [[]] },
+      mockRoutes: routesXl13,
+    });
+    await hXl13.gas.PullFromExcelSheet_(true);
+    const gasXlBridge = hXl13.ss.getSheetByName("CRMExcelBridge").valuesGrid;
+
+    const natXl13 = await pullNativeCrmDeals(ctx, {
+      tokenOverride: { accessToken: "xl-tok" },
+      fetchImpl: hXl13.fetchImpl,
+      sleepImpl: fakeSleep,
+      persistToDb: false,
+      keyInfoOverride: kiXl13,
+      existingGridOverride: xlExistingBridge,
+      bridgeGridOverride: xlExistingBridge,
+      scriptPropsOverride: {},
+    });
+    const natXlBridge = natXl13.nextBridgeGrid || [];
+
+    const checkXlCase = (rowIdx, label, expectedUuid, shouldEqual) => {
+      const gUuid = String(gasXlBridge?.[rowIdx]?.[8] || "").trim();
+      const nUuid = String(natXlBridge?.[rowIdx]?.[8] || "").trim();
+      const gOk = shouldEqual ? gUuid === expectedUuid : Boolean(gUuid && gUuid !== expectedUuid);
+      const nOk = shouldEqual ? nUuid === expectedUuid : Boolean(nUuid && nUuid !== expectedUuid);
+      if (!gOk || !nOk) {
+        diffs.push({
+          tab: `Excel(${label})`,
+          cell: `R${rowIdx + 1}C9`,
+          gas: gUuid,
+          native: nUuid,
+          expected: shouldEqual ? expectedUuid : `NEW != ${expectedUuid}`,
+        });
+      }
+    };
+
+    checkXlCase(1, "Next 15", "uuid-next15", true);
+    checkXlCase(2, "SMG", "uuid-smg", true);
+    checkXlCase(3, "Channel 4 rewrite", "uuid-c4", true);
+    checkXlCase(4, "Gamma vs Beta blank", "uuid-beta", false);
+    checkXlCase(11, "Acme unrelated replacement", "uuid-acme-old", false);
+
+    // Verify stable incoming row order preserved in DataFromCRM
+    if (String(natXl13.nextGrid?.[1]?.[0] || "").trim() !== "Next 15" || String(natXl13.nextGrid?.[2]?.[0] || "").trim() !== "SMG") {
+      diffs.push({ tab: "ExcelOrder", cell: "R2:R3", gas: gasXlBridge?.[1]?.[0], native: natXl13.nextGrid?.[1]?.[0] });
+    }
+
+    // Part B: Google Sheets (formatted UK dates/currency/% + unrelated column added without wiping UUIDs)
+    const gsExistingBridge = [
+      ["Client", "Job", "Value", "Start date", "End date", "Probability", "System ID (Do Not Edit)"],
+      ["Delta Co", "Leadership coaching", 45000, 46402, 46741, 0.5, "uuid-delta"],
+    ];
+    const gsIncomingValues = [
+      ["Client", "Notes", "Job", "Value", "Start date", "End date", "Probability"],
+      ["Delta Co", "Follow up Monday", "Leadership support coaching", "£45,000.00", "15/01/2027", "20/12/2027", "50%"],
+    ];
+    const kiGs13 = makeKeyInfoBase_("Xero", "Google Sheets", {
+      C1: "https://docs.google.com/spreadsheets/d/mockClientSheet1234567890/edit",
+      D1: "https://docs.google.com/spreadsheets/d/mockReconSheet1234567890/edit",
+      G1: "https://docs.google.com/spreadsheets/d/mockMasterSheet1234567890/edit",
+      X11: "https://docs.google.com/spreadsheets/d/extGoogleCrmSheet9876543210/edit",
+      X12: "PipelineFeed",
+      X13: "Client, Job, Value, Start date, End date, Probability",
+      X14: 1,
+      X28: "mockClientSheet1234567890",
+    });
+    const routesGs13 = [
+      { match: "/api/integrations/token", body: { success: true, accessToken: "gs-tok" } },
+      { match: "fields=sheets.properties.title", body: { sheets: [{ properties: { title: "PipelineFeed" } }] } },
+      { match: "values/PipelineFeed", body: { values: gsIncomingValues } },
+    ];
+    const hGs13 = createMockGasHarness_({
+      initialTabs: { KeyInfo: kiGs13, CRMGoogleBridge: gsExistingBridge, DataFromCRM: gsExistingBridge, CRMComp: [[]] },
+      mockRoutes: routesGs13,
+    });
+    await hGs13.gas.PullFromGoogleSheet_(true);
+    const gasGsBridge = hGs13.ss.getSheetByName("CRMGoogleBridge").valuesGrid;
+
+    const natGs13 = await pullNativeCrmDeals(ctx, {
+      tokenOverride: { accessToken: "gs-tok" },
+      fetchImpl: hGs13.fetchImpl,
+      sleepImpl: fakeSleep,
+      persistToDb: false,
+      keyInfoOverride: kiGs13,
+      existingGridOverride: gsExistingBridge,
+      bridgeGridOverride: gsExistingBridge,
+      scriptPropsOverride: {},
+    });
+    const natGsBridge = natGs13.nextBridgeGrid || [];
+    const gasDeltaUuid = String(gasGsBridge?.[1]?.[7] || "").trim();
+    const natDeltaUuid = String(natGsBridge?.[1]?.[7] || "").trim();
+    if (gasDeltaUuid !== "uuid-delta" || natDeltaUuid !== "uuid-delta") {
+      diffs.push({ tab: "GoogleSheets(HeaderAdded)", cell: "R2C8", gas: gasDeltaUuid, native: natDeltaUuid, expected: "uuid-delta" });
+    }
+
+    suites.push({ id: 13, name: "External Excel & Google Sheet Bridge Hardened Matching Parity", matched: diffs.length === 0, diffs });
+  }
+
   return {
     checkedAt: new Date().toISOString(),
     suitesTotal: suites.length,

@@ -1430,21 +1430,90 @@ export default async function handler(req, res) {
       });
     }
 
-    // Direct Expenses (same rules for Project and Retainer):
-    // 1-3 on parent row, 4+ on child rows cycling slots 1-3
+    // If a Confirmed/Fixed retainer has >3 expenses, it must use child rows; keep parent row empty
+    if (isFixedRetainer && !shouldProvisionRetainerSchedule && childInvoices.length === 0 && validExpenses.length > 3 && parentInvoices[1]) {
+      childInvoices[0] = { 1: parentInvoices[1] };
+      delete parentInvoices[1];
+    }
+
+    // Direct Expenses:
+    // - Multi-row Fixed Retainers NEVER store expenses on the parent row; match each expense
+    //   to its monthly child row (by recDate month vs child row invoice month), cycling slots 1-3.
+    // - Projects, Variable Retainers, and single-row retainers: 1-3 on parent row, 4+ on child rows.
     const parentExpenses = {};
     const childExpenses = [];
+    const isMultiRowFixedRetainer =
+      isFixedRetainer &&
+      (childInvoices.length > 0 || (isTargetConfirmed && existingChildRows.length > 0) || validExpenses.length > 3);
 
-    validExpenses.forEach((exp, i) => {
-      if (i < 3) {
-        parentExpenses[i + 1] = exp;
-      } else {
-        const childIdx = Math.floor((i - 3) / 3);
-        const slot = ((i - 3) % 3) + 1;
-        if (!childExpenses[childIdx]) childExpenses[childIdx] = {};
-        childExpenses[childIdx][slot] = exp;
+    if (shouldProvisionRetainerSchedule) {
+      // Expenses will be migrated onto provisioned child rows by provisionRetainerChildRows_
+    } else if (isMultiRowFixedRetainer) {
+      const baseChildCount = Math.max(childInvoices.length, existingChildRows.length, 1);
+      const childMonthYms = [];
+      const childSlotCounts = [];
+      const inv1SendCol = cols.inv?.[0]?.sendDate ?? 43;
+
+      for (let k = 0; k < baseChildCount; k++) {
+        let rawInvDate = childInvoices[k]?.[1]?.sendDate || "";
+        if (!rawInvDate && existingChildRows[k]) {
+          rawInvDate = preloadedFormulaRowsByRowNum.get(existingChildRows[k])?.[inv1SendCol] || "";
+        }
+        const parsedInvDate = rawInvDate ? parseSheetDate(rawInvDate) : null;
+        childMonthYms.push(parsedInvDate ? parsedInvDate.getFullYear() * 12 + parsedInvDate.getMonth() : null);
+        childSlotCounts.push(0);
+        childExpenses[k] = {};
       }
-    });
+
+      for (const exp of validExpenses) {
+        const parsedExpDate = exp.recDate ? parseSheetDate(exp.recDate) : null;
+        const expYm = parsedExpDate ? parsedExpDate.getFullYear() * 12 + parsedExpDate.getMonth() : null;
+
+        let targetChildIdx = -1;
+        // Priority 1: exact month match with open slot (< 3)
+        if (expYm !== null) {
+          targetChildIdx = childMonthYms.findIndex((ym, idx) => ym === expYm && childSlotCounts[idx] < 3);
+        }
+        // Priority 2: nearest month child row with open slot (< 3)
+        if (targetChildIdx === -1 && expYm !== null) {
+          let bestDist = Infinity;
+          for (let idx = 0; idx < childMonthYms.length; idx++) {
+            if (childSlotCounts[idx] >= 3 || childMonthYms[idx] === null) continue;
+            const dist = Math.abs(childMonthYms[idx] - expYm);
+            if (dist < bestDist) {
+              bestDist = dist;
+              targetChildIdx = idx;
+            }
+          }
+        }
+        // Priority 3: first existing child row with an open slot (< 3)
+        if (targetChildIdx === -1) {
+          targetChildIdx = childSlotCounts.findIndex((cnt) => cnt < 3);
+        }
+        // Priority 4: overflow to a new child row if all existing child rows are full
+        if (targetChildIdx === -1) {
+          targetChildIdx = childExpenses.length;
+          childMonthYms.push(expYm);
+          childSlotCounts.push(0);
+          childExpenses[targetChildIdx] = {};
+        }
+
+        const slotNum = childSlotCounts[targetChildIdx] + 1;
+        childExpenses[targetChildIdx][slotNum] = exp;
+        childSlotCounts[targetChildIdx] = slotNum;
+      }
+    } else {
+      validExpenses.forEach((exp, i) => {
+        if (i < 3) {
+          parentExpenses[i + 1] = exp;
+        } else {
+          const childIdx = Math.floor((i - 3) / 3);
+          const slot = ((i - 3) % 3) + 1;
+          if (!childExpenses[childIdx]) childExpenses[childIdx] = {};
+          childExpenses[childIdx][slot] = exp;
+        }
+      });
+    }
 
     const childRowsForInvoices = childInvoices.length;
     const childRowsForExpenses = childExpenses.length;
@@ -1869,6 +1938,7 @@ export default async function handler(req, res) {
         startDate: formatDate(job.startDate),
         endDate: (cols.endDate !== -1 ? updatedParentRow[cols.endDate] : formatDate(job.endDate)) || NO_END_DATE_SHEET_VALUE,
         initialInvoices: validInvoices,
+        initialExpenses: validExpenses,
       });
     }
 

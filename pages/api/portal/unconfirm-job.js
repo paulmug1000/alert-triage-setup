@@ -598,7 +598,7 @@ export default async function handler(req, res) {
     }
 
     // 8. Flush immediate recomputes BEFORE invalidating caches so Portal/PMA reads reflect the demoted job immediately
-    await flushImmediateAndScheduleBackgroundClientRecomputes(sheets, verifiedClientName || clientName || "").catch(() => { });
+    await flushImmediateAndScheduleBackgroundClientRecomputes(sheets, verifiedClientName || clientName || "");
     didFlushImmediate = true;
 
     // 9. Invalidate In-Memory and Redis caches across both Portal and PMA

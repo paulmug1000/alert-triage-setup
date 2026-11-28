@@ -2285,29 +2285,41 @@ async function runSingleInputReconcilePass_(ctx, targetTabs, options = {}) {
 
       const byCoord = new Map(existingCash.map((r) => [`${r.sheet_row_num}:${r.sheet_col_idx}`, r]));
       const usedCoords = new Set();
-      const upserts = [];
+      const cashToUpdate = [];
+      const cashToInsertByCoord = new Map();
       for (const adj of desiredCash) {
         const ck = `${adj.sheet_row_num}:${adj.sheet_col_idx}`;
         usedCoords.add(ck);
         const prev = byCoord.get(ck);
-        const payload = { ...(prev?.id ? { id: prev.id } : {}), ...adj };
-        if (forceFullUpsert || !prev || hasRecordChanged_(prev, payload, ["sheet_row_num", "sheet_col_idx", "numeric_value"], ["raw_value"])) {
-          upserts.push(payload);
+        if (prev?.id) {
+          const payload = { id: prev.id, ...adj };
+          if (forceFullUpsert || hasRecordChanged_(prev, payload, ["sheet_row_num", "sheet_col_idx", "numeric_value"], ["raw_value"])) {
+            cashToUpdate.push(payload);
+          }
+        } else {
+          cashToInsertByCoord.set(ck, { ...adj });
         }
       }
+      const cashToInsert = [...cashToInsertByCoord.values()];
       const obsIds = existingCash.filter((r) => !usedCoords.has(`${r.sheet_row_num}:${r.sheet_col_idx}`)).map((r) => r.id);
       for (let i = 0; i < obsIds.length; i += 200) {
         const { error } = await supabase.from("pulse_cash_adjustments").delete().in("id", obsIds.slice(i, i + 200));
         if (error) throw new Error(`Failed deleting pulse_cash_adjustments: ${error.message}`);
       }
-      for (let i = 0; i < upserts.length; i += 200) {
+      for (let i = 0; i < cashToUpdate.length; i += 200) {
         const { error } = await supabase
           .from("pulse_cash_adjustments")
-          .upsert(upserts.slice(i, i + 200), { onConflict: "client_id,sheet_row_num,sheet_col_idx" });
-        if (error) throw new Error(`Failed upserting pulse_cash_adjustments: ${error.message}`);
+          .upsert(cashToUpdate.slice(i, i + 200), { onConflict: "id" });
+        if (error) throw new Error(`Failed updating pulse_cash_adjustments: ${error.message}`);
+      }
+      for (let i = 0; i < cashToInsert.length; i += 200) {
+        const { error } = await supabase
+          .from("pulse_cash_adjustments")
+          .insert(cashToInsert.slice(i, i + 200));
+        if (error) throw new Error(`Failed inserting pulse_cash_adjustments: ${error.message}`);
       }
       cashAdjustmentsCount = desiredCash.length;
-      deltaStats.cashAdjustmentsMutated = upserts.length + obsIds.length;
+      deltaStats.cashAdjustmentsMutated = cashToUpdate.length + cashToInsert.length + obsIds.length;
     }
 
     if (options.includeBankBreakdowns || tabSet.has("Cash")) {
@@ -2322,15 +2334,21 @@ async function runSingleInputReconcilePass_(ctx, targetTabs, options = {}) {
       });
       const bkByMonth = new Map(existingBk.map((b) => [b.period_ym, b]));
       const usedMonths = new Set();
-      const bkUpserts = [];
+      const bkToUpdate = [];
+      const bkToInsertByMonth = new Map();
       for (const bk of desiredBk) {
         usedMonths.add(bk.period_ym);
         const prev = bkByMonth.get(bk.period_ym);
-        const payload = { ...(prev?.id ? { id: prev.id } : {}), ...bk };
-        if (forceFullUpsert || !prev || hasRecordChanged_(prev, payload, ["total_balance"], ["accounts"])) {
-          bkUpserts.push(payload);
+        if (prev?.id) {
+          const payload = { id: prev.id, ...bk };
+          if (forceFullUpsert || hasRecordChanged_(prev, payload, ["total_balance"], ["accounts"])) {
+            bkToUpdate.push(payload);
+          }
+        } else {
+          bkToInsertByMonth.set(bk.period_ym, { ...bk });
         }
       }
+      const bkToInsert = [...bkToInsertByMonth.values()];
       const obsBkIds = existingBk.filter((b) => !usedMonths.has(b.period_ym)).map((b) => b.id);
       if (obsBkIds.length > 0) {
         for (let i = 0; i < obsBkIds.length; i += 200) {
@@ -2338,14 +2356,20 @@ async function runSingleInputReconcilePass_(ctx, targetTabs, options = {}) {
           if (error) throw new Error(`Failed deleting pulse_cash_bank_balances: ${error.message}`);
         }
       }
-      if (bkUpserts.length > 0) {
+      for (let i = 0; i < bkToUpdate.length; i += 200) {
         const { error } = await supabase
           .from("pulse_cash_bank_balances")
-          .upsert(bkUpserts, { onConflict: "client_id,period_ym" });
-        if (error) throw new Error(`Failed upserting pulse_cash_bank_balances: ${error.message}`);
+          .upsert(bkToUpdate.slice(i, i + 200), { onConflict: "id" });
+        if (error) throw new Error(`Failed updating pulse_cash_bank_balances: ${error.message}`);
+      }
+      for (let i = 0; i < bkToInsert.length; i += 200) {
+        const { error } = await supabase
+          .from("pulse_cash_bank_balances")
+          .insert(bkToInsert.slice(i, i + 200));
+        if (error) throw new Error(`Failed inserting pulse_cash_bank_balances: ${error.message}`);
       }
       cashBankBalancesCount = desiredBk.length;
-      deltaStats.cashBankBalancesMutated = bkUpserts.length + obsBkIds.length;
+      deltaStats.cashBankBalancesMutated = bkToUpdate.length + bkToInsert.length + obsBkIds.length;
     }
   }
 

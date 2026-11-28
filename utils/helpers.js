@@ -2503,35 +2503,32 @@ export function getRetainerRowMonthLabel(r, rIdx = 0, job = null) {
   return `Month ${safeRIdx + 1}`;
 }
 
+export function computeInclusiveRetainerMonths(startInput, endInput) {
+  if (!startInput || !endInput) return 1;
+  const dStart = parseSheetDate(startInput);
+  const dEnd = parseSheetDate(endInput);
+  if (!dStart || !dEnd || dEnd < dStart) return 1;
+  if (isNoEndDateSentinel(dEnd) || dEnd.getFullYear() >= 2035) return 1;
+  const rawSpan = (dEnd.getFullYear() * 12 + dEnd.getMonth()) - (dStart.getFullYear() * 12 + dStart.getMonth()) + 1;
+  const daysInEndMonth = new Date(dEnd.getFullYear(), dEnd.getMonth() + 1, 0).getDate();
+  if (rawSpan > 1 && dStart.getDate() > 1 && dEnd.getDate() < dStart.getDate() && dEnd.getDate() < daysInEndMonth) {
+    return Math.max(1, rawSpan - 1);
+  }
+  return Math.max(1, rawSpan);
+}
+
 export function getRetainerDurationMonths(job) {
   if (!job) return 1;
   const startStr = job.startDate || job.rows?.[0]?.startDate;
   const endStr = job.endDate || job.rows?.[0]?.endDate;
 
   if (startStr && endStr) {
-    const parse = (s) => {
-      if (!s) return null;
-      const str = String(s).trim();
-      const m = str.match(/^(\d{1,2})[-/ ]([A-Za-z]{3})[-/ ](\d{2,4})$/);
-      if (m) {
-        const months = { jan: 0, feb: 1, mar: 2, apr: 3, may: 4, jun: 5, jul: 6, aug: 7, sep: 8, oct: 9, nov: 10, dec: 11 };
-        const mIdx = months[m[2].toLowerCase()];
-        if (mIdx !== undefined) {
-          const yr = m[3].length === 2 ? 2000 + parseInt(m[3], 10) : parseInt(m[3], 10);
-          return new Date(yr, mIdx, parseInt(m[1], 10));
-        }
-      }
-      const d = new Date(str);
-      return isNaN(d.getTime()) ? null : d;
-    };
-
-    const dStart = parse(startStr);
-    const dEnd = parse(endStr);
+    const dStart = parseSheetDate(startStr);
+    const dEnd = parseSheetDate(endStr);
     if (dStart && dEnd && dEnd >= dStart) {
       if (dEnd.getFullYear() < 2035) {
-        const totalDays = Math.round((dEnd.getTime() - dStart.getTime()) / (1000 * 60 * 60 * 24)) + 1;
-        const approxMonths = Math.round(totalDays / 30.4375);
-        if (approxMonths > 0) return approxMonths;
+        const months = computeInclusiveRetainerMonths(dStart, dEnd);
+        if (months > 0) return months;
       }
     }
   }

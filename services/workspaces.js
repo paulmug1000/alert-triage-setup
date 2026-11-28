@@ -33,6 +33,7 @@ import {
   formatVariableRetainerTag,
   resolveEditableJobSheetMeta,
   escapeIlikeExact,
+  computeInclusiveRetainerMonths,
 } from "../utils/helpers.js";
 import { isUserAuthorizedForClient, matchesClientName, sanitizeFormulaInput, getClientManagerClientMap, DEFAULT_AC_SHEET_ID, verifyUserAuthorizedForSheet, resolveClientNameBySheetId, resolveClientSheetIdByClientName, resolveMasterSheetIdByClientName, assertSetupClientSheetBinding, unwrapSheetId, canViewSalariesAndDividends } from "./userPermissions.js";
 export { DEFAULT_AC_SHEET_ID, resolveClientNameBySheetId };
@@ -67,6 +68,7 @@ import {
   executeChangeRetainerStartDate,
   buildRetainerChildPlaceholderSlot,
   createVariableRetainerSeries_,
+  retDetectIntervalMonths,
 } from "./retainers.js";
 
 let _allClientsMemoryCache = null;
@@ -4307,14 +4309,14 @@ export function calculateRevenueSplit(amount, mode, start, end, retainerDay = 28
   const modeClean = String(mode || "50-50").trim().toLowerCase();
 
   if (modeClean === "even-split") {
-    const diffTime = Math.abs(endDate.getTime() - startDate.getTime());
-    const diffDays = Math.round(diffTime / (1000 * 60 * 60 * 24));
-    const totalMonths = Math.round(diffDays / 30.4375);
+    const totalMonths = computeInclusiveRetainerMonths(startDate, endDate);
     const slotsNeeded = Math.max(1, totalMonths - xeroCount);
     const amtPerMonth = amount / slotsNeeded;
     const allocations = [];
     for (let m = 0; m < slotsNeeded; m++) {
-      const invDate = new Date(startDate.getFullYear(), startDate.getMonth() + xeroCount + m, retainerDay || 1);
+      const targetMonth = startDate.getMonth() + xeroCount + m;
+      const maxDays = new Date(startDate.getFullYear(), targetMonth + 1, 0).getDate();
+      const invDate = new Date(startDate.getFullYear(), targetMonth, Math.min(retainerDay || 28, maxDays));
       allocations.push({ amt: Math.round(amtPerMonth * 100) / 100, date: invDate });
     }
     return allocations;
@@ -5463,6 +5465,11 @@ export async function adjustJobInvoicePlaceholders_(sheets, sheetIdClean, target
         return null;
       }
       if (effectiveRev > 0) {
+        const childDates = allRowNums
+          .slice(1)
+          .map((rn) => parseSheetDate(allRows[rn - 1]?.[43]))
+          .filter(Boolean);
+        const intervalMonths = retDetectIntervalMonths(childDates, parentRow[35]) || 1;
         const batchData = [];
         const slotUpdates = [];
         for (const rNum of allRowNums) {
@@ -5474,8 +5481,8 @@ export async function adjustJobInvoicePlaceholders_(sheets, sheetIdClean, target
           const st = String(rowArr[45] ?? "").trim();
           const rech1 = parseFloat(String(rowArr[46] ?? "0").replace(/[£$€,\s]/g, "")) || 0;
           const cm1 = String(rowArr[47] ?? "").trim();
-          const targetGross = Math.round((effectiveRev + rech1) * 100) / 100;
-          const isPlaceholderRow = !ref || isAutoInvoicePlaceholderRef_(ref);
+          const targetGross = Math.round((effectiveRev * intervalMonths + rech1) * 100) / 100;
+          const isPlaceholderRow = !ref || isPlaceholderInvoice(ref, st);
           const isSentOrPaid = ["sent", "paid"].includes(st.toLowerCase());
           if (isPlaceholderRow && !isSentOrPaid && (amt > 0 || sent) && Math.abs(amt - targetGross) > 0.005) {
             if (allRows[rNum - 1]) allRows[rNum - 1][41] = targetGross;

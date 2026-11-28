@@ -40,7 +40,7 @@ import { anthropic } from "./claudeClient.js";
 import { logPmaActivity } from "./pmaLogger.js";
 import { logPrecomputeRun, logFlagSweepRun, logBuildOptionsRun } from "./systemLogs.js";
 import { getSystemHealthSummary, recordSweepRunTelemetry } from "./systemHealthWatchdog.js";
-import { isPlaceholderInvoice, isDraftInvoice, isPlaceholderExpense, parseYearMonth, parseStaleExpenseDetail, isPipelineJobSuppressed, toSheetDateFormat, hasActiveCrmIntegration, ADMIN_ONLY_ALERT_TYPES, isNoEndDateSentinel, isJobCostingStyle, getJobCostingRowFormulasMap, buildJobRowClearAndRestorePlan, resolveCanonicalOAuthHost, parseVariableRetainerTag, isVariableRetainerRow, isFixedScheduleRetainer, sanitizeSpreadsheetTerms } from "../utils/helpers.js";
+import { isPlaceholderInvoice, isDraftInvoice, isPlaceholderExpense, parseYearMonth, parseStaleExpenseDetail, isPipelineJobSuppressed, toSheetDateFormat, hasActiveCrmIntegration, ADMIN_ONLY_ALERT_TYPES, isNoEndDateSentinel, isJobCostingStyle, getJobCostingRowFormulasMap, buildJobRowClearAndRestorePlan, resolveCanonicalOAuthHost, parseVariableRetainerTag, isVariableRetainerRow, isFixedScheduleRetainer, sanitizeSpreadsheetTerms, computeInclusiveRetainerMonths } from "../utils/helpers.js";
 import { getSessionUser, safeCompareSecret } from "./authService.js";
 import { matchesClientName, getClientManagerClientMap, isUserAuthorizedForClient, verifyUserAuthorizedForSheet, getCanonicalAcSheetId, canViewSalariesAndDividends } from "./userPermissions.js";
 import { toSerialOrNull, edateSerial } from "./gasRuntime/masterFormulaEngine.js";
@@ -9643,11 +9643,11 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
         let jobRevenue = revParsed;
         if (isFixedRetainer) {
           let contractMonths = jobRows.length;
-          if (startDate && endDate) {
+          if (startDate && endDate && !isNoEndDateSentinel(endDate)) {
             const sDate = parseSheetOrJsDate_(startDate);
             const eDate = parseSheetOrJsDate_(endDate);
-            if (sDate && eDate && eDate > sDate) {
-              contractMonths = Math.max(1, Math.round((eDate.getTime() - sDate.getTime()) / (30.4375 * 24 * 60 * 60 * 1000)));
+            if (sDate && eDate && eDate >= sDate) {
+              contractMonths = computeInclusiveRetainerMonths(sDate, eDate);
             }
           }
           jobRevenue = revParsed > 0 ? revParsed * contractMonths : 0;
@@ -9659,8 +9659,9 @@ Return a JSON array of options with fields: optionId, title, matchType (job|cate
 
         const uninvoicedRevenue = effectiveBillable - totalRealInvoiced;
 
-        // Universal gate: exclude any job that does not have uninvoiced revenue (except variable retainers with open slots for extra same-month invoices)
-        if (uninvoicedRevenue <= 0.01 && !isVarRetainer) {
+        // Universal gate: exclude any job that does not have uninvoiced revenue
+        // (for retainers, slight real-invoice variances must not block matching open placeholder slots)
+        if (uninvoicedRevenue <= 0.01 && !isVarRetainer && !(isFixedRetainer && nonRealSlots.length > 0)) {
           continue;
         }
 
@@ -13762,10 +13763,8 @@ export async function handleAnalyzeNoActionFlag(req, res, initialSheets) {
 
           // ── Single-row retainer check ────────────────────────────────────
           let isSingleMonth = false;
-          if (startDate && endDate) {
-            const diffTime = endDate.getTime() - startDate.getTime();
-            const diffDays = Math.round(diffTime / (1000 * 60 * 60 * 24));
-            const monthsDiff = Math.max(1, Math.round(diffDays / 30.4375));
+          if (startDate && endDate && !isNoEndDateSentinel(endDate)) {
+            const monthsDiff = computeInclusiveRetainerMonths(startDate, endDate);
             isSingleMonth = (monthsDiff === 1);
           }
 
@@ -13823,13 +13822,11 @@ export async function handleAnalyzeNoActionFlag(req, res, initialSheets) {
             return sentDate && sentDate <= endOfCurrentMonth;
           }).length;
 
-          const diffTime = Math.abs(endDate.getTime() - startDate.getTime());
-          const diffDays = Math.round(diffTime / (1000 * 60 * 60 * 24));
-          const monthsDiff = Math.max(1, Math.round(diffDays / 30.4375));
+          const monthsDiff = computeInclusiveRetainerMonths(startDate, endDate);
 
           const totalPeriods = Math.ceil(monthsDiff / periodMonths);
           const futurePeriodsInContract = Math.max(0, totalPeriods - pastAndCurrentRows);
-          const futureRows = Math.min(18 / periodMonths, futurePeriodsInContract);
+          const futureRows = Math.min(Math.ceil(18 / periodMonths), futurePeriodsInContract);
           const expectedChildRows = pastAndCurrentRows + futureRows;
 
           const actualChildRows = childRows.length;
@@ -14088,13 +14085,11 @@ export async function handleAnalyzeNoActionFlag(req, res, initialSheets) {
             const sentDate = parseConfDate(cr[43]);
             return sentDate && sentDate <= endOfCurrentMonth;
           }).length;
-          const diffTime2 = Math.abs(endDate.getTime() - startDate.getTime());
-          const diffDays2 = Math.round(diffTime2 / (1000 * 60 * 60 * 24));
-          const monthsDiff = Math.max(1, Math.round(diffDays2 / 30.4375));
+          const monthsDiff = computeInclusiveRetainerMonths(startDate, endDate);
 
           const totalPeriods = Math.ceil(monthsDiff / periodMonths);
           const futurePeriodsInContract = Math.max(0, totalPeriods - pastAndCurrentRows);
-          const futureRows = Math.min(18 / periodMonths, futurePeriodsInContract);
+          const futureRows = Math.min(Math.ceil(18 / periodMonths), futurePeriodsInContract);
           const expectedChildRows = pastAndCurrentRows + futureRows;
 
           const actualChildRows = childRows.length;
@@ -15201,11 +15196,11 @@ function findPipelineInvoiceInfoMatches_({
     let jobRevenue = revParsed;
     if (isRetainer) {
       let contractMonths = jobRows.length;
-      if (startDate && endDate) {
+      if (startDate && endDate && !isNoEndDateSentinel(endDate)) {
         const sDate = parseSheetOrJsDate_(startDate);
         const eDate = parseSheetOrJsDate_(endDate);
-        if (sDate && eDate && eDate > sDate) {
-          contractMonths = Math.max(1, Math.round((eDate.getTime() - sDate.getTime()) / (30.4375 * 24 * 60 * 60 * 1000)));
+        if (sDate && eDate && eDate >= sDate) {
+          contractMonths = computeInclusiveRetainerMonths(sDate, eDate);
         }
       }
       jobRevenue = revParsed > 0 ? revParsed * contractMonths : 0;
@@ -15215,7 +15210,7 @@ function findPipelineInvoiceInfoMatches_({
       : jobRevenue;
     const uninvoicedRevenue = effectiveBillable - totalRealInvoiced;
 
-    if (uninvoicedRevenue <= 0.01 || nonRealSlots.length === 0) {
+    if ((uninvoicedRevenue <= 0.01 && !(isRetainer && nonRealSlots.length > 0)) || nonRealSlots.length === 0) {
       continue;
     }
 

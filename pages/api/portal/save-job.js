@@ -11,6 +11,9 @@ import {
   handleUpdateVariableRetainerBase,
   handleUpdateVariableRetainerMonth,
   handleSaveVariableRetainerSeries_,
+  retDetectIntervalMonths,
+  executeChangeRetainerEndDate,
+  executeChangeRetainerStartDate,
 } from "../../../services/retainers.js";
 import { getToleranceValues } from "../../../services/sharedHelpers.js";
 import {
@@ -1137,7 +1140,7 @@ export default async function handler(req, res) {
         }
       }
       const saveVarMasterId = await resolveMasterSheetIdForClient_(sheets, clientSheetId, verifiedClientName || clientName || "").catch(() => null);
-      await flushImmediateAndScheduleBackgroundClientRecomputes(sheets, verifiedClientName || clientName || "").catch(() => { });
+      await flushImmediateAndScheduleBackgroundClientRecomputes(sheets, verifiedClientName || clientName || "");
       didFlushImmediate = true;
       await invalidatePmaClientCache(clientSheetId, saveVarMasterId || null, ["jobs", "invoices", "outgoings", "retainers", "cash", "views"]).catch(() => { });
       return res.status(200).json({
@@ -1402,11 +1405,56 @@ export default async function handler(req, res) {
     const parentInvoices = {};
     const childInvoices = [];
 
+    const prevStartStr =
+      existingParentRow.length > 0 && cols.startDate !== -1
+        ? toSheetDateFormat(existingParentRow[cols.startDate])
+        : "";
+    const prevEndRaw = existingParentRow.length > 0 && cols.endDate !== -1 ? existingParentRow[cols.endDate] : "";
+    const prevEndStr = isNoEndDateSentinel(prevEndRaw) ? NO_END_DATE_SHEET_VALUE : toSheetDateFormat(prevEndRaw);
+    const prevRevNum =
+      existingParentRow.length > 0 && cols.revenue !== -1
+        ? parseMoneyVal(existingParentRow[cols.revenue])
+        : 0;
+    const nextStartStr = toSheetDateFormat(job.startDate);
+    const nextEndStr =
+      job.noEndDate || isNoEndDateSentinel(job.endDate)
+        ? NO_END_DATE_SHEET_VALUE
+        : toSheetDateFormat(job.endDate);
+    const nextRevNum = parseMoneyVal(job.revenue);
+    const isEditingExistingConfirmedRetainer =
+      isTargetConfirmed && isFixedRetainer && !isNewJob && wasPreviouslyFixedRetainer && existingChildRows.length > 0;
+    const didPortalRetainerStartChange =
+      isEditingExistingConfirmedRetainer && Boolean(nextStartStr && prevStartStr && nextStartStr !== prevStartStr);
+    const didPortalRetainerEndChange =
+      isEditingExistingConfirmedRetainer && Boolean(nextEndStr && prevEndStr && nextEndStr !== prevEndStr);
+    const didPortalRetainerRevChange =
+      isEditingExistingConfirmedRetainer && nextRevNum > 0 && Math.abs(nextRevNum - prevRevNum) > 0.005;
+    const willSyncPortalRetainerSchedule = didPortalRetainerStartChange || didPortalRetainerEndChange;
+
     if (shouldProvisionRetainerSchedule) {
       // Confirmed Retainers being created, promoted, or converted from Project have their
       // child rows and scheduled monthly invoices provisioned in the background.
       // Parent row invoice slots remain empty.
     } else if (isFixedRetainer) {
+      if (didPortalRetainerRevChange && !didPortalRetainerStartChange && validInvoices.length > 0) {
+        const portalRetDates = validInvoices
+          .map((inv) => (inv?.sendDate ? parseSheetDate(inv.sendDate) : null))
+          .filter(Boolean);
+        const portalInterval = retDetectIntervalMonths(portalRetDates, job.projectRetainer) || 1;
+        const oldExpectedPerInv = prevRevNum * portalInterval;
+        const newPerInv = nextRevNum * portalInterval;
+        validInvoices.forEach((inv) => {
+          const ref = String(inv?.ref || "").trim();
+          const st = String(inv?.status || "").trim().toLowerCase();
+          if ((!ref || isPlaceholderInvoice(ref, st)) && !st.includes("sent") && !st.includes("paid")) {
+            const curAmt = parseMoneyVal(inv?.amount);
+            const rechAmt = parseMoneyVal(inv?.ofWhichRechgd);
+            if (curAmt > 0 && Math.abs(curAmt - (oldExpectedPerInv + rechAmt)) <= 0.02) {
+              inv.amount = String(Math.round((newPerInv + rechAmt) * 100) / 100);
+            }
+          }
+        });
+      }
       if (validInvoices.length === 1) {
         // Retainer with 1 invoice (e.g. Pipeline retainer): sits on parent row slot 1; slots 2 & 3 empty
         parentInvoices[1] = validInvoices[0];
@@ -1520,7 +1568,7 @@ export default async function handler(req, res) {
     const totalChildRowsNeeded = Math.max(childRowsForInvoices, childRowsForExpenses);
 
     // 5. MANAGE CHILD ROWS (reuse existing, create new via moveDimension, or clear unused)
-    const actualChildRows = [];
+    let actualChildRows = [];
     let didMoveRows = false;
 
     for (let idx = 0; idx < totalChildRowsNeeded; idx++) {
@@ -1583,6 +1631,12 @@ export default async function handler(req, res) {
       rowNum: parentRow,
       canEnterFormulas,
     });
+    if (didPortalRetainerStartChange && cols.startDate !== -1 && existingParentRow[cols.startDate] !== undefined) {
+      updatedParentRow[cols.startDate] = existingParentRow[cols.startDate];
+    }
+    if (didPortalRetainerEndChange && cols.endDate !== -1 && existingParentRow[cols.endDate] !== undefined) {
+      updatedParentRow[cols.endDate] = existingParentRow[cols.endDate];
+    }
 
     const isDangerousFormulaStr_ = (val) =>
       typeof val === "string" &&
@@ -1862,11 +1916,12 @@ export default async function handler(req, res) {
     }
 
     // 7.5. EXECUTE VALUE WRITES & DEFERRED CLEARS SECOND (atomic, preserves Column AO and BI:BW untouched)
+    const deferRecomputeForRetainerSync = shouldProvisionRetainerSchedule || willSyncPortalRetainerSchedule;
     await withRetry(() =>
       sheets.spreadsheets.values.batchUpdate({
         spreadsheetId: clientSheetId,
-        _skipFormulaRecompute: deferredClearRanges.length > 0 || shouldProvisionRetainerSchedule,
-        _deferBackgroundRecompute: !(deferredClearRanges.length > 0 || shouldProvisionRetainerSchedule),
+        _skipFormulaRecompute: deferredClearRanges.length > 0 || deferRecomputeForRetainerSync,
+        _deferBackgroundRecompute: !(deferredClearRanges.length > 0 || deferRecomputeForRetainerSync),
         requestBody: {
           valueInputOption: "USER_ENTERED",
           data: batchUpdateData,
@@ -1879,8 +1934,8 @@ export default async function handler(req, res) {
         await withRetry(() =>
           sheets.spreadsheets.values.batchClear({
             spreadsheetId: clientSheetId,
-            _skipFormulaRecompute: deferredRestoreData.length > 0 || shouldProvisionRetainerSchedule,
-            _deferBackgroundRecompute: !(deferredRestoreData.length > 0 || shouldProvisionRetainerSchedule),
+            _skipFormulaRecompute: deferredRestoreData.length > 0 || deferRecomputeForRetainerSync,
+            _deferBackgroundRecompute: !(deferredRestoreData.length > 0 || deferRecomputeForRetainerSync),
             requestBody: { ranges: deferredClearRanges },
           })
         );
@@ -1888,8 +1943,8 @@ export default async function handler(req, res) {
           await withRetry(() =>
             sheets.spreadsheets.values.batchUpdate({
               spreadsheetId: clientSheetId,
-              _skipFormulaRecompute: shouldProvisionRetainerSchedule,
-              _deferBackgroundRecompute: !shouldProvisionRetainerSchedule,
+              _skipFormulaRecompute: deferRecomputeForRetainerSync,
+              _deferBackgroundRecompute: !deferRecomputeForRetainerSync,
               requestBody: {
                 valueInputOption: "USER_ENTERED",
                 data: deferredRestoreData,
@@ -1940,10 +1995,54 @@ export default async function handler(req, res) {
         initialInvoices: validInvoices,
         initialExpenses: validExpenses,
       });
+    } else if (willSyncPortalRetainerSchedule) {
+      let portalScheduleRes = null;
+      if (didPortalRetainerStartChange) {
+        portalScheduleRes = await executeChangeRetainerStartDate(sheets, {
+          clientSheetId,
+          masterSheetId: null,
+          client: job.client || "",
+          jobName: job.jobName || "",
+          parentRowNum: parentRow,
+          newStartDate: nextStartStr,
+          newEndDate: nextEndStr,
+          newMonthlyAmount: nextRevNum > 0 ? nextRevNum : undefined,
+          clientName: verifiedClientName || clientName || "",
+        });
+      } else if (didPortalRetainerEndChange) {
+        portalScheduleRes = await executeChangeRetainerEndDate(sheets, {
+          clientSheetId,
+          masterSheetId: null,
+          client: job.client || "",
+          jobName: job.jobName || "",
+          parentRowNum: parentRow,
+          newEndDate: nextEndStr,
+          noEndDate: Boolean(job.noEndDate || isNoEndDateSentinel(nextEndStr)),
+          previousEndDate: prevEndStr,
+          clientName: verifiedClientName || clientName || "",
+        });
+      }
+      if (portalScheduleRes && !portalScheduleRes.success) {
+        const rawErr = portalScheduleRes.error || "Failed to update retainer schedule.";
+        return res.status(400).json({
+          success: false,
+          error: sessionUser?.isAdmin ? rawErr : sanitizeSpreadsheetTerms(rawErr),
+        });
+      }
+      if (Array.isArray(portalScheduleRes?.trimmedRowNums) && portalScheduleRes.trimmedRowNums.length > 0) {
+        const trimSet = new Set(portalScheduleRes.trimmedRowNums);
+        actualChildRows = actualChildRows.filter((rn) => !trimSet.has(rn));
+      }
+      if (Array.isArray(portalScheduleRes?.addedChildRows) && portalScheduleRes.addedChildRows.length > 0) {
+        actualChildRows = [
+          ...actualChildRows,
+          ...portalScheduleRes.addedChildRows.map((cr) => cr.rowNum).filter(Boolean),
+        ];
+      }
     }
 
     // 9. FLUSH RELATIONAL / FORMULA RECOMPUTES FIRST, THEN INVALIDATE CACHES
-    await flushImmediateAndScheduleBackgroundClientRecomputes(sheets, verifiedClientName || clientName || "").catch(() => { });
+    await flushImmediateAndScheduleBackgroundClientRecomputes(sheets, verifiedClientName || clientName || "");
     didFlushImmediate = true;
 
     try {

@@ -18,6 +18,7 @@ import {
   parseVariableRetainerTag,
   formatVariableRetainerTag,
   formatVarRetainerMonthJobName,
+  computeInclusiveRetainerMonths,
 } from "../utils/helpers.js";
 import { getSessionUser } from "./authService.js";
 import { get2TierCache, set2TierCache, resolvePortalCache, invalidatePmaClientCache, memoryCache } from "./cacheService.js";
@@ -48,7 +49,7 @@ async function flushAndInvalidateRetainerCache_(
     }
   }
   if (resolvedName) {
-    await flushImmediateAndScheduleBackgroundClientRecomputes(sheets, resolvedName).catch(() => { });
+    await flushImmediateAndScheduleBackgroundClientRecomputes(sheets, resolvedName);
   }
   await invalidatePmaClientCache(clientSheetId, resolvedMasterId, scopes).catch(() => { });
 }
@@ -875,7 +876,7 @@ export async function handleRenameRetainerJob(req, res, sheets) {
           requestBody: { valueInputOption: "USER_ENTERED", data },
         });
       }
-      await flushAndInvalidateRetainerCache_(sheets, sheetIdClean, null, ["jobs", "invoices", "retainers", "cash"]).catch(() => { });
+      await flushAndInvalidateRetainerCache_(sheets, sheetIdClean, null, ["jobs", "invoices", "retainers", "cash"]);
       return res.status(200).json({ success: true, rowsUpdated: data.length, isVariableRetainer: true });
     }
 
@@ -897,7 +898,7 @@ export async function handleRenameRetainerJob(req, res, sheets) {
       requestBody: { valueInputOption: "RAW", data },
     });
 
-    await flushAndInvalidateRetainerCache_(sheets, sheetIdClean, null, ["jobs", "invoices", "retainers", "cash"]).catch(() => { });
+    await flushAndInvalidateRetainerCache_(sheets, sheetIdClean, null, ["jobs", "invoices", "retainers", "cash"]);
 
     (async () => {
       let tenantClient = req.body.clientName || "";
@@ -926,7 +927,7 @@ export async function handleRenameRetainerJob(req, res, sheets) {
 }
 
 export async function executeChangeRetainerEndDate(sheets, params = {}) {
-  let { clientSheetId, masterSheetId, client, jobName, parentRowNum, newEndDate: rawNewEndDate, noEndDate, clientName, automationCommanderSheetId, preloadedTolerances } = params;
+  let { clientSheetId, masterSheetId, client, jobName, parentRowNum, newEndDate: rawNewEndDate, noEndDate, clientName, automationCommanderSheetId, preloadedTolerances, previousEndDate } = params;
   const newEndDate = (noEndDate || isNoEndDateSentinel(rawNewEndDate)) ? NO_END_DATE_SHEET_VALUE : rawNewEndDate;
   if (!clientSheetId || !jobName || !parentRowNum || !newEndDate) {
     return { success: false, error: "Missing required fields" };
@@ -966,7 +967,7 @@ export async function executeChangeRetainerEndDate(sheets, params = {}) {
     let currentMaxRows = confirmedSheet.properties.gridProperties?.rowCount || 5000;
     const rowGroups = confirmedSheet.rowGroups || [];
 
-    const oldEndDate = retParseSheetDate(parentRow[38]);
+    const oldEndDate = previousEndDate !== undefined ? retParseSheetDate(previousEndDate) : retParseSheetDate(parentRow[38]);
     const newEnd = retParseSheetDate(newEndDate);
     if (!newEnd) return { success: false, error: "Invalid new end date" };
     const formattedNewEndDate = retFmtDate(newEnd);
@@ -991,7 +992,7 @@ export async function executeChangeRetainerEndDate(sheets, params = {}) {
     }
     const childDates = childRows.map(cr => retParseSheetDate(cr.row[43])).filter(Boolean);
 
-    const intervalMonthsForOffset = retDetectIntervalMonths(childDates);
+    const intervalMonthsForOffset = retDetectIntervalMonths(childDates, parentRow[35]);
     const invoiceTimingOffset = retDetectInvoiceTimingOffset_(childDates, startDate, intervalMonthsForOffset);
     const timingMonthAdjust = invoiceTimingOffset === "before" ? 1 : (invoiceTimingOffset === "after" ? -1 : 0);
 
@@ -1056,7 +1057,7 @@ export async function executeChangeRetainerEndDate(sheets, params = {}) {
           spreadsheetId: sheetIdClean, range: `Confirmed!${endDateCol}${parentRowNum}`,
           valueInputOption: "USER_ENTERED", _skipFormulaRecompute: true, requestBody: { values: [[sanitizeFormulaInput(formattedNewEndDate)]] },
         });
-        await flushAndInvalidateRetainerCache_(sheets, sheetIdClean, masterSheetId, ["jobs", "invoices", "retainers", "cash"]).catch(e => console.warn("Cache invalidate failed in executeChangeRetainerEndDate:", e.message));
+        await flushAndInvalidateRetainerCache_(sheets, sheetIdClean, masterSheetId, ["jobs", "invoices", "retainers", "cash"]);
         return { success: true, trimmed: 0, grown: 0, trimmedRowNums: [], addedChildRows: [] };
       }
 
@@ -1213,32 +1214,38 @@ export async function executeChangeRetainerEndDate(sheets, params = {}) {
         details: { jobName, newEndDate: displayNewEndDate, endClient, clientName: tenantClient, trimmed: trimRowNums.length, grown: 0 }
       }).catch(e => console.error("PMA log failed:", e));
 
-      await flushAndInvalidateRetainerCache_(sheets, sheetIdClean, masterSheetId, ["jobs", "invoices", "retainers", "cash"]).catch(e => console.warn("Cache invalidate failed in executeChangeRetainerEndDate:", e.message));
+      await flushAndInvalidateRetainerCache_(sheets, sheetIdClean, masterSheetId, ["jobs", "invoices", "retainers", "cash"]);
 
       return { success: true, trimmed: trimRowNums.length, grown: 0, trimmedRowNums: trimRowNums, addedChildRows: [] };
 
     } else {
+      const intervalMonths = retDetectIntervalMonths(childDates, parentRow[35]) || 1;
       const today = new Date(); today.setHours(0, 0, 0, 0);
       const currentMonthVal = today.getFullYear() * 12 + today.getMonth();
       const pastCount = childDates.filter(d => (d.getFullYear() * 12 + d.getMonth() + timingMonthAdjust) <= currentMonthVal).length;
-      const targetCount = pastCount + 18;
+      const maxFuturePeriods = Math.ceil(18 / intervalMonths);
+      const targetCount = pastCount + maxFuturePeriods;
 
-      if (childRows.length >= targetCount) {
+      const durationMonths = startDate ? computeInclusiveRetainerMonths(startDate, newEnd) : 1;
+      const effectiveEndVal = isNoEndDateSentinel(newEndDate)
+        ? (2050 * 12 + 11)
+        : startDate
+          ? (startDate.getFullYear() * 12 + startDate.getMonth() + durationMonths - 1)
+          : (newEnd.getFullYear() * 12 + newEnd.getMonth());
+      const lastChildDate = childDates.length > 0 ? childDates[childDates.length - 1] : null;
+      const lastChildVal = lastChildDate
+        ? (lastChildDate.getFullYear() * 12 + lastChildDate.getMonth() + timingMonthAdjust)
+        : null;
+      const alreadyCoversEnd = lastChildVal !== null && lastChildVal >= effectiveEndVal;
+
+      if (childRows.length >= targetCount && alreadyCoversEnd) {
         await sheets.spreadsheets.values.update({
           spreadsheetId: sheetIdClean, range: `Confirmed!${endDateCol}${parentRowNum}`,
           valueInputOption: "USER_ENTERED", _skipFormulaRecompute: true, requestBody: { values: [[formattedNewEndDate]] },
         });
-        await flushAndInvalidateRetainerCache_(sheets, sheetIdClean, masterSheetId, ["jobs", "invoices", "retainers", "cash"]).catch(e => console.warn("Cache invalidate failed in executeChangeRetainerEndDate:", e.message));
+        await flushAndInvalidateRetainerCache_(sheets, sheetIdClean, masterSheetId, ["jobs", "invoices", "retainers", "cash"]);
         return { success: true, trimmed: 0, grown: 0, trimmedRowNums: [], addedChildRows: [] };
       }
-
-      const intervalMonths = retDetectIntervalMonths(childDates);
-      const totalInvoiced =
-        childRows.reduce((sum, cr) => sum + Math.max(0, retParseMoney(cr.row[41]) - retParseMoney(cr.row[46])), 0) +
-        Math.max(0, retParseMoney(parentRow[41]) - retParseMoney(parentRow[46]));
-      const diffDays = Math.round(Math.abs(newEnd.getTime() - (startDate || newEnd).getTime()) / 86400000);
-      const durationMonths = Math.max(1, Math.round(diffDays / 30.4375));
-      const totalContractValue = durationMonths * revenue;
 
       const rawDefaultDaysToPay = tolerance?.defaultDaysToPay;
       const defaultDaysToPay = parseInt(String(rawDefaultDaysToPay || "").replace(/[^\d.-]/g, ""), 10) || 30;
@@ -1250,33 +1257,30 @@ export async function executeChangeRetainerEndDate(sheets, params = {}) {
         lastDate = childDates[childDates.length - 1];
       } else {
         const baseStart = startDate || newEnd;
-        const prevMonth = new Date(baseStart.getFullYear(), baseStart.getMonth() - 1, 1);
+        const prevMonth = new Date(baseStart.getFullYear(), baseStart.getMonth() - intervalMonths, 1);
         const maxDayPrev = new Date(prevMonth.getFullYear(), prevMonth.getMonth() + 1, 0).getDate();
         lastDate = new Date(prevMonth.getFullYear(), prevMonth.getMonth(), Math.min(sendDay, maxDayPrev));
       }
 
-      const rowsNeeded = targetCount - childRows.length;
+      const rowsNeeded = Math.max(0, targetCount - childRows.length);
       const newRowDates = [];
-      let simulatedTotal = totalInvoiced;
-      const endVal = newEnd.getFullYear() * 12 + newEnd.getMonth();
       for (let k = 0; k < rowsNeeded; k++) {
         const monthOffset = (k + 1) * intervalMonths;
         const targetMonthFirst = new Date(lastDate.getFullYear(), lastDate.getMonth() + monthOffset, 1);
         const testVal = targetMonthFirst.getFullYear() * 12 + targetMonthFirst.getMonth();
-        if ((testVal + timingMonthAdjust) > endVal) break;
-        if ((simulatedTotal + revenue) > (totalContractValue + 1.00)) break;
+        if ((testVal + timingMonthAdjust) > effectiveEndVal) break;
         const maxDaysInMonth = new Date(targetMonthFirst.getFullYear(), targetMonthFirst.getMonth() + 1, 0).getDate();
         const nextTestDate = new Date(targetMonthFirst.getFullYear(), targetMonthFirst.getMonth(), Math.min(sendDay, maxDaysInMonth));
-        simulatedTotal += revenue;
         newRowDates.push(nextTestDate);
       }
+      const perInvoiceAmount = Math.round(revenue * intervalMonths * 100) / 100;
 
       if (newRowDates.length === 0) {
         await sheets.spreadsheets.values.update({
           spreadsheetId: sheetIdClean, range: `Confirmed!${endDateCol}${parentRowNum}`,
           valueInputOption: "USER_ENTERED", _skipFormulaRecompute: true, requestBody: { values: [[formattedNewEndDate]] },
         });
-        await flushAndInvalidateRetainerCache_(sheets, sheetIdClean, masterSheetId, ["jobs", "invoices", "retainers", "cash"]).catch(e => console.warn("Cache invalidate failed in executeChangeRetainerEndDate:", e.message));
+        await flushAndInvalidateRetainerCache_(sheets, sheetIdClean, masterSheetId, ["jobs", "invoices", "retainers", "cash"]);
         return { success: true, trimmed: 0, grown: 0, trimmedRowNums: [], addedChildRows: [] };
       }
 
@@ -1412,7 +1416,7 @@ export async function executeChangeRetainerEndDate(sheets, params = {}) {
           { range: `Confirmed!A${rn}`, values: [[sanitizeFormulaInput(String(client || ""))]] },
           { range: `Confirmed!B${rn}`, values: [[sanitizeFormulaInput(String(jobName || ""))]] },
           { range: `Confirmed!AI${rn}`, values: [[sanitizeFormulaInput(String(vat || ""))]] },
-          { range: `Confirmed!AP${rn}`, values: [[revenue]] },
+          { range: `Confirmed!AP${rn}`, values: [[perInvoiceAmount]] },
           { range: `Confirmed!AS${rn}`, values: [[defaultDaysToPay]] },
           { range: `Confirmed!AR${rn}`, values: [[formattedSent]] }
         );
@@ -1423,7 +1427,7 @@ export async function executeChangeRetainerEndDate(sheets, params = {}) {
             jobName,
             vat,
             isJobCosting,
-            amount: revenue,
+            amount: perInvoiceAmount,
             sentDate: formattedSent,
             daysToPay: defaultDaysToPay,
           })
@@ -1456,7 +1460,7 @@ export async function executeChangeRetainerEndDate(sheets, params = {}) {
         details: { jobName, newEndDate: displayNewEndDate, endClient, clientName: tenantClient, trimmed: 0, grown: newRowDates.length }
       }).catch(e => console.error("PMA log failed:", e));
 
-      await flushAndInvalidateRetainerCache_(sheets, sheetIdClean, masterSheetId, ["jobs", "invoices", "retainers", "cash"]).catch(e => console.warn("Cache invalidate failed in executeChangeRetainerEndDate:", e.message));
+      await flushAndInvalidateRetainerCache_(sheets, sheetIdClean, masterSheetId, ["jobs", "invoices", "retainers", "cash"]);
 
       return { success: true, trimmed: 0, grown: newRowDates.length, trimmedRowNums: [], addedChildRows };
     }
@@ -1565,7 +1569,7 @@ export async function executeChangeRetainerStartDate(sheets, params = {}) {
     const revCol = isJobCosting ? "I" : "AG";
     const oldStartDate = retParseSheetDate(parentRow[37]);
     const childDates = childRows.map(cr => retParseSheetDate(cr.row[43])).filter(Boolean);
-    const intervalMonths = retDetectIntervalMonths(childDates) || 1;
+    const intervalMonths = retDetectIntervalMonths(childDates, parentRow[35]) || 1;
     const b51TargetDay = parseInt(tolerance?.retainerInvoiceDay, 10) > 0 ? parseInt(tolerance.retainerInvoiceDay, 10) : 28;
     const parsedExplicitDay = parseInt(params?.invoiceSendDay, 10);
     const defaultSendDay = (!isNaN(parsedExplicitDay) && parsedExplicitDay >= 1 && parsedExplicitDay <= 31)
@@ -1585,10 +1589,13 @@ export async function executeChangeRetainerStartDate(sheets, params = {}) {
     const rawDefaultDaysToPay = tolerance?.defaultDaysToPay;
     const defaultDaysToPay = parseInt(String(rawDefaultDaysToPay || "").replace(/[^\d.-]/g, ""), 10) || 30;
 
-    // Calculate target periods (open-ended retainers default to 2050-12-31 and are capped by pastCount + 18 below)
+    // Calculate target periods (open-ended retainers default to 2050-12-31 and are capped by pastCount + 18m horizon)
     const periodStarts = [];
     let cursor = new Date(newStart.getFullYear(), newStart.getMonth(), 1);
-    const endMonthVal = finalEnd ? (finalEnd.getFullYear() * 12 + finalEnd.getMonth()) : (2050 * 12 + 11);
+    const hasFiniteEnd = Boolean(finalEnd && !isNoEndDateSentinel(newEndDate || parentRow[38]));
+    const endMonthVal = hasFiniteEnd
+      ? (newStart.getFullYear() * 12 + newStart.getMonth() + computeInclusiveRetainerMonths(newStart, finalEnd) - 1)
+      : (2050 * 12 + 11);
     while (true) {
       const cursorMonthVal = cursor.getFullYear() * 12 + cursor.getMonth();
       if (cursorMonthVal > endMonthVal) break;
@@ -1599,7 +1606,7 @@ export async function executeChangeRetainerStartDate(sheets, params = {}) {
     const today = new Date(); today.setHours(0, 0, 0, 0);
     const currentMonthVal = today.getFullYear() * 12 + today.getMonth();
     const pastCount = periodStarts.filter(d => (d.getFullYear() * 12 + d.getMonth()) <= currentMonthVal).length;
-    const targetPeriodCount = Math.min(periodStarts.length, pastCount + 18);
+    const targetPeriodCount = Math.min(periodStarts.length, pastCount + Math.ceil(18 / intervalMonths));
 
     const newRowDates = periodStarts.slice(0, targetPeriodCount).map(p => {
       const targetYear = p.getFullYear();
@@ -1617,6 +1624,14 @@ export async function executeChangeRetainerStartDate(sheets, params = {}) {
     if (targetCount < currentCount) {
       // Need to trim excess rows from the end of childRows
       const toTrim = childRows.slice(targetCount);
+      const blockedRow = toTrim.find((cr) => retRowHasRealData(cr.row));
+      if (blockedRow) {
+        return {
+          success: false,
+          blocked: true,
+          error: `Cannot change start date - row ${blockedRow.rowNum} already has a real invoice or expense recorded.`,
+        };
+      }
       const groupTrimCounts = new Map();
       for (const cr of toTrim) {
         const rowIdx0 = cr.rowNum - 1;
@@ -1968,7 +1983,7 @@ export async function executeChangeRetainerStartDate(sheets, params = {}) {
       details: { jobName, newStartDate, newEndDate, newMonthlyAmount, endClient, clientName: tenantClient }
     }).catch(e => console.error("PMA log failed:", e));
 
-    await flushAndInvalidateRetainerCache_(sheets, sheetIdClean, masterSheetId, ["jobs", "invoices", "retainers", "cash"]).catch(e => console.warn("Cache invalidate failed in executeChangeRetainerStartDate:", e.message));
+    await flushAndInvalidateRetainerCache_(sheets, sheetIdClean, masterSheetId, ["jobs", "invoices", "retainers", "cash"]);
 
     return {
       success: true,
@@ -2094,7 +2109,7 @@ export async function handleChangeRetainerSendDates(req, res, sheets) {
     const childDates = childRows.map(cr => retParseSheetDate(cr.row[43])).filter(Boolean);
     const parentInvDate = retParseSheetDate(parentRow[43]);
     const allInvoiceDates = (parentInvDate ? [parentInvDate] : []).concat(childDates);
-    const intervalMonths = retDetectIntervalMonths(allInvoiceDates) || 1;
+    const intervalMonths = retDetectIntervalMonths(allInvoiceDates, parentRow[35]) || 1;
 
     const jobStartDateForOffset = retParseSheetDate(parentRow[37]);
     const invoiceTimingOffset = retDetectInvoiceTimingOffset_(allInvoiceDates, jobStartDateForOffset, intervalMonths);
@@ -2285,16 +2300,20 @@ export async function handleChangeRetainerMonthlyAmount(req, res, sheets) {
       }
 
       const childDates = childRows.map(cr => retParseSheetDate(cr.row[43])).filter(Boolean);
-      const intervalMonths = retDetectIntervalMonths(childDates) || 1;
+      const intervalMonths = retDetectIntervalMonths(childDates, parentRow[35]) || 1;
       const parsedAmount = parseFloat(newMonthlyAmount);
       const perInvoiceAmount = parsedAmount * intervalMonths;
 
       const updateData = [
         { range: `Confirmed!${revCol}${parentRowNum}`, values: [[parsedAmount]] },
-        ...childRows.map(cr => ({
-          range: `Confirmed!AP${cr.rowNum}`,
-          values: [[perInvoiceAmount]],
-        })),
+        ...childRows.map((cr) => {
+          const rech1 = retParseMoney(cr.row[46]);
+          const grossAmt = Math.round((perInvoiceAmount + rech1) * 100) / 100;
+          return {
+            range: `Confirmed!AP${cr.rowNum}`,
+            values: [[grossAmt]],
+          };
+        }),
       ];
 
       await sheets.spreadsheets.values.batchUpdate({
@@ -2303,7 +2322,7 @@ export async function handleChangeRetainerMonthlyAmount(req, res, sheets) {
         requestBody: { valueInputOption: "RAW", data: updateData },
       });
 
-      await flushAndInvalidateRetainerCache_(sheets, sheetIdClean, null, ["jobs", "invoices", "retainers", "cash"]).catch(() => { });
+      await flushAndInvalidateRetainerCache_(sheets, sheetIdClean, null, ["jobs", "invoices", "retainers", "cash"]);
 
       return res.status(200).json({
         success: true,
@@ -2316,7 +2335,7 @@ export async function handleChangeRetainerMonthlyAmount(req, res, sheets) {
     const childDates = childRows.map(cr => retParseSheetDate(cr.row[43])).filter(Boolean);
     const parentInvDate = retParseSheetDate(parentRow[43]);
     const allInvoiceDates = (parentInvDate ? [parentInvDate] : []).concat(childDates);
-    const intervalMonths = retDetectIntervalMonths(allInvoiceDates) || 1;
+    const intervalMonths = retDetectIntervalMonths(allInvoiceDates, parentRow[35]) || 1;
 
     const jobStartDateForOffset = retParseSheetDate(parentRow[37]);
     const invoiceTimingOffset = retDetectInvoiceTimingOffset_(allInvoiceDates, jobStartDateForOffset, intervalMonths);
@@ -2641,7 +2660,7 @@ export async function handleChangeRetainerMonthlyAmount(req, res, sheets) {
       }
     }
 
-    await flushAndInvalidateRetainerCache_(sheets, sheetIdClean, null, ["jobs", "invoices", "retainers", "cash"]).catch(() => { });
+    await flushAndInvalidateRetainerCache_(sheets, sheetIdClean, null, ["jobs", "invoices", "retainers", "cash"]);
 
     (async () => {
       let tenantClient = req.body.clientName || "";
@@ -2974,17 +2993,17 @@ export async function provisionRetainerChildRows_(sheets, params = {}) {
       lastDate = new Date(prevMonth.getFullYear(), prevMonth.getMonth(), Math.min(sendDay, maxDayPrev));
     }
 
-    // True contract duration & value (1:1 with GAS runRetainerSheetAudit_)
-    const diffTime = Math.abs(end.getTime() - start.getTime());
-    const diffDays = Math.round(diffTime / (1000 * 60 * 60 * 24));
-    const durationMonths = Math.round(diffDays / 30.4375);
+    // True contract duration strictly governed by inclusive calendar dates
+    const isOngoing = !parsedEnd || end.getFullYear() >= 2035;
+    const durationMonths = computeInclusiveRetainerMonths(start, end);
     const safeDuration = Math.max(1, durationMonths);
-    const totalContractValue = safeDuration * monthlyFee;
 
     const today = new Date();
     today.setHours(0, 0, 0, 0);
     const currentMonthVal = today.getFullYear() * 12 + today.getMonth();
-    const endVal = end.getFullYear() * 12 + end.getMonth();
+    const endVal = isOngoing
+      ? (2050 * 12 + 11)
+      : (start.getFullYear() * 12 + start.getMonth() + safeDuration - 1);
     const invoiceTimingOffset = retDetectInvoiceTimingOffset_(childDates, start, intervalMonths);
     const timingMonthAdjust = invoiceTimingOffset === "before" ? 1 : (invoiceTimingOffset === "after" ? -1 : 0);
 
@@ -3005,10 +3024,9 @@ export async function provisionRetainerChildRows_(sheets, params = {}) {
         probeIdx++;
       }
     }
-    const targetCount = pastCount + 18;
+    const targetCount = pastCount + Math.ceil(18 / intervalMonths);
 
     const newRowDates = [];
-    let simulatedTotal = totalInvoiced;
     const maxToAdd = Math.max(0, targetCount - existingChildRows.length);
     for (let k = 0; k < maxToAdd; k++) {
       const monthOffset = (k + 1) * intervalMonths;
@@ -3019,7 +3037,6 @@ export async function provisionRetainerChildRows_(sheets, params = {}) {
       );
       const testVal = targetMonthFirst.getFullYear() * 12 + targetMonthFirst.getMonth();
       if ((testVal + timingMonthAdjust) > endVal) break;
-      if (simulatedTotal + perInvoiceAmount > totalContractValue + 1.0) break;
 
       const maxDaysInMonth = new Date(
         targetMonthFirst.getFullYear(),
@@ -3032,7 +3049,6 @@ export async function provisionRetainerChildRows_(sheets, params = {}) {
         Math.min(sendDay, maxDaysInMonth)
       );
       newRowDates.push(invDate);
-      simulatedTotal += perInvoiceAmount;
     }
 
     const rowsToCreate = newRowDates.length;
@@ -3364,7 +3380,7 @@ export function buildRetainerChildRowsWritePlan({
   const resolvedDefaultDays =
     !isNaN(parsedDefDays) && parsedDefDays >= 0 && parsedDefDays <= 365 ? parsedDefDays : 30;
 
-  const prevMonth = new Date(start.getFullYear(), start.getMonth() - 1, 1);
+  const prevMonth = new Date(start.getFullYear(), start.getMonth() - intervalMonths, 1);
   const maxDayPrev = new Date(prevMonth.getFullYear(), prevMonth.getMonth() + 1, 0).getDate();
   const lastDate = new Date(
     prevMonth.getFullYear(),
@@ -3372,17 +3388,17 @@ export function buildRetainerChildRowsWritePlan({
     Math.min(sendDay, maxDayPrev)
   );
 
-  // True contract duration & value (1:1 with GAS runRetainerSheetAudit_)
-  const diffTime = Math.abs(end.getTime() - start.getTime());
-  const diffDays = Math.round(diffTime / (1000 * 60 * 60 * 24));
-  const durationMonths = Math.round(diffDays / 30.4375);
+  // True contract duration strictly governed by inclusive calendar dates
+  const isOngoing = !parsedEnd || end.getFullYear() >= 2035;
+  const durationMonths = computeInclusiveRetainerMonths(start, end);
   const safeDuration = Math.max(1, durationMonths);
-  const totalContractValue = safeDuration * monthlyFee;
 
   const today = new Date();
   today.setHours(0, 0, 0, 0);
   const currentMonthVal = today.getFullYear() * 12 + today.getMonth();
-  const endVal = end.getFullYear() * 12 + end.getMonth();
+  const endVal = isOngoing
+    ? (2050 * 12 + 11)
+    : (start.getFullYear() * 12 + start.getMonth() + safeDuration - 1);
 
   let pastCount = 0;
   let probeIdx = 1;
@@ -3397,10 +3413,9 @@ export function buildRetainerChildRowsWritePlan({
     pastCount++;
     probeIdx++;
   }
-  const targetCount = pastCount + 18;
+  const targetCount = pastCount + Math.ceil(18 / intervalMonths);
 
   const newRowDates = [];
-  let simulatedTotal = 0;
   for (let k = 0; k < targetCount; k++) {
     const monthOffset = (k + 1) * intervalMonths;
     const targetMonthFirst = new Date(
@@ -3410,7 +3425,6 @@ export function buildRetainerChildRowsWritePlan({
     );
     const testVal = targetMonthFirst.getFullYear() * 12 + targetMonthFirst.getMonth();
     if (testVal > endVal) break;
-    if (simulatedTotal + perInvoiceAmount > totalContractValue + 1.0) break;
 
     const maxDaysInMonth = new Date(
       targetMonthFirst.getFullYear(),
@@ -3423,7 +3437,6 @@ export function buildRetainerChildRowsWritePlan({
       Math.min(sendDay, maxDaysInMonth)
     );
     newRowDates.push(invDate);
-    simulatedTotal += perInvoiceAmount;
   }
 
   const rowsToCreate = newRowDates.length;
@@ -4679,7 +4692,7 @@ export async function handleTidyUpRetainers(req, res, sheets) {
       }
     }
 
-    await flushAndInvalidateRetainerCache_(sheets, sheetIdClean, null, ["jobs", "invoices", "retainers", "cash"]).catch(() => { });
+    await flushAndInvalidateRetainerCache_(sheets, sheetIdClean, null, ["jobs", "invoices", "retainers", "cash"]);
 
     (async () => {
       let tenantClient = req.body.clientName || "";
@@ -5107,7 +5120,7 @@ export async function handleApplyRetainerSplitInvoice(req, res, sheets) {
         spreadsheetId: sheetIdClean, _skipFormulaRecompute: true, requestBody: { valueInputOption: "USER_ENTERED", data: rechWriteData },
       });
 
-      await flushAndInvalidateRetainerCache_(sheets, sheetIdClean, masterSheetId, ["jobs", "invoices", "retainers", "cash"]).catch(() => { });
+      await flushAndInvalidateRetainerCache_(sheets, sheetIdClean, masterSheetId, ["jobs", "invoices", "retainers", "cash"]);
 
       (async () => {
         let tenantClient = req.body.clientName || "";
@@ -5159,7 +5172,7 @@ export async function handleApplyRetainerSplitInvoice(req, res, sheets) {
       await sheets.spreadsheets.values.batchUpdate({
         spreadsheetId: sheetIdClean, _skipFormulaRecompute: true, requestBody: { valueInputOption: "USER_ENTERED", data: writeData },
       });
-      await flushAndInvalidateRetainerCache_(sheets, sheetIdClean, masterSheetId, ["jobs", "invoices", "retainers", "cash"]).catch(() => { });
+      await flushAndInvalidateRetainerCache_(sheets, sheetIdClean, masterSheetId, ["jobs", "invoices", "retainers", "cash"]);
       return res.status(200).json({
         success: true,
         mode: "converted",
@@ -5212,7 +5225,7 @@ export async function handleApplyRetainerSplitInvoice(req, res, sheets) {
         spreadsheetId: sheetIdClean, _skipFormulaRecompute: true, requestBody: { valueInputOption: "USER_ENTERED", data: writeData },
       });
 
-      await flushAndInvalidateRetainerCache_(sheets, sheetIdClean, masterSheetId, ["jobs", "invoices", "retainers", "cash"]).catch(() => { });
+      await flushAndInvalidateRetainerCache_(sheets, sheetIdClean, masterSheetId, ["jobs", "invoices", "retainers", "cash"]);
 
       (async () => {
         let tenantClient = req.body.clientName || "";
@@ -5387,7 +5400,7 @@ export async function handleDeleteRetainer(req, res, sheets) {
         );
       }
 
-      await flushAndInvalidateRetainerCache_(sheets, sheetIdClean, masterIdClean, ["jobs", "invoices", "retainers", "cash", "views"]).catch(() => { });
+      await flushAndInvalidateRetainerCache_(sheets, sheetIdClean, masterIdClean, ["jobs", "invoices", "retainers", "cash", "views"]);
       return res.status(200).json({ success: true, clearedRows: allSeriesRowsToClear.length, isVariableRetainer: true });
     }
 
@@ -5522,7 +5535,7 @@ export async function handleDeleteRetainer(req, res, sheets) {
       );
     }
 
-    await flushAndInvalidateRetainerCache_(sheets, sheetIdClean, masterIdClean, ["jobs", "invoices", "retainers", "cash"]).catch(() => { });
+    await flushAndInvalidateRetainerCache_(sheets, sheetIdClean, masterIdClean, ["jobs", "invoices", "retainers", "cash"]);
 
     (async () => {
       let tenantClient = req.body.clientName || "";
@@ -5854,7 +5867,7 @@ export async function handleUpdateVariableRetainerBase(req, res, sheets) {
       );
     }
 
-    await flushAndInvalidateRetainerCache_(sheets, sheetIdClean, resolvedMasterId, ["retainers", "jobs", "invoices", "outgoings", "cash", "views"]).catch(() => { });
+    await flushAndInvalidateRetainerCache_(sheets, sheetIdClean, resolvedMasterId, ["retainers", "jobs", "invoices", "outgoings", "cash", "views"]);
     return res.status(200).json({
       success: true,
       updatedCount,
@@ -6637,7 +6650,7 @@ export async function handleSaveVariableRetainerSeries_(req, res, sheets, { veri
       );
     }
 
-    await flushAndInvalidateRetainerCache_(sheets, sheetIdClean, resolvedMasterId, ["jobs", "invoices", "outgoings", "retainers", "cash", "views"]).catch(() => { });
+    await flushAndInvalidateRetainerCache_(sheets, sheetIdClean, resolvedMasterId, ["jobs", "invoices", "outgoings", "retainers", "cash", "views"]);
     logPmaActivity(sheets, {
       automationCommanderSheetId: req.body.automationCommanderSheetId,
       clientName: verifiedClientName || clientName || "Client",

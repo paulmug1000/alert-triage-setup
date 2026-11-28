@@ -220,6 +220,9 @@ const _inFlightBridgeByClient = new Map();
 const _pendingOutboundByClient = new Map();
 const _pendingStructuralOpsByClient = new Map();
 const _suppressOutboundByClient = new Set();
+const STRUCT_OPS_REDIS_PREFIX = "pulse:sheet_bridge_struct_ops:";
+const STRUCT_OPS_TTL_SECONDS = 86400;
+const STRUCT_OPS_MAX_QUEUE = 500;
 
 function normalizeKey_(name) {
   return String(name || "")
@@ -1728,9 +1731,9 @@ export async function seedSheetBridgeBaselineFromSheetSeed(ctx, gridsByTab = {})
 
 /**
  * Records structural row/group batchUpdate requests executed on virtual client tabs
- * so they can be replayed to the paired Google Sheet on the next bridge flush.
+ * in process memory + Redis so cross-instance bridge flushes can replay them reliably.
  */
-export function recordBridgeStructuralRequests(clientName, requests = [], metaBySheetId = new Map()) {
+export async function recordBridgeStructuralRequests(clientName, requests = [], metaBySheetId = new Map()) {
   const key = normalizeKey_(clientName);
   if (!key || _suppressOutboundByClient.has(key) || !Array.isArray(requests) || requests.length === 0) {
     return;
@@ -1753,13 +1756,232 @@ export function recordBridgeStructuralRequests(clientName, requests = [], metaBy
     const meta = metaBySheetId.get(srcSheetId);
     const tabName = meta?.tab_name;
     if (!tabName || (!BRIDGE_BIDIRECTIONAL_TAB_SET.has(tabName) && tabName !== "OutgNotes")) continue;
-    structuralOps.push({ tabName, req: structuredClone(req) });
+    structuralOps.push({
+      opId: `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`,
+      tabName,
+      req: structuredClone(req),
+    });
   }
   if (structuralOps.length > 0) {
     const prev = _pendingStructuralOpsByClient.get(key) || [];
-    prev.push(...structuralOps);
-    _pendingStructuralOpsByClient.set(key, prev);
+    const merged = [...prev, ...structuralOps].slice(-STRUCT_OPS_MAX_QUEUE);
+    _pendingStructuralOpsByClient.set(key, merged);
+    if (redisClient?.isOpen) {
+      try {
+        let redisPrev = [];
+        const raw = await redisClient.get(`${STRUCT_OPS_REDIS_PREFIX}${key}`).catch(() => null);
+        if (raw) {
+          const parsed = JSON.parse(raw);
+          if (Array.isArray(parsed)) redisPrev = parsed;
+        }
+        const seenIds = new Set(redisPrev.map((op) => op?.opId).filter(Boolean));
+        const combined = [...redisPrev, ...structuralOps.filter((op) => !seenIds.has(op.opId))].slice(
+          -STRUCT_OPS_MAX_QUEUE
+        );
+        await redisClient
+          .set(`${STRUCT_OPS_REDIS_PREFIX}${key}`, JSON.stringify(combined), { EX: STRUCT_OPS_TTL_SECONDS })
+          .catch(() => { });
+      } catch { }
+    }
   }
+}
+
+async function loadPendingStructuralOps_(key) {
+  const mem = _pendingStructuralOpsByClient.get(key) || [];
+  let redisOps = [];
+  if (redisClient?.isOpen) {
+    try {
+      const raw = await redisClient.get(`${STRUCT_OPS_REDIS_PREFIX}${key}`).catch(() => null);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed)) redisOps = parsed;
+      }
+    } catch { }
+  }
+  const seen = new Set();
+  const combined = [];
+  for (const op of [...redisOps, ...mem]) {
+    if (!op || !op.req) continue;
+    if (op.opId) {
+      if (seen.has(op.opId)) continue;
+      seen.add(op.opId);
+    }
+    combined.push(op);
+  }
+  return combined.slice(-STRUCT_OPS_MAX_QUEUE);
+}
+
+async function clearPendingStructuralOpsById_(key, idsToRemove = null) {
+  if (!idsToRemove) {
+    _pendingStructuralOpsByClient.delete(key);
+    if (redisClient?.isOpen) {
+      await redisClient.del(`${STRUCT_OPS_REDIS_PREFIX}${key}`).catch(() => { });
+    }
+    return;
+  }
+  const removeSet = idsToRemove instanceof Set ? idsToRemove : new Set(idsToRemove);
+  const filterFn = (list) => (Array.isArray(list) ? list.filter((op) => op?.opId && !removeSet.has(op.opId)) : []);
+  const nextMem = filterFn(_pendingStructuralOpsByClient.get(key));
+  if (nextMem.length > 0) _pendingStructuralOpsByClient.set(key, nextMem);
+  else _pendingStructuralOpsByClient.delete(key);
+
+  if (redisClient?.isOpen) {
+    try {
+      const raw = await redisClient.get(`${STRUCT_OPS_REDIS_PREFIX}${key}`).catch(() => null);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        const nextRedis = filterFn(parsed);
+        if (nextRedis.length > 0) {
+          await redisClient
+            .set(`${STRUCT_OPS_REDIS_PREFIX}${key}`, JSON.stringify(nextRedis), { EX: STRUCT_OPS_TTL_SECONDS })
+            .catch(() => { });
+        } else {
+          await redisClient.del(`${STRUCT_OPS_REDIS_PREFIX}${key}`).catch(() => { });
+        }
+      }
+    } catch { }
+  }
+}
+
+export function reconcileCosmeticGroupRequestsAgainstLiveGroups(requests = [], liveRowGroupsBySheetId = new Map()) {
+  const simBySheet = new Map();
+  const mergeIntervals = (arr) => {
+    const sorted = [...arr]
+      .filter((g) => Number.isInteger(g.startIndex) && Number.isInteger(g.endIndex) && g.endIndex > g.startIndex)
+      .sort((a, b) => a.startIndex - b.startIndex || a.endIndex - b.endIndex);
+    const out = [];
+    for (const g of sorted) {
+      const prev = out[out.length - 1];
+      if (prev && g.startIndex <= prev.endIndex) {
+        prev.endIndex = Math.max(prev.endIndex, g.endIndex);
+        prev.collapsed = Boolean(prev.collapsed && g.collapsed);
+      } else {
+        out.push({ startIndex: g.startIndex, endIndex: g.endIndex, collapsed: Boolean(g.collapsed) });
+      }
+    }
+    return out;
+  };
+  const getSim = (sheetId) => {
+    if (!simBySheet.has(sheetId)) {
+      const raw = liveRowGroupsBySheetId.get(sheetId) || [];
+      const depth1 = raw
+        .filter((g) => (g.depth ?? 1) === 1 && g.range?.dimension !== "COLUMNS")
+        .map((g) => ({
+          startIndex: Number(g.range?.startIndex ?? 0),
+          endIndex: Number(g.range?.endIndex ?? 0),
+          collapsed: Boolean(g.collapsed),
+        }));
+      simBySheet.set(sheetId, mergeIntervals(depth1));
+    }
+    return simBySheet.get(sheetId);
+  };
+
+  const out = [];
+  for (const req of requests || []) {
+    if (!req || typeof req !== "object") continue;
+    if (req.updateDimensionProperties) {
+      out.push(req);
+      continue;
+    }
+    if (req.deleteDimensionGroup?.range?.dimension === "ROWS") {
+      const sId = req.deleteDimensionGroup.range.sheetId;
+      const s = Number(req.deleteDimensionGroup.range.startIndex ?? 0);
+      const e = Number(req.deleteDimensionGroup.range.endIndex ?? s);
+      if (e <= s) continue;
+      const sim = getSim(sId);
+      const overlapping = sim.filter((g) => g.startIndex < e && g.endIndex > s);
+      if (overlapping.length === 0) continue;
+      const nextSim = sim.filter((g) => !(g.startIndex < e && g.endIndex > s));
+      const remainders = [];
+      for (const g of overlapping) {
+        out.push({
+          deleteDimensionGroup: {
+            range: { sheetId: sId, dimension: "ROWS", startIndex: g.startIndex, endIndex: g.endIndex },
+          },
+        });
+        if (g.startIndex < s) remainders.push({ startIndex: g.startIndex, endIndex: s, collapsed: g.collapsed });
+        if (g.endIndex > e) remainders.push({ startIndex: e, endIndex: g.endIndex, collapsed: g.collapsed });
+      }
+      for (const rem of remainders) {
+        out.push({
+          addDimensionGroup: {
+            range: { sheetId: sId, dimension: "ROWS", startIndex: rem.startIndex, endIndex: rem.endIndex },
+          },
+        });
+        if (rem.collapsed) {
+          out.push({
+            updateDimensionGroup: {
+              dimensionGroup: {
+                range: { sheetId: sId, dimension: "ROWS", startIndex: rem.startIndex, endIndex: rem.endIndex },
+                depth: 1,
+                collapsed: true,
+              },
+              fields: "collapsed",
+            },
+          });
+        }
+        nextSim.push(rem);
+      }
+      simBySheet.set(sId, mergeIntervals(nextSim));
+    } else if (req.addDimensionGroup?.range?.dimension === "ROWS") {
+      const sId = req.addDimensionGroup.range.sheetId;
+      const s = Number(req.addDimensionGroup.range.startIndex ?? 0);
+      const e = Number(req.addDimensionGroup.range.endIndex ?? s);
+      if (e <= s) continue;
+      const sim = getSim(sId);
+      let gaps = [{ startIndex: s, endIndex: e }];
+      for (const g of sim) {
+        const nextGaps = [];
+        for (const gap of gaps) {
+          if (g.endIndex <= gap.startIndex || g.startIndex >= gap.endIndex) {
+            nextGaps.push(gap);
+          } else {
+            if (gap.startIndex < g.startIndex) nextGaps.push({ startIndex: gap.startIndex, endIndex: g.startIndex });
+            if (g.endIndex < gap.endIndex) nextGaps.push({ startIndex: g.endIndex, endIndex: gap.endIndex });
+          }
+        }
+        gaps = nextGaps;
+      }
+      for (const gap of gaps) {
+        if (gap.endIndex > gap.startIndex) {
+          out.push({
+            addDimensionGroup: {
+              range: { sheetId: sId, dimension: "ROWS", startIndex: gap.startIndex, endIndex: gap.endIndex },
+            },
+          });
+          sim.push({ startIndex: gap.startIndex, endIndex: gap.endIndex, collapsed: false });
+        }
+      }
+      simBySheet.set(sId, mergeIntervals(sim));
+    } else if (req.updateDimensionGroup?.dimensionGroup?.range?.dimension === "ROWS") {
+      const dg = req.updateDimensionGroup.dimensionGroup;
+      const sId = dg.range.sheetId;
+      const s = Number(dg.range.startIndex ?? 0);
+      const e = Number(dg.range.endIndex ?? s);
+      const sim = getSim(sId);
+      const matched =
+        sim.find((g) => g.startIndex <= s && g.endIndex >= e) || sim.find((g) => g.startIndex < e && g.endIndex > s);
+      if (!matched) continue;
+      const collapsed = Boolean(dg.collapsed);
+      matched.collapsed = collapsed;
+      out.push({
+        updateDimensionGroup: {
+          dimensionGroup: {
+            range: {
+              sheetId: sId,
+              dimension: "ROWS",
+              startIndex: matched.startIndex,
+              endIndex: matched.endIndex,
+            },
+            depth: 1,
+            collapsed,
+          },
+          fields: req.updateDimensionGroup.fields || "collapsed",
+        },
+      });
+    }
+  }
+  return out;
 }
 
 function rewriteStructuralRequestSheetId_(req, realGid) {
@@ -2049,7 +2271,7 @@ export async function checkAndSyncClientSheetBridge(
         } catch { }
       }
 
-      const queuedStructOps = _pendingStructuralOpsByClient.get(key) || [];
+      const queuedStructOps = await loadPendingStructuralOps_(key);
       const needRealSheetFetch = canPullInbound || wantsOutbound;
 
       const structDirtyTabs = queuedStructOps.map((op) => op.tabName).filter(Boolean);
@@ -2270,42 +2492,78 @@ export async function checkAndSyncClientSheetBridge(
       const hasOutboundWork = outboundValueRanges.length > 0 || outboundNoteRequests.length > 0 || queuedStructOps.length > 0;
 
       if (wantsOutbound && effectiveMode === "live" && hasOutboundWork) {
-        // 1. Replay queued structural ops first, compute net rowCount delta, and expand if rows grew past post-structural rowCount
-        const structuralBatch = [];
-        const netRowDeltaByTab = createSafeMap_();
-        if (queuedStructOps.length > 0) {
-          for (const op of queuedStructOps) {
-            const realGid =
-              sheetBundle?.sheetPropsByTitle?.[op.tabName]?.sheetId ??
-              (await getSheetGid(rawSheets, ctx.clientSheetId, op.tabName).catch(() => null));
-            if (realGid !== null && realGid !== undefined) {
-              structuralBatch.push(rewriteStructuralRequestSheetId_(op.req, realGid));
-              if (op.tabName) {
-                const delRange = op.req?.deleteDimension?.range;
-                const insRange = op.req?.insertDimension?.range;
-                if (delRange?.dimension === "ROWS") {
-                  netRowDeltaByTab[op.tabName] =
-                    (netRowDeltaByTab[op.tabName] || 0) -
-                    Math.max(0, Number(delRange.endIndex) - Number(delRange.startIndex));
-                } else if (insRange?.dimension === "ROWS") {
-                  netRowDeltaByTab[op.tabName] =
-                    (netRowDeltaByTab[op.tabName] || 0) +
-                    Math.max(0, Number(insRange.endIndex) - Number(insRange.startIndex));
-                }
-              }
-            }
-          }
-          _pendingStructuralOpsByClient.delete(key);
-        }
+        // Partition row shifts vs cosmetic group/hide ops so a group-range error NEVER blocks data writes or drops row shifts
+        const isCoreRowShift_ = (req) =>
+          Boolean(
+            req?.moveDimension?.source?.dimension === "ROWS" ||
+            req?.insertDimension?.range?.dimension === "ROWS" ||
+            req?.deleteDimension?.range?.dimension === "ROWS"
+          );
+        const coreRowShiftOps = queuedStructOps.filter((op) => isCoreRowShift_(op.req));
+        const cosmeticGroupOps = queuedStructOps.filter((op) => !isCoreRowShift_(op.req));
+
+        const resolveRealGid_ = async (tabName) => {
+          const cached = sheetBundle?.sheetPropsByTitle?.[tabName]?.sheetId;
+          if (cached !== null && cached !== undefined) return cached;
+          return await getSheetGid(rawSheets, ctx.clientSheetId, tabName).catch(() => null);
+        };
 
         const effectiveRowCountByTab = createSafeMap_();
         for (const [tName, props] of Object.entries(sheetBundle?.sheetPropsByTitle || {})) {
           if (PROTOTYPE_KEYS.has(tName)) continue;
-          const postRows = Math.max(1, Number(props.rowCount || 0) + Number(netRowDeltaByTab[tName] || 0));
-          effectiveRowCountByTab[tName] = postRows;
+          effectiveRowCountByTab[tName] = Math.max(1, Number(props.rowCount || 0));
+        }
+
+        // Phase 1: Core row shifts (insertDimension / deleteDimension / moveDimension), expanding grid BEFORE out-of-bounds moveDimension
+        const coreRowShiftBatch = [];
+        const executedCoreIds = new Set();
+        for (const op of coreRowShiftOps) {
+          const realGid = await resolveRealGid_(op.tabName);
+          if (realGid === null || realGid === undefined) continue;
+          if (op.opId) executedCoreIds.add(op.opId);
+          const rewritten = rewriteStructuralRequestSheetId_(op.req, realGid);
+          const delRange = op.req?.deleteDimension?.range;
+          const insRange = op.req?.insertDimension?.range;
+          const mov = op.req?.moveDimension;
+          if (mov?.source?.dimension === "ROWS" && op.tabName) {
+            const neededMax = Math.max(Number(mov.source.endIndex || 0), Number(mov.destinationIndex || 0));
+            const curRows = effectiveRowCountByTab[op.tabName] || 0;
+            if (curRows > 0 && neededMax > curRows) {
+              coreRowShiftBatch.push({
+                insertDimension: {
+                  range: {
+                    sheetId: realGid,
+                    dimension: "ROWS",
+                    startIndex: curRows,
+                    endIndex: neededMax + 15,
+                  },
+                  inheritFromBefore: true,
+                },
+              });
+              effectiveRowCountByTab[op.tabName] = neededMax + 15;
+            }
+          }
+          coreRowShiftBatch.push(rewritten);
+          if (op.tabName) {
+            if (delRange?.dimension === "ROWS") {
+              effectiveRowCountByTab[op.tabName] = Math.max(
+                1,
+                (effectiveRowCountByTab[op.tabName] || 1) -
+                Math.max(0, Number(delRange.endIndex) - Number(delRange.startIndex))
+              );
+            } else if (insRange?.dimension === "ROWS") {
+              effectiveRowCountByTab[op.tabName] =
+                (effectiveRowCountByTab[op.tabName] || 0) +
+                Math.max(0, Number(insRange.endIndex) - Number(insRange.startIndex));
+            }
+          }
+        }
+        for (const [tName, props] of Object.entries(sheetBundle?.sheetPropsByTitle || {})) {
+          if (PROTOTYPE_KEYS.has(tName)) continue;
+          const postRows = effectiveRowCountByTab[tName] || Math.max(1, Number(props.rowCount || 0));
           const reqMaxRow = maxTargetRowByTab[tName] || 0;
           if (reqMaxRow > postRows) {
-            structuralBatch.push({
+            coreRowShiftBatch.push({
               insertDimension: {
                 range: {
                   sheetId: props.sheetId,
@@ -2319,13 +2577,16 @@ export async function checkAndSyncClientSheetBridge(
             effectiveRowCountByTab[tName] = reqMaxRow + 15;
           }
         }
-        if (structuralBatch.length > 0) {
+        if (coreRowShiftBatch.length > 0) {
           await withRetry(() =>
             rawSheets.spreadsheets.batchUpdate({
               spreadsheetId: ctx.clientSheetId,
-              requestBody: { requests: structuralBatch },
+              requestBody: { requests: coreRowShiftBatch },
             })
           );
+          if (executedCoreIds.size > 0) {
+            await clearPendingStructuralOpsById_(key, executedCoreIds);
+          }
         }
 
         // Filter out any trailing blank clear ranges/notes beyond post-delete sheet bounds
@@ -2346,7 +2607,7 @@ export async function checkAndSyncClientSheetBridge(
           return !maxR || Number(rng.endRowIndex || 0) <= maxR;
         });
 
-        // 2. Write minimal coalesced cell-diff batch (chunked to prevent Google Sheets 503 timeouts)
+        // Phase 2: Write minimal coalesced cell-diff values & notes FIRST so data always persists
         if (safeOutboundValueRanges.length > 0) {
           for (let i = 0; i < safeOutboundValueRanges.length; i += 200) {
             const valChunk = safeOutboundValueRanges.slice(i, i + 200);
@@ -2362,7 +2623,6 @@ export async function checkAndSyncClientSheetBridge(
           }
         }
 
-        // 3. Apply note updates (coalesced per row and chunked to avoid backendError timeouts)
         if (safeOutboundNoteRequests.length > 0) {
           for (let i = 0; i < safeOutboundNoteRequests.length; i += 50) {
             const noteChunk = safeOutboundNoteRequests.slice(i, i + 50);
@@ -2375,13 +2635,61 @@ export async function checkAndSyncClientSheetBridge(
           }
         }
 
+        // Phase 3: Reconcile cosmetic row-group / hide requests against live Google Sheet rowGroups (non-fatal)
+        if (cosmeticGroupOps.length > 0) {
+          const executedCosIds = new Set(cosmeticGroupOps.map((op) => op.opId).filter(Boolean));
+          try {
+            const rewrittenCosReqs = [];
+            for (const op of cosmeticGroupOps) {
+              const realGid = await resolveRealGid_(op.tabName);
+              if (realGid !== null && realGid !== undefined) {
+                rewrittenCosReqs.push(rewriteStructuralRequestSheetId_(op.req, realGid));
+              }
+            }
+            if (rewrittenCosReqs.length > 0) {
+              const liveMeta = await withRetry(() =>
+                rawSheets.spreadsheets.get({
+                  spreadsheetId: ctx.clientSheetId,
+                  fields: "sheets(properties.sheetId,properties.title,rowGroups)",
+                })
+              );
+              const liveGroupsMap = new Map();
+              for (const sh of liveMeta?.data?.sheets || []) {
+                const sId = sh.properties?.sheetId;
+                if (sId !== undefined && sId !== null) {
+                  liveGroupsMap.set(sId, sh.rowGroups || []);
+                }
+              }
+              const reconciledCosBatch = reconcileCosmeticGroupRequestsAgainstLiveGroups(
+                rewrittenCosReqs,
+                liveGroupsMap
+              );
+              if (reconciledCosBatch.length > 0) {
+                await withRetry(() =>
+                  rawSheets.spreadsheets.batchUpdate({
+                    spreadsheetId: ctx.clientSheetId,
+                    requestBody: { requests: reconciledCosBatch },
+                  })
+                );
+              }
+            }
+          } catch (cosErr) {
+            console.warn(
+              `[clientSheetBridge] Non-fatal cosmetic row-group sync warning (${ctx.clientName}):`,
+              cosErr.message
+            );
+          } finally {
+            if (executedCosIds.size > 0) {
+              await clearPendingStructuralOpsById_(key, executedCosIds);
+            }
+          }
+        }
+
         const postMeta = await fetchDriveVersionMeta_(rawDrive, ctx.clientSheetId).catch(() => null);
         if (postMeta?.version) {
           finalDriveVersion = postMeta.version;
           finalModifiedTime = postMeta.modifiedTime;
         }
-      } else if (wantsOutbound && queuedStructOps.length > 0 && effectiveMode === "dry_run") {
-        _pendingStructuralOpsByClient.delete(key);
       }
 
       const cleanSyncedTabs = tabsToProcess.filter(
@@ -2870,7 +3178,6 @@ export async function pushSupabaseClientToSheet(clientName) {
       };
     }
 
-    _pendingStructuralOpsByClient.delete(key);
     if (redisClient?.isOpen) {
       redisClient.del(`pulse:sheet_bridge_dirty:${key}`).catch(() => { });
     }
@@ -2925,6 +3232,8 @@ export async function pushSupabaseClientToSheet(clientName) {
         })
       );
     }
+
+    await clearPendingStructuralOpsById_(key, null);
 
     const finalDriveMeta = await fetchDriveVersionMeta_(rawDrive, ctx.clientSheetId).catch(() => ({
       version: "",

@@ -1540,22 +1540,67 @@ async function runSingleReconcilePass_(ctx, targetTabs, options = {}) {
     }
   }
 
-  // 1. Reconcile Retainer Series
+  // 1. Reconcile Retainer Series (split update vs insert cleanly; match shifted fixed retainers by identity)
   const existingSeriesMap = new Map(existingSeries.map((s) => [`${s.tab_type}::${s.series_key}`, s]));
+  const usedExistingSeriesIds = new Set();
   const desiredSeriesKeys = new Set();
   const seriesIdByTabAndKey = new Map();
-  const seriesToUpsert = [];
+  const seriesToUpdate = [];
+  const seriesToInsertByKey = new Map();
   let totalSeriesDesired = 0;
+
+  // Pre-reserve exact series_key matches first so duplicate shifted retainers don't steal an unshifted twin's ID
+  for (const mod of models) {
+    for (const s of mod.retainerSeries) {
+      const k = `${s.tab_type}::${s.series_key}`;
+      const exact = existingSeriesMap.get(k);
+      if (exact?.id) usedExistingSeriesIds.add(exact.id);
+    }
+  }
+
+  const findShiftedFixedSeriesMatch_ = (s) => {
+    if (s.series_type !== "fixed") return null;
+    const targetCust = normalizeTextKey_(s.customer_name);
+    const targetName = normalizeTextKey_(s.series_name);
+    const targetCode = normalizeTextKey_(s.project_code);
+    const targetStart = String(s.start_date || "");
+    const targetRow = Number(s.metadata?.sheetRowNum || 0);
+    let best = null;
+    let bestScore = -1;
+    let bestDist = Infinity;
+    for (const cand of existingSeries) {
+      if (cand.tab_type !== s.tab_type || cand.series_type !== "fixed") continue;
+      if (usedExistingSeriesIds.has(cand.id)) continue;
+      if (normalizeTextKey_(cand.customer_name) !== targetCust) continue;
+      if (normalizeTextKey_(cand.series_name) !== targetName) continue;
+      if (normalizeTextKey_(cand.project_code) !== targetCode) continue;
+      const startMatch = String(cand.start_date || "") === targetStart ? 2 : 0;
+      const score = 10 + startMatch;
+      const candRow = Number(cand.metadata?.sheetRowNum || 0);
+      const dist = candRow > 0 && targetRow > 0 ? Math.abs(candRow - targetRow) : 999999;
+      if (score > bestScore || (score === bestScore && dist < bestDist)) {
+        best = cand;
+        bestScore = score;
+        bestDist = dist;
+      }
+    }
+    return best;
+  };
 
   for (const mod of models) {
     for (const s of mod.retainerSeries) {
       totalSeriesDesired++;
       const k = `${s.tab_type}::${s.series_key}`;
       desiredSeriesKeys.add(k);
-      const prev = existingSeriesMap.get(k);
-      if (prev) seriesIdByTabAndKey.set(k, prev.id);
-      const payload = {
-        ...(prev?.id ? { id: prev.id } : {}),
+      let prev = existingSeriesMap.get(k);
+      if (!prev) {
+        prev = findShiftedFixedSeriesMatch_(s);
+      }
+      if (prev?.id) {
+        usedExistingSeriesIds.add(prev.id);
+        seriesIdByTabAndKey.set(k, prev.id);
+      }
+      const baseFields = {
         client_id: ctx.clientId,
         client_name: ctx.clientName,
         tab_type: s.tab_type,
@@ -1576,29 +1621,25 @@ async function runSingleReconcilePass_(ctx, targetTabs, options = {}) {
         no_end_date: s.no_end_date,
         metadata: s.metadata,
       };
-      if (
-        forceFullUpsert ||
-        !prev ||
-        hasRecordChanged_(prev, payload, ["base_revenue", "base_direct_costs", "billing_interval_months", "invoice_send_day"], ["metadata"])
-      ) {
-        seriesToUpsert.push(payload);
+      if (prev?.id) {
+        const keyChanged = prev.series_key !== s.series_key || prev.tab_type !== s.tab_type;
+        if (
+          forceFullUpsert ||
+          keyChanged ||
+          hasRecordChanged_(prev, baseFields, ["base_revenue", "base_direct_costs", "billing_interval_months", "invoice_send_day"], ["metadata"])
+        ) {
+          seriesToUpdate.push({ id: prev.id, ...baseFields });
+        }
+      } else {
+        seriesToInsertByKey.set(k, baseFields);
       }
     }
   }
+  const seriesToInsert = [...seriesToInsertByKey.values()];
 
-  if (seriesToUpsert.length > 0) {
-    const { data: upsertedSeries, error: serErr } = await supabase
-      .from("pulse_retainer_series")
-      .upsert(seriesToUpsert, { onConflict: "client_id,tab_type,series_key" })
-      .select("id, tab_type, series_key");
-    if (serErr) throw new Error(`Failed upserting pulse_retainer_series: ${serErr.message}`);
-    for (const r of upsertedSeries || []) {
-      seriesIdByTabAndKey.set(`${r.tab_type}::${r.series_key}`, r.id);
-    }
-  }
-
+  // Delete obsolete series first so shifted series_key updates cannot collide with deleted rows
   const obsoleteSeriesIds = existingSeries
-    .filter((s) => !desiredSeriesKeys.has(`${s.tab_type}::${s.series_key}`))
+    .filter((s) => !usedExistingSeriesIds.has(s.id) && !desiredSeriesKeys.has(`${s.tab_type}::${s.series_key}`))
     .map((s) => s.id);
   for (let i = 0; i < obsoleteSeriesIds.length; i += 200) {
     const { error: delSerErr } = await supabase
@@ -1606,6 +1647,42 @@ async function runSingleReconcilePass_(ctx, targetTabs, options = {}) {
       .delete()
       .in("id", obsoleteSeriesIds.slice(i, i + 200));
     if (delSerErr) throw new Error(`Failed deleting pulse_retainer_series: ${delSerErr.message}`);
+  }
+
+  // Park any updating rows whose new series_key collides with another updating row's previous key
+  const updatingIdsSet = new Set(seriesToUpdate.map((r) => r.id));
+  const parkTargets = seriesToUpdate.filter((r) => {
+    const holder = existingSeriesMap.get(`${r.tab_type}::${r.series_key}`);
+    return holder && holder.id !== r.id && updatingIdsSet.has(holder.id);
+  });
+  for (const r of parkTargets) {
+    const { error: parkErr } = await supabase
+      .from("pulse_retainer_series")
+      .update({ series_key: `__shift_${r.id}` })
+      .eq("id", r.id);
+    if (parkErr) throw new Error(`Failed preparing pulse_retainer_series key shift: ${parkErr.message}`);
+  }
+
+  for (let i = 0; i < seriesToUpdate.length; i += 200) {
+    const { data: updatedSeries, error: updSerErr } = await supabase
+      .from("pulse_retainer_series")
+      .upsert(seriesToUpdate.slice(i, i + 200), { onConflict: "id" })
+      .select("id, tab_type, series_key");
+    if (updSerErr) throw new Error(`Failed updating pulse_retainer_series: ${updSerErr.message}`);
+    for (const r of updatedSeries || []) {
+      seriesIdByTabAndKey.set(`${r.tab_type}::${r.series_key}`, r.id);
+    }
+  }
+
+  for (let i = 0; i < seriesToInsert.length; i += 200) {
+    const { data: insertedSeries, error: insSerErr } = await supabase
+      .from("pulse_retainer_series")
+      .insert(seriesToInsert.slice(i, i + 200))
+      .select("id, tab_type, series_key");
+    if (insSerErr) throw new Error(`Failed inserting pulse_retainer_series: ${insSerErr.message}`);
+    for (const r of insertedSeries || []) {
+      seriesIdByTabAndKey.set(`${r.tab_type}::${r.series_key}`, r.id);
+    }
   }
 
   // 2. Reconcile Jobs (multi-tier UUID preservation)
@@ -2476,6 +2553,38 @@ export async function verifyRelationalJobsParity({ clientName = null, source = "
         pipeProj.formulasGrid,
         pipeProj.notesGrid
       );
+
+      // Verify raw blueprint row alignment directly against pulse_jobs so projected overlays never mask a row shift
+      if (canUseDb && ctx.clientComputeMode === "native") {
+        const { data: rawBps } = await supabase
+          .from("pulse_client_tab_blueprints")
+          .select("tab_name, base_values_grid")
+          .eq("client_id", cl.id)
+          .in("tab_name", ["Confirmed", "Pipeline"]);
+        const rawBpMap = new Map((rawBps || []).map((b) => [b.tab_name, b.base_values_grid || []]));
+        const checkRawAlignment = (tabLabel, jobsList, targetDiffs) => {
+          const bGrid = rawBpMap.get(tabLabel) || [];
+          if (!bGrid.length) return;
+          for (const j of jobsList) {
+            const r0 = (Number(j.sheet_row_num) || 1) - 1;
+            const gRow = bGrid[r0] || [];
+            const gA = String(gRow[0] ?? "").trim();
+            const gB = String(gRow[1] ?? "").trim();
+            const jA = String(j.customer_name ?? "").trim();
+            const jB = String(j.job_name ?? "").trim();
+            if ((gA || gB) && (gA !== jA || gB !== jB)) {
+              targetDiffs.push({
+                cell: `${tabLabel}!A${j.sheet_row_num}`,
+                kind: "blueprint_row_alignment",
+                expected: `${jA} | ${jB}`,
+                actual: `${gA} | ${gB}`,
+              });
+            }
+          }
+        };
+        checkRawAlignment("Confirmed", confJobs, confDiffs);
+        checkRawAlignment("Pipeline", pipeJobs, pipeDiffs);
+      }
 
       const totalMismatchCount = confDiffs.length + pipeDiffs.length;
       results.push({

@@ -2677,9 +2677,7 @@ export async function flushImmediateAndScheduleBackgroundClientRecomputes(rawShe
     const unpersistedSet = _unpersistedSkippedClientTabsByClient.get(key);
     if (inFlight || (unpersistedSet && unpersistedSet.size > 0)) {
       if (ctx) {
-        await recomputeAndPersistImmediateClientTabs_(ctx, [], rawSheetsApi).catch((e) =>
-          console.warn("[masterEngineService] Immediate client flush warning:", e.message)
-        );
+        await recomputeAndPersistImmediateClientTabs_(ctx, [], rawSheetsApi);
       } else if (inFlight) {
         await inFlight.catch(() => { });
       }
@@ -2826,6 +2824,48 @@ function remapNotesGridRows_(notesGrid, mapRowFn) {
       next.__bg_colors = remappedColors;
       continue;
     }
+    if (k === "__hidden_rows" && v && typeof v === "object") {
+      const remappedHidden = Object.create(null);
+      for (const [rk, hv] of Object.entries(v)) {
+        if (!hv) continue;
+        const oldR0 = Number(rk);
+        if (!Number.isInteger(oldR0)) continue;
+        const newR0 = mapRowFn(oldR0);
+        if (newR0 >= 0) remappedHidden[String(newR0)] = true;
+      }
+      next.__hidden_rows = remappedHidden;
+      continue;
+    }
+    if (k === "__row_groups" && Array.isArray(v)) {
+      const remappedGroups = [];
+      for (const g of v) {
+        if (!g || typeof g !== "object") continue;
+        const s = Number(g.startIndex);
+        const e = Number(g.endIndex);
+        if (!Number.isInteger(s) || !Number.isInteger(e) || e <= s) continue;
+        const mapped = [];
+        for (let r0 = s; r0 < e; r0++) {
+          const nr = mapRowFn(r0);
+          if (nr >= 0) mapped.push(nr);
+        }
+        if (mapped.length === 0) continue;
+        mapped.sort((a, b) => a - b);
+        let runStart = mapped[0];
+        let prev = mapped[0];
+        for (let idx = 1; idx < mapped.length; idx++) {
+          if (mapped[idx] === prev + 1) {
+            prev = mapped[idx];
+          } else {
+            remappedGroups.push({ startIndex: runStart, endIndex: prev + 1, collapsed: Boolean(g.collapsed) });
+            runStart = mapped[idx];
+            prev = mapped[idx];
+          }
+        }
+        remappedGroups.push({ startIndex: runStart, endIndex: prev + 1, collapsed: Boolean(g.collapsed) });
+      }
+      next.__row_groups = remappedGroups;
+      continue;
+    }
     if (k.startsWith("__")) {
       next[k] = v;
       continue;
@@ -2841,6 +2881,191 @@ function remapNotesGridRows_(notesGrid, mapRowFn) {
     }
   }
   return next;
+}
+
+function normalizeStoredRowGroups_(rawGroups) {
+  if (!Array.isArray(rawGroups)) return [];
+  const out = [];
+  for (const g of rawGroups) {
+    if (!g || typeof g !== "object") continue;
+    const startIndex = Number(g.startIndex);
+    const endIndex = Number(g.endIndex);
+    if (!Number.isInteger(startIndex) || !Number.isInteger(endIndex) || endIndex <= startIndex) continue;
+    out.push({ startIndex, endIndex, collapsed: Boolean(g.collapsed) });
+  }
+  return out.sort((a, b) => a.startIndex - b.startIndex || a.endIndex - b.endIndex);
+}
+
+function deriveVirtualSheetRowGroups_(tabName, sheetId, valuesGrid, notesGrid) {
+  if (tabName !== "Confirmed" && tabName !== "Pipeline") return [];
+  const stored = normalizeStoredRowGroups_(notesGrid?.__row_groups);
+  if (stored.length > 0) {
+    return stored.map((g) => ({
+      range: { sheetId, dimension: "ROWS", startIndex: g.startIndex, endIndex: g.endIndex },
+      depth: 1,
+      collapsed: Boolean(g.collapsed),
+    }));
+  }
+  if (!Array.isArray(valuesGrid) || valuesGrid.length < 3) return [];
+
+  const hiddenMap = notesGrid?.__hidden_rows && typeof notesGrid.__hidden_rows === "object" ? notesGrid.__hidden_rows : null;
+  const derivedRowGroups = [];
+  let r = 1;
+  while (r < valuesGrid.length) {
+    const row = valuesGrid[r] || [];
+    const tag = String(row[2] || "");
+    if (tag.includes("[Retainer Master")) {
+      let endChild = r + 1;
+      while (endChild < valuesGrid.length) {
+        const cTag = String(valuesGrid[endChild]?.[2] || "");
+        if (!cTag.includes("[Retainer") || cTag.includes("[Retainer Master")) break;
+        endChild++;
+      }
+      if (endChild > r + 1) {
+        const isCollapsed = hiddenMap ? Boolean(hiddenMap[String(r + 1)]) : true;
+        derivedRowGroups.push({
+          range: { sheetId, dimension: "ROWS", startIndex: r + 1, endIndex: endChild },
+          depth: 1,
+          collapsed: isCollapsed,
+        });
+      }
+      r = Math.max(r + 1, endChild);
+      continue;
+    }
+
+    const parentClient = String(row[0] ?? "").trim();
+    const parentJob = String(row[1] ?? "").trim();
+    if ((!parentClient && !parentJob) || tag.includes("[VarRetainer]")) {
+      r++;
+      continue;
+    }
+    const isParentRow =
+      String(row[32] ?? "").trim() !== "" ||
+      String(row[35] ?? "").trim() !== "" ||
+      String(row[37] ?? "").trim() !== "" ||
+      String(row[8] ?? "").trim() !== "";
+    if (!isParentRow) {
+      r++;
+      continue;
+    }
+
+    let endChild = r + 1;
+    while (endChild < valuesGrid.length) {
+      const cRow = valuesGrid[endChild] || [];
+      const cClient = String(cRow[0] ?? "").trim();
+      const cJob = String(cRow[1] ?? "").trim();
+      if (cClient !== parentClient || cJob !== parentJob) break;
+      const childHasParentFields =
+        String(cRow[32] ?? "").trim() !== "" ||
+        String(cRow[35] ?? "").trim() !== "" ||
+        String(cRow[37] ?? "").trim() !== "" ||
+        String(cRow[8] ?? "").trim() !== "";
+      if (childHasParentFields) break;
+      endChild++;
+    }
+    if (endChild > r + 1) {
+      const isRetainer = String(row[35] || "").trim().toLowerCase().includes("retainer");
+      const isCollapsed = hiddenMap ? Boolean(hiddenMap[String(r + 1)]) : isRetainer;
+      derivedRowGroups.push({
+        range: { sheetId, dimension: "ROWS", startIndex: r + 1, endIndex: endChild },
+        depth: 1,
+        collapsed: isCollapsed,
+      });
+      r = endChild;
+    } else {
+      r++;
+    }
+  }
+  return derivedRowGroups;
+}
+
+function applyVisualGroupRequestsToNotesGrid_(tabName, sheetId, valuesGrid, notesGrid, requests = []) {
+  const nextNotes = notesGrid && typeof notesGrid === "object" ? { ...notesGrid } : {};
+  let groups =
+    Array.isArray(nextNotes.__row_groups) && nextNotes.__row_groups.length > 0
+      ? normalizeStoredRowGroups_(nextNotes.__row_groups)
+      : deriveVirtualSheetRowGroups_(tabName, sheetId, valuesGrid, nextNotes).map((g) => ({
+        startIndex: g.range.startIndex,
+        endIndex: g.range.endIndex,
+        collapsed: Boolean(g.collapsed),
+      }));
+  const hiddenRows =
+    nextNotes.__hidden_rows && typeof nextNotes.__hidden_rows === "object" ? { ...nextNotes.__hidden_rows } : {};
+  let touched = false;
+
+  const mergeAdjacentGroups = (list) => {
+    const sorted = normalizeStoredRowGroups_(list);
+    const merged = [];
+    for (const g of sorted) {
+      const last = merged[merged.length - 1];
+      if (last && g.startIndex <= last.endIndex) {
+        last.endIndex = Math.max(last.endIndex, g.endIndex);
+        last.collapsed = Boolean(last.collapsed && g.collapsed);
+      } else {
+        merged.push({ ...g });
+      }
+    }
+    return merged;
+  };
+
+  for (const req of requests) {
+    if (!req || typeof req !== "object") continue;
+    if (req.addDimensionGroup?.range?.dimension === "ROWS" && req.addDimensionGroup.range.sheetId === sheetId) {
+      const s = Math.max(0, Number(req.addDimensionGroup.range.startIndex ?? 0));
+      const e = Math.max(s, Number(req.addDimensionGroup.range.endIndex ?? s));
+      if (e > s) {
+        groups = mergeAdjacentGroups([...groups, { startIndex: s, endIndex: e, collapsed: false }]);
+        touched = true;
+      }
+    } else if (req.deleteDimensionGroup?.range?.dimension === "ROWS" && req.deleteDimensionGroup.range.sheetId === sheetId) {
+      const s = Math.max(0, Number(req.deleteDimensionGroup.range.startIndex ?? 0));
+      const e = Math.max(s, Number(req.deleteDimensionGroup.range.endIndex ?? s));
+      if (e > s) {
+        const nextGroups = [];
+        for (const g of groups) {
+          if (e <= g.startIndex || s >= g.endIndex) {
+            nextGroups.push(g);
+          } else {
+            if (g.startIndex < s) nextGroups.push({ startIndex: g.startIndex, endIndex: s, collapsed: g.collapsed });
+            if (g.endIndex > e) nextGroups.push({ startIndex: e, endIndex: g.endIndex, collapsed: g.collapsed });
+          }
+        }
+        groups = nextGroups;
+        touched = true;
+      }
+    } else if (
+      req.updateDimensionGroup?.dimensionGroup?.range?.dimension === "ROWS" &&
+      req.updateDimensionGroup.dimensionGroup.range.sheetId === sheetId
+    ) {
+      const s = Math.max(0, Number(req.updateDimensionGroup.dimensionGroup.range.startIndex ?? 0));
+      const e = Math.max(s, Number(req.updateDimensionGroup.dimensionGroup.range.endIndex ?? s));
+      const collapsed = Boolean(req.updateDimensionGroup.dimensionGroup.collapsed);
+      for (const g of groups) {
+        if (s < g.endIndex && e > g.startIndex) {
+          g.collapsed = collapsed;
+          touched = true;
+        }
+      }
+    } else if (
+      req.updateDimensionProperties?.range?.dimension === "ROWS" &&
+      req.updateDimensionProperties.range.sheetId === sheetId &&
+      String(req.updateDimensionProperties.fields || "").includes("hiddenByUser")
+    ) {
+      const s = Math.max(0, Number(req.updateDimensionProperties.range.startIndex ?? 0));
+      const e = Math.max(s, Number(req.updateDimensionProperties.range.endIndex ?? s));
+      const hidden = Boolean(req.updateDimensionProperties.properties?.hiddenByUser);
+      for (let r0 = s; r0 < e; r0++) {
+        if (hidden) hiddenRows[String(r0)] = true;
+        else delete hiddenRows[String(r0)];
+      }
+      touched = true;
+    }
+  }
+
+  if (!touched) return notesGrid;
+  nextNotes.__row_groups = groups;
+  nextNotes.__hidden_rows = hiddenRows;
+  return nextNotes;
 }
 
 const _lastClientEditTimestampMap = new Map();
@@ -2931,7 +3156,7 @@ async function loadReferencedReconGridsForClientFormulas_(ctx, formulaGrids, raw
   return Object.keys(out).length > 0 ? out : null;
 }
 
-async function syncPhase2RelationalJobsIfEnabled_(ctx, tabNames = [], preloadedGrids = null) {
+async function syncPhase2RelationalJobsIfEnabled_(ctx, tabNames = [], preloadedGrids = null, { throwOnError = false } = {}) {
   if (!ctx || ctx.jobsMode !== "relational") return;
   const mapped = [];
   for (const t of Array.isArray(tabNames) ? tabNames : []) {
@@ -2951,6 +3176,7 @@ async function syncPhase2RelationalJobsIfEnabled_(ctx, tabNames = [], preloadedG
     invalidateClientRelationalMasterCache(ctx.clientName);
   } catch (err) {
     console.warn(`[masterEngineService] Phase 2 relational job reconciliation warning (${ctx.clientName}):`, err?.message);
+    if (throwOnError) throw err;
   }
 }
 
@@ -2960,7 +3186,7 @@ async function syncPhase3OperatingInputsIfEnabled_(
   ctx,
   tabNames = [],
   preloadedGrids = null,
-  { allowClearAllNotes = false } = {}
+  { allowClearAllNotes = false, throwOnError = false } = {}
 ) {
   if (!ctx || ctx.inputsMode !== "relational") return;
   const relevant = [...new Set((Array.isArray(tabNames) ? tabNames : []).filter((t) => PHASE3_INPUT_TAB_SET_.has(t)))];
@@ -2979,6 +3205,7 @@ async function syncPhase3OperatingInputsIfEnabled_(
     invalidateClientRelationalMasterCache(ctx.clientName);
   } catch (err) {
     console.warn(`[masterEngineService] Phase 3 relational inputs reconciliation warning (${ctx.clientName}):`, err?.message);
+    if (throwOnError) throw err;
   }
 }
 
@@ -3328,6 +3555,20 @@ async function runSingleImmediateClientTabsPass_(
     preservedFormulaValues,
   });
 
+  // Reconcile primary relational tables BEFORE committing blueprints so a DB error never leaves blueprints shifted/out-of-sync
+  try {
+    await syncPhase2RelationalJobsIfEnabled_(ctx, allImmediateTabs, localGrids, {
+      throwOnError: ctx.jobsReadMode === "relational",
+    });
+    await syncPhase3OperatingInputsIfEnabled_(ctx, allImmediateTabs, localGrids, {
+      allowClearAllNotes: mergedAllowClearNotes.size > 0,
+      throwOnError: ctx.inputsReadMode === "relational",
+    });
+  } catch (relSyncErr) {
+    invalidateMasterEngineCache(ctx.clientName, "client", allImmediateTabs);
+    throw relSyncErr;
+  }
+
   await Promise.all(
     allImmediateTabs.map((t) => {
       if (!localGrids[t]) return Promise.resolve();
@@ -3349,10 +3590,6 @@ async function runSingleImmediateClientTabsPass_(
     })
   );
 
-  await syncPhase2RelationalJobsIfEnabled_(ctx, allImmediateTabs, localGrids);
-  await syncPhase3OperatingInputsIfEnabled_(ctx, allImmediateTabs, localGrids, {
-    allowClearAllNotes: mergedAllowClearNotes.size > 0,
-  });
   await syncPhase5FinancialsIfEnabled_(ctx, allImmediateTabs, localGrids);
 
   let activeSourceSet = _activeRecomputeSourceTabsByClient.get(clientKey);
@@ -4749,16 +4986,12 @@ export async function handleVirtualSheetsCall({
           notesChangedTabs: formulasChanged ? [parsed.tabName] : null,
         });
       } else if (params._syncFormulaRecompute) {
-        await recomputeClientFormulasAfterVirtualWrite_(ctx, [parsed.tabName], rawSheetsApi).catch((e) =>
-          console.warn("[masterEngineService] Client formula recompute warning:", e.message)
-        );
+        await recomputeClientFormulasAfterVirtualWrite_(ctx, [parsed.tabName], rawSheetsApi);
       } else {
         await recomputeAndPersistImmediateClientTabs_(ctx, [parsed.tabName], rawSheetsApi, {
           notesChangedTabs: formulasChanged ? new Set([parsed.tabName]) : new Set(),
           deferBackgroundRecompute: Boolean(params._deferBackgroundRecompute),
-        }).catch((e) =>
-          console.warn("[masterEngineService] Immediate client tab recompute warning:", e.message)
-        );
+        });
       }
     }
 
@@ -4879,16 +5112,12 @@ export async function handleVirtualSheetsCall({
         }
       } else if (hasWork) {
         if (params._syncFormulaRecompute) {
-          await recomputeClientFormulasAfterVirtualWrite_(ctx, actuallyChangedTabs, rawSheetsApi).catch((e) =>
-            console.warn("[masterEngineService] Client formula recompute warning:", e.message)
-          );
+          await recomputeClientFormulasAfterVirtualWrite_(ctx, actuallyChangedTabs, rawSheetsApi);
         } else {
           await recomputeAndPersistImmediateClientTabs_(ctx, actuallyChangedTabs, rawSheetsApi, {
             notesChangedTabs: formulasChangedTabs,
             deferBackgroundRecompute: Boolean(params._deferBackgroundRecompute),
-          }).catch((e) =>
-            console.warn("[masterEngineService] Immediate client tab recompute warning:", e.message)
-          );
+          });
         }
       }
     }
@@ -5071,6 +5300,9 @@ export async function handleVirtualSheetsCall({
   if (namespace === "spreadsheets" && method === "get") {
     const requestedRanges = Array.isArray(params.ranges) ? params.ranges : params.ranges ? [params.ranges] : [];
     const includeGridData = Boolean(params.includeGridData || requestedRanges.length > 0);
+    const fieldsStrTop = String(params.fields || "");
+    const wantRowGroups = !fieldsStrTop || fieldsStrTop.includes("rowGroups");
+    const wantRowMetadata = !fieldsStrTop || fieldsStrTop.includes("rowMetadata") || fieldsStrTop.includes("hiddenByUser");
     if (sheetRole === "client" && includeGridData && ctx.sheetBridgeMode === "live") {
       await import("./clientSheetBridgeService.js")
         .then(({ ensureClientSheetBridgeFreshOnRead }) =>
@@ -5118,6 +5350,28 @@ export async function handleVirtualSheetsCall({
             if (seen.has(cleanTab)) continue;
             seen.add(cleanTab);
             allTabs.push({ ...r, tab_name: cleanTab, sheet_role: "client" });
+          }
+        }
+        if (wantRowGroups || wantRowMetadata) {
+          const needHydrateTabs = allTabs.filter(
+            (t) =>
+              (t.tab_name === "Confirmed" || t.tab_name === "Pipeline") &&
+              (!targetTabNames || targetTabNames.has(t.tab_name))
+          );
+          if (needHydrateTabs.length > 0) {
+            await Promise.all(
+              needHydrateTabs.map(async (t) => {
+                const rec = await getOrLoadVirtualTabGrid_(ctx, "client", t.tab_name, null, {
+                  valuesOnly: true,
+                  includeNotes: true,
+                }).catch(() => null);
+                if (rec) {
+                  t.values_grid = rec.values_grid;
+                  t.notes_grid = rec.notes_grid;
+                  t.row_count = rec.row_count || t.row_count;
+                }
+              })
+            );
           }
         }
       } else if (targetTabNames && targetTabNames.size > 0) {
@@ -5369,36 +5623,17 @@ export async function handleVirtualSheetsCall({
           title: t.tab_name,
           index: idx,
           gridProperties: {
-            rowCount: Math.max(1000, t.row_count || 0),
+            rowCount:
+              t.row_count > 0
+                ? Math.max(t.row_count, Array.isArray(t.values_grid) ? t.values_grid.length : 0)
+                : Math.max(1000, Array.isArray(t.values_grid) ? t.values_grid.length : 0),
             columnCount: Math.max(50, t.col_count || 0),
           },
         },
       };
 
       if (sheetRole === "client" && (t.tab_name === "Confirmed" || t.tab_name === "Pipeline") && Array.isArray(t.values_grid)) {
-        const vals = t.values_grid;
-        const derivedRowGroups = [];
-        for (let r = 1; r < vals.length; r++) {
-          const tag = String(vals[r]?.[2] || "");
-          if (!tag.includes("[Retainer Master")) continue;
-          let endChild = r + 1;
-          while (endChild < vals.length) {
-            const cTag = String(vals[endChild]?.[2] || "");
-            if (!cTag.includes("[Retainer") || cTag.includes("[Retainer Master")) break;
-            endChild++;
-          }
-          if (endChild > r + 1) {
-            derivedRowGroups.push({
-              range: {
-                sheetId: sId,
-                dimension: "ROWS",
-                startIndex: r + 1,
-                endIndex: endChild,
-              },
-              depth: 1,
-            });
-          }
-        }
+        const derivedRowGroups = deriveVirtualSheetRowGroups_(t.tab_name, sId, t.values_grid, t.notes_grid);
         if (derivedRowGroups.length > 0) {
           sheetObj.rowGroups = derivedRowGroups;
         }
@@ -5470,6 +5705,13 @@ export async function handleVirtualSheetsCall({
                 startRow: mrStartR,
                 startColumn: mrStartC,
                 rowData,
+                ...(wantRowMetadata
+                  ? {
+                    rowMetadata: Array.from({ length: rowCount }, (_, rOff) => ({
+                      hiddenByUser: Boolean(t.notes_grid?.__hidden_rows?.[String(mrStartR + rOff)]),
+                    })),
+                  }
+                  : {}),
               };
             }
 
@@ -5540,6 +5782,13 @@ export async function handleVirtualSheetsCall({
               startRow: mr.startRow0 ?? 0,
               startColumn: mr.startCol0 ?? 0,
               rowData,
+              ...(wantRowMetadata
+                ? {
+                  rowMetadata: Array.from({ length: rowCount }, (_, rOff) => ({
+                    hiddenByUser: Boolean(t.notes_grid?.__hidden_rows?.[String((mr.startRow0 ?? 0) + rOff)]),
+                  })),
+                }
+                : {}),
             };
           });
         }
@@ -5623,27 +5872,35 @@ export async function handleVirtualSheetsCall({
             const tn = sId !== null ? visualMetaBySheetId.get(sId)?.tab_name : null;
             if (tn) visualTabs.add(tn);
           }
-          import("./clientSheetBridgeService.js")
-            .then(({ recordBridgeStructuralRequests, scheduleOutboundSheetBridgeSync }) => {
-              recordBridgeStructuralRequests(ctx.clientName, requests, visualMetaBySheetId);
-              if (visualTabs.size > 0) {
-                scheduleOutboundSheetBridgeSync(ctx.clientName, [...visualTabs]);
-              }
-            })
-            .catch(() => { });
+          const cKeyLower = String(ctx.clientName || "").toLowerCase();
+          for (const tn of visualTabs) {
+            const memEntry = _gridMemoryCache.get(`${cKeyLower}::client::${tn}`);
+            if (memEntry?.record) {
+              memEntry.record.notes_grid = applyVisualGroupRequestsToNotesGrid_(
+                tn,
+                hashTabNameToSheetId_(tn),
+                memEntry.record.values_grid,
+                memEntry.record.notes_grid,
+                requests
+              );
+            }
+          }
+          const { recordBridgeStructuralRequests, scheduleOutboundSheetBridgeSync } = await import(
+            "./clientSheetBridgeService.js"
+          );
+          await recordBridgeStructuralRequests(ctx.clientName, requests, visualMetaBySheetId);
+          if (visualTabs.size > 0) {
+            scheduleOutboundSheetBridgeSync(ctx.clientName, [...visualTabs]);
+          }
         }
       }
       if (sheetRole === "client" && params._flushPendingRecompute) {
         const pendingSet = _pendingClientTabsByClient.get(String(ctx.clientName || "").toLowerCase());
         if (pendingSet && pendingSet.size > 0) {
           if (params._syncFormulaRecompute) {
-            await recomputeClientFormulasAfterVirtualWrite_(ctx, [], rawSheetsApi).catch((e) =>
-              console.warn("[masterEngineService] Client formula recompute warning:", e.message)
-            );
+            await recomputeClientFormulasAfterVirtualWrite_(ctx, [], rawSheetsApi);
           } else {
-            await recomputeAndPersistImmediateClientTabs_(ctx, [], rawSheetsApi).catch((e) =>
-              console.warn("[masterEngineService] Immediate client tab recompute warning:", e.message)
-            );
+            await recomputeAndPersistImmediateClientTabs_(ctx, [], rawSheetsApi);
           }
         }
       }
@@ -6060,6 +6317,30 @@ export async function handleVirtualSheetsCall({
             if (sheetRole === "client") valueChangedClientTabs.add(target.tab_name);
           }
         }
+      } else if (
+        req.addDimensionGroup?.range?.dimension === "ROWS" ||
+        req.deleteDimensionGroup?.range?.dimension === "ROWS" ||
+        req.updateDimensionGroup?.dimensionGroup?.range?.dimension === "ROWS" ||
+        (req.updateDimensionProperties?.range?.dimension === "ROWS" &&
+          String(req.updateDimensionProperties.fields || "").includes("hiddenByUser"))
+      ) {
+        const sId =
+          req.addDimensionGroup?.range?.sheetId ??
+          req.deleteDimensionGroup?.range?.sheetId ??
+          req.updateDimensionGroup?.dimensionGroup?.range?.sheetId ??
+          req.updateDimensionProperties?.range?.sheetId ??
+          null;
+        const target = sId !== null ? await getTargetTabRecord(sId) : null;
+        if (target) {
+          target.notes_grid = applyVisualGroupRequestsToNotesGrid_(
+            target.tab_name,
+            sId,
+            target.values_grid,
+            target.notes_grid,
+            [req]
+          );
+          dirtyTargets.set(target.tab_name, target);
+        }
       }
     }
 
@@ -6104,8 +6385,6 @@ export async function handleVirtualSheetsCall({
             ctx,
             [...valueChangedClientTabs, ...dirtyTargets.keys()],
             rawSheetsApi
-          ).catch((e) =>
-            console.warn("[masterEngineService] Client formula recompute warning:", e.message)
           );
         } else {
           await recomputeAndPersistImmediateClientTabs_(
@@ -6117,8 +6396,6 @@ export async function handleVirtualSheetsCall({
               allowClearAllNotesTabs: clearedNotesClientTabs,
               deferBackgroundRecompute: Boolean(params._deferBackgroundRecompute),
             }
-          ).catch((e) =>
-            console.warn("[masterEngineService] Immediate client tab recompute warning:", e.message)
           );
         }
       } else if (noteOnlyClientTabs.size > 0) {
@@ -6142,14 +6419,13 @@ export async function handleVirtualSheetsCall({
       }
 
       if (ctx.sheetBridgeMode && ctx.sheetBridgeMode !== "off") {
-        import("./clientSheetBridgeService.js")
-          .then(({ recordBridgeStructuralRequests, scheduleOutboundSheetBridgeSync }) => {
-            recordBridgeStructuralRequests(ctx.clientName, requests, metaBySheetId);
-            if (dirtyTargets.size > 0) {
-              scheduleOutboundSheetBridgeSync(ctx.clientName, [...dirtyTargets.keys()]);
-            }
-          })
-          .catch(() => { });
+        const { recordBridgeStructuralRequests, scheduleOutboundSheetBridgeSync } = await import(
+          "./clientSheetBridgeService.js"
+        );
+        await recordBridgeStructuralRequests(ctx.clientName, requests, metaBySheetId);
+        if (dirtyTargets.size > 0) {
+          scheduleOutboundSheetBridgeSync(ctx.clientName, [...dirtyTargets.keys()]);
+        }
       }
     } else if (sheetRole === "master") {
       const touchedMasterTabs = [...dirtyTargets.keys()];

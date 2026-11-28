@@ -1,5 +1,5 @@
 import { createHash } from "crypto";
-import { isPlaceholderInvoice, isPlaceholderExpense, toSheetDateFormat, toInputDateFormat, postGasWebAppLocked, isVariableRetainerRow, isFixedScheduleRetainer, parseVariableRetainerTag } from "../utils/helpers.js";
+import { isPlaceholderInvoice, isPlaceholderExpense, toSheetDateFormat, toInputDateFormat, postGasWebAppLocked, isVariableRetainerRow, isFixedScheduleRetainer, parseVariableRetainerTag, computeInclusiveRetainerMonths } from "../utils/helpers.js";
 import { serialToDate } from "./gasRuntime/sheetValueUtils.js";
 import { withRetry, colIndexToLetter, applySheetFontFormat, getSheetGid, sanitizeFormulaInput } from "./sheetsClient.js";
 import { getClientWebAppUrl, getAllClients } from "./workspaces.js";
@@ -394,7 +394,7 @@ export async function checkRetainerInvoices_(clientName, clientSheetId, masterSh
         childRows.push({ crIndex: cr, sheetRow: cr + 1, row: childRow });
       }
 
-      const contractMonths = Math.max(1, Math.round((endDate.getTime() - (startDate ? startDate.getTime() : endDate.getTime())) / (30.4375 * 24 * 60 * 60 * 1000)));
+      const contractMonths = startDate ? computeInclusiveRetainerMonths(startDate, endDate) : 1;
       const monthlyRevenue = parseFloat(String(revenue || "0").replace(/[£$€,\s]/g, "")) || 0;
       const totalContractValue = monthlyRevenue * contractMonths;
 
@@ -403,7 +403,7 @@ export async function checkRetainerInvoices_(clientName, clientSheetId, masterSh
         totalInvoiced += sumRealInvSlotAmounts_(childRows[cj].row).netFeeTotal;
       }
 
-      if (totalContractValue > 0 && totalInvoiced >= totalContractValue * 0.95) continue;
+      if (childRows.length === 0 && totalContractValue > 0 && totalInvoiced >= totalContractValue - 0.01) continue;
 
       // Determine schedule interval and untouched future anchor so child rows whose Send Date was rolled
       // forward to the 28th of a subsequent month by updateStaleUnsentInvoices still retain their true scheduled month
@@ -1473,9 +1473,7 @@ export async function checkJobStructureErrors_(clientName, clientSheetId, shared
           console.log(`  - endVal:   ${endVal} -> parsed: ${parsedEnd}`);
           problems.push(`Row ${r + 1} (parent): end date (${fmtDate(parsedEnd)}) is before start date (${fmtDate(parsedStart)})`);
         } else {
-          const diffTime = parsedEnd.getTime() - parsedStart.getTime();
-          const diffDays = Math.round(diffTime / (1000 * 60 * 60 * 24));
-          const monthsDiff = Math.max(1, Math.round(diffDays / 30.4375));
+          const monthsDiff = computeInclusiveRetainerMonths(parsedStart, parsedEnd);
           isSingleMonth = (monthsDiff === 1);
         }
       } else {

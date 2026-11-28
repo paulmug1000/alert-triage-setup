@@ -308,7 +308,7 @@ export default async function handler(req, res) {
         })
       );
       const confirmSbCtx = await resolveMasterSheetIdForClient_(sheets, clientSheetId, verifiedClientName || clientName || "").catch(() => null);
-      await flushImmediateAndScheduleBackgroundClientRecomputes(sheets, verifiedClientName || clientName || "").catch(() => { });
+      await flushImmediateAndScheduleBackgroundClientRecomputes(sheets, verifiedClientName || clientName || "");
       didFlushImmediate = true;
       await invalidatePmaClientCache(clientSheetId, confirmSbCtx || null, ["jobs", "invoices", "outgoings", "retainers", "cash", "views"]).catch(() => { });
       return res.status(200).json({
@@ -677,7 +677,7 @@ export default async function handler(req, res) {
     );
 
     // 9. Flush immediate recomputes BEFORE invalidating caches so Portal/PMA reads reflect the promoted job immediately
-    await flushImmediateAndScheduleBackgroundClientRecomputes(sheets, verifiedClientName || clientName || "").catch(() => { });
+    await flushImmediateAndScheduleBackgroundClientRecomputes(sheets, verifiedClientName || clientName || "");
     didFlushImmediate = true;
 
     // 10. Invalidate In-Memory and Redis caches across both Portal and PMA

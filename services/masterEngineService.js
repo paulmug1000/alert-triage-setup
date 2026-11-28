@@ -266,6 +266,7 @@ export function parseA1Range(a1Str, defaultTab = "KeyInfo") {
       endRow0: isColOnly ? null : p1.row0 ?? 0,
       startCol0: p1.col0 ?? 0,
       endCol0: isRowOnly ? null : p1.col0 ?? 0,
+      isSingleCellAnchor: Boolean(!isColOnly && !isRowOnly),
     };
   }
 
@@ -276,6 +277,7 @@ export function parseA1Range(a1Str, defaultTab = "KeyInfo") {
     endRow0: p2.row0,
     startCol0: p1.col0 ?? 0,
     endCol0: p2.col0,
+    isSingleCellAnchor: false,
   };
 }
 
@@ -306,7 +308,7 @@ function sliceGrid2D_(grid, parsed) {
   return out;
 }
 
-function applyWriteToGrid2D_(
+export function applyWriteToGrid2D_(
   grid,
   parsed,
   incomingValues,
@@ -316,13 +318,14 @@ function applyWriteToGrid2D_(
   const rows = Array.isArray(incomingValues) ? incomingValues : [];
   const sRow = parsed.startRow0 ?? 0;
   const sCol = parsed.startCol0 ?? 0;
+  const isUnboundedAnchor = Boolean(parsed.isSingleCellAnchor);
 
   for (let rOffset = 0; rOffset < rows.length; rOffset++) {
     const targetR = sRow + rOffset;
     if (targetR < 0 || targetR >= 50000) {
       throw new Error(`Virtual sheet write row out of bounds (${targetR + 1} in ${tabName || "sheet"})`);
     }
-    if (parsed.endRow0 != null && targetR > parsed.endRow0) break;
+    if (!isUnboundedAnchor && parsed.endRow0 != null && targetR > parsed.endRow0) break;
     while (nextGrid.length <= targetR) nextGrid.push([]);
     const rowVals = Array.isArray(rows[rOffset]) ? rows[rOffset] : [rows[rOffset]];
     for (let cOffset = 0; cOffset < rowVals.length; cOffset++) {
@@ -330,7 +333,7 @@ function applyWriteToGrid2D_(
       if (targetC < 0 || targetC >= 600) {
         throw new Error(`Virtual sheet write column out of bounds (${targetC + 1} in ${tabName || "sheet"})`);
       }
-      if (parsed.endCol0 != null && targetC > parsed.endCol0) break;
+      if (!isUnboundedAnchor && parsed.endCol0 != null && targetC > parsed.endCol0) break;
       while (nextGrid[targetR].length <= targetC) nextGrid[targetR].push("");
       const val = rowVals[cOffset];
       if (isFormulaGrid) {
@@ -6190,7 +6193,10 @@ export async function handleVirtualSheetsCall({
             oldR1: r0 + 1,
             cells: Array.isArray(r) ? [...r] : [],
           }));
-          if (count > 0 && s < nextVals.length && d !== s) {
+          const minLen = Math.max(s + count, d);
+          if (count > 0 && d !== s && minLen <= 50000) {
+            while (nextVals.length < minLen) nextVals.push([]);
+            while (nextForms.length < minLen) nextForms.push({ oldR1: nextForms.length + 1, cells: [] });
             const movedV = nextVals.splice(s, count);
             const movedF = nextForms.splice(s, count);
             const insertAt = d <= s ? d : Math.max(0, d - count);

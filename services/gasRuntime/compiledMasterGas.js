@@ -1507,6 +1507,7 @@ function writeToAutoLog(category, summary, details) { if (env?.nativeConnectorHo
 /**
  * PART 2: INTERNAL SHEET MANIPULATION FUNCTIONS
  *
+ * v3.19 (Use calendar-month deltas and first-child amount ratio to detect multi-month retainer intervals in resolveJobGroupContext_)
  * v3.18 (Exempt [VarRetainer] rows from fixed-retainer parent shield in findMatchingJobForInvoice and fixed-retainer part-paid placement in findTargetBalanceSlot_)
  * v3.17 (Support [VarRetainer] monthly series: add parseVariableRetainerTag_/isVariableRetainerRow_/isFixedScheduleRetainer_, Pass 1C unambiguous invoice auto-match + formula-safe Col AG update, and part-paid parent shielding)
  * v3.16 (Add isNonZeroRecharged_ helper so static 0 values in Confirmed Col R do not trigger false zone-check row occupancy)
@@ -2783,11 +2784,38 @@ function findSlotWithTolerance(invoiceData, confirmedData, headerMap, toleranceM
         }
         cIdx++;
       }
-      if (childDates.length >= 2) {
-        const d1 = childDates[childDates.length - 2];
-        const d2 = childDates[childDates.length - 1];
-        const calcInt = Math.round(Math.ceil(Math.abs(d2.getTime() - d1.getTime()) / 86400000) / 30);
-        if (calcInt > 0) intervalMonths = calcInt;
+      const effMonthlyFee = parseFloat(String(confirmedData[parentIdx][revenueIdx] || '').replace(/[^0-9.-]/g, '')) || 0;
+      const effTypeLower = String(effType || '').toLowerCase();
+      let firstRealAmt = 0;
+      for (let k = 1; k < groupRows.length && firstRealAmt <= 0; k++) {
+        const amtK = parseFloat(String(groupRows[k]?.row?.[slot1AmtIdx] || '').replace(/[^0-9.-]/g, '')) || 0;
+        const rechK = parseFloat(String(groupRows[k]?.row?.[rechIdx] || '').replace(/[^0-9.-]/g, '')) || 0;
+        const netK = Math.max(0, amtK - rechK);
+        if (netK > 0) firstRealAmt = netK;
+      }
+      if (effTypeLower.includes("quarter")) {
+        intervalMonths = 3;
+      } else if (effTypeLower.includes("semi-annual") || effTypeLower.includes("semiannual") || effTypeLower.includes("half")) {
+        intervalMonths = 6;
+      } else if (effTypeLower.includes("annual") || effTypeLower.includes("year")) {
+        intervalMonths = 12;
+      } else if (effTypeLower.includes("bi-month") || effTypeLower.includes("bimonth")) {
+        intervalMonths = 2;
+      } else if (effMonthlyFee > 0 && firstRealAmt > 0 && (childDates.length < 2 || (firstRealAmt / effMonthlyFee) >= 2.85)) {
+        const multiples = [2, 3, 6, 12];
+        for (let mi = 0; mi < multiples.length; mi++) {
+          if (Math.abs((firstRealAmt / effMonthlyFee) - multiples[mi]) <= 0.15) {
+            intervalMonths = multiples[mi];
+            break;
+          }
+        }
+      }
+      if (intervalMonths === 1 && childDates.length >= 2) {
+        const sortedD = childDates.slice().sort((a, b) => a.getTime() - b.getTime());
+        const d1 = sortedD[sortedD.length - 2];
+        const d2 = sortedD[sortedD.length - 1];
+        const calDiff = (d2.getFullYear() * 12 + d2.getMonth()) - (d1.getFullYear() * 12 + d1.getMonth());
+        if (calDiff > 0) intervalMonths = calDiff;
       }
     }
 
@@ -10868,6 +10896,7 @@ async function processInstantConfirmedJobs_(ss) {
  * ----------------------------------------------------------------
  * 5_AGENT_RECEIVER
  * 
+ * v3.44 (Add past-ended retainer guard, amount-ratio + calendar-month interval detection, covered-months/duration row cap, safe serial date parsing, childCount===0 check, end<start guard, and pre-moveRows rangesToClear order in runRetainerSheetAudit_)
  * v3.43 (Use inclusive calendar months instead of 30.4375 rounding, remove totalContractValue variance cap from runRetainerSheetAudit_, use Math.ceil(18 / intervalMonths) runway, and multiply quarterly/multi-month retainer placeholders by intervalMonths)
  * v3.42 (Add isRetiredLegacyMasterSheet_ Node-safe guard to doPost and seal SUPABASE_ENGINE_RETIRED on trigger removal)
  * v3.41 (Include Column AN in trimmed retainer child-row clear range while preserving Column AO formula)
@@ -12370,9 +12399,14 @@ function runRetainerSheetAudit_(sheet, alertSheet, targetDay, defaultDays) {
      
      if (rawType.trim().toLowerCase().includes("retainer")) {
         const parseDateSafe = (d, fallback) => {
-            if (!d) return fallback;
-            if (d instanceof Date) return d;
-            if (typeof d === 'number' && d > 20000 && d < 70000) return new Date(new Date(1899, 11, 30).getTime() + Math.round(d * 86400000));
+            if (d === null || d === undefined || d === "") return fallback;
+            if (d instanceof Date) return isNaN(d.getTime()) ? fallback : d;
+            if (typeof d === 'number' && d > 20000 && d < 90000) return new Date(new Date(1899, 11, 30).getTime() + Math.round(d * 86400000));
+            const s = String(d).trim();
+            if (/^\d{5}(?:\.\d+)?$/.test(s)) {
+                const n = parseFloat(s);
+                if (n > 20000 && n < 90000) return new Date(new Date(1899, 11, 30).getTime() + Math.round(n * 86400000));
+            }
             const parsed = new Date(d);
             return isNaN(parsed.getTime()) ? fallback : parsed;
         };
@@ -12382,6 +12416,7 @@ function runRetainerSheetAudit_(sheet, alertSheet, targetDay, defaultDays) {
         const end = parseDateSafe(row[colEnd], new Date(2050, 11, 31));
 
         if (monthlyFee <= 0 || !start || isNaN(start.getTime())) continue;
+        if (end && !isNaN(end.getTime()) && end.getFullYear() < 2035 && end.getTime() < start.getTime()) continue;
         const parentRechAmt = colInv1Rech !== -1 ? parseMoney(row[colInv1Rech]) : 0;
         const parentInvAmt = Math.max(0, parseMoney(row[colInv1Amt]) - parentRechAmt);
         if (parentInvAmt > 0) continue;
@@ -12392,7 +12427,8 @@ function runRetainerSheetAudit_(sheet, alertSheet, targetDay, defaultDays) {
         let childCount = 0;
         let totalInvoiced = parentInvAmt; 
         let lastDate = new Date(start);
-        let childDates = [];
+        let maxChildDate = null;
+        let childEntries = [];
 
         for (let j = i + 1; j < data.length; j++) {
             const nextRow = data[j];
@@ -12404,52 +12440,72 @@ function runRetainerSheetAudit_(sheet, alertSheet, targetDay, defaultDays) {
                 const amt = Math.max(0, parseMoney(nextRow[colInv1Amt]) - childRechAmt);
                 totalInvoiced += amt;
 
-                const rowDate = nextRow[colInv1Date] ? new Date(nextRow[colInv1Date]) : null;
-                if (rowDate && !isNaN(rowDate.getTime())) {
-                    lastDate = rowDate;
-                    childDates.push(rowDate);
+                const rowDate = parseDateSafe(nextRow[colInv1Date], null);
+                if (rowDate) {
+                    if (!maxChildDate || rowDate.getTime() > maxChildDate.getTime()) maxChildDate = rowDate;
+                    lastDate = maxChildDate;
                 }
+                childEntries.push({ rowIdx: j, date: rowDate, amt: amt });
             } else {
                 break;
             }
         }
 
+        let childDates = childEntries.map(e => e.date).filter(Boolean);
+        let childAmts = childEntries.map(e => e.amt).filter(a => a > 0);
+
         let intervalMonths = 1;
         const rawTypeLower = rawType.trim().toLowerCase();
         if (rawTypeLower.includes("quarter")) {
             intervalMonths = 3;
+        } else if (rawTypeLower.includes("semi-annual") || rawTypeLower.includes("semiannual") || rawTypeLower.includes("half")) {
+            intervalMonths = 6;
         } else if (rawTypeLower.includes("annual") || rawTypeLower.includes("year")) {
             intervalMonths = 12;
         } else if (rawTypeLower.includes("bi-month") || rawTypeLower.includes("bimonth")) {
             intervalMonths = 2;
         } else if (rawTypeLower.includes("month")) {
             intervalMonths = 1;
-        } else if (childDates.length >= 2) {
-            const diffs = [];
-            for (let k = 0; k < childDates.length - 1; k++) {
-                const cd1 = childDates[k];
-                const cd2 = childDates[k + 1];
-                const dTime = Math.abs(cd2.getTime() - cd1.getTime());
-                const dDays = Math.ceil(dTime / (1000 * 60 * 60 * 24));
-                const cInt = Math.round(dDays / 30);
-                if (cInt > 0) diffs.push(cInt);
-            }
-            if (diffs.length > 0) {
-                const counts = {};
-                let maxC = 0;
-                let modeInt = 1;
-                for (const val of diffs) {
-                    counts[val] = (counts[val] || 0) + 1;
-                    if (counts[val] > maxC) {
-                        maxC = counts[val];
-                        modeInt = val;
+        } else {
+            let inferredFromAmount = 0;
+            if (monthlyFee > 0 && childAmts.length > 0) {
+                const candidateMultiples = [2, 3, 6, 12];
+                for (let mi = 0; mi < candidateMultiples.length; mi++) {
+                    const m = candidateMultiples[mi];
+                    if (childAmts.every(a => Math.abs((a / monthlyFee) - m) <= 0.15)) {
+                        inferredFromAmount = m;
+                        break;
                     }
                 }
-                intervalMonths = modeInt;
+            }
+            if (inferredFromAmount > 0 && (childDates.length < 2 || inferredFromAmount >= 3)) {
+                intervalMonths = inferredFromAmount;
+            } else if (childDates.length >= 2) {
+                const sortedDates = childDates.slice().sort((a, b) => a.getTime() - b.getTime());
+                const diffs = [];
+                for (let k = 0; k < sortedDates.length - 1; k++) {
+                    const cd1 = sortedDates[k];
+                    const cd2 = sortedDates[k + 1];
+                    const calDiff = (cd2.getFullYear() * 12 + cd2.getMonth()) - (cd1.getFullYear() * 12 + cd1.getMonth());
+                    if (calDiff > 0) diffs.push(calDiff);
+                }
+                if (diffs.length > 0) {
+                    const counts = {};
+                    let maxC = 0;
+                    let modeInt = 1;
+                    for (const val of diffs) {
+                        counts[val] = (counts[val] || 0) + 1;
+                        if (counts[val] > maxC) {
+                            maxC = counts[val];
+                            modeInt = val;
+                        }
+                    }
+                    intervalMonths = modeInt;
+                }
             }
         }
 
-        if (childDates.length === 0) {
+        if (childCount === 0) {
             const prevMonth = new Date(start.getFullYear(), start.getMonth() - intervalMonths, 1);
             const maxDayPrev = new Date(prevMonth.getFullYear(), prevMonth.getMonth() + 1, 0).getDate();
             lastDate = new Date(prevMonth.getFullYear(), prevMonth.getMonth(), Math.min(targetDay, maxDayPrev));
@@ -12503,11 +12559,9 @@ function runRetainerSheetAudit_(sheet, alertSheet, targetDay, defaultDays) {
                 
                 let childMonthVal = 0;
                 const rowDateRaw = data[childDataIdx][colInv1Date];
-                if (rowDateRaw instanceof Date) {
-                    childMonthVal = rowDateRaw.getFullYear() * 12 + rowDateRaw.getMonth();
-                } else if (rowDateRaw && !isNaN(new Date(rowDateRaw).getTime())) {
-                    const d = new Date(rowDateRaw);
-                    childMonthVal = d.getFullYear() * 12 + d.getMonth();
+                const parsedRowDate = parseDateSafe(rowDateRaw, null);
+                if (parsedRowDate) {
+                    childMonthVal = parsedRowDate.getFullYear() * 12 + parsedRowDate.getMonth();
                 } else {
                     const childStart = new Date(start);
                     childStart.setMonth(childStart.getMonth() + (c * intervalMonths));
@@ -12562,6 +12616,17 @@ function runRetainerSheetAudit_(sheet, alertSheet, targetDay, defaultDays) {
             if (trimCount > 0) {
                 logs.push(`[Retainers - ${sheetName}] Trimmed ${trimCount} excess child row(s) (Parent Row: ${i+1}) for ${row[colClient]} | ${row[colJob]}`);
                 fixesApplied++;
+                childEntries.splice(Math.max(0, childEntries.length - trimCount), trimCount);
+                childCount = childEntries.length;
+                childDates = childEntries.map(e => e.date).filter(Boolean);
+                childAmts = childEntries.map(e => e.amt).filter(a => a > 0);
+                if (childDates.length > 0) {
+                    lastDate = childDates.reduce((m, d) => (d.getTime() > m.getTime() ? d : m), childDates[0]);
+                } else {
+                    const prevMonthT = new Date(start.getFullYear(), start.getMonth() - intervalMonths, 1);
+                    const maxDayPrevT = new Date(prevMonthT.getFullYear(), prevMonthT.getMonth() + 1, 0).getDate();
+                    lastDate = new Date(prevMonthT.getFullYear(), prevMonthT.getMonth(), Math.min(targetDay, maxDayPrevT));
+                }
             }
         }
 
@@ -12569,6 +12634,10 @@ function runRetainerSheetAudit_(sheet, alertSheet, targetDay, defaultDays) {
         const today = new Date();
         const currentMonthVal = today.getFullYear() * 12 + today.getMonth();
         const endVal = effectiveEndVal;
+
+        // Guard: Never auto-add placeholder rows onto retainers whose contract ended in a past month
+        if (isFiniteEnd && effectiveEndVal < currentMonthVal) continue;
+
         let pastCount = 0;
         childDates.forEach(d => {
              // FIXED: Changed to <= so the current month is considered "consumed", ensuring a full 18 future rows are built
@@ -12589,9 +12658,21 @@ function runRetainerSheetAudit_(sheet, alertSheet, targetDay, defaultDays) {
         const perInvoiceFee = Math.round(monthlyFee * intervalMonths * 100) / 100;
 
         if (childCount < targetCount) {
+            let maxToAdd = targetCount - childCount;
+            if (isFiniteEnd) {
+                const maxTotalRows = Math.max(1, Math.ceil(safeDuration / intervalMonths));
+                const maxByRowCount = Math.max(0, maxTotalRows - childCount);
+                let coveredMonths = 0;
+                for (let ce = 0; ce < childEntries.length; ce++) {
+                    const cAmt = childEntries[ce].amt;
+                    coveredMonths += (cAmt > 0 && monthlyFee > 0) ? Math.max(1, Math.round(cAmt / monthlyFee)) : intervalMonths;
+                }
+                const maxByCovered = Math.ceil(Math.max(0, safeDuration - coveredMonths) / intervalMonths);
+                maxToAdd = Math.min(maxToAdd, maxByRowCount, maxByCovered);
+            }
             let rowsToAdd = 0;
 
-            for (let k = 0; k < (targetCount - childCount); k++) {
+            for (let k = 0; k < maxToAdd; k++) {
                 const nextTestDate = new Date(lastDate.getFullYear(), lastDate.getMonth() + ((k + 1) * intervalMonths), 1);
                 const testVal = nextTestDate.getFullYear() * 12 + nextTestDate.getMonth();
                 if ((testVal + timingMonthAdjust) > endVal) break;
@@ -12620,6 +12701,12 @@ function runRetainerSheetAudit_(sheet, alertSheet, targetDay, defaultDays) {
   const hasVarRetainers = isConfTab && data.some((r, idx) => idx > 0 && typeof isVariableRetainerRow_ === 'function' && isVariableRetainerRow_(r));
 
   if (jobsToExpand.length === 0 && fixesApplied === 0 && !hasVarRetainers) return { count: 0, logs: [] };
+
+  // Clear trimmed child row ranges BEFORE moveRows shifts row coordinates down
+  if (rangesToClear.length > 0) {
+    sheet.getRangeList(rangesToClear).clearContent();
+  }
+
   if (jobsToExpand.length > 0) {
     console.log(`Found ${jobsToExpand.length} retainer(s) requiring child rows. Applying sheet updates...`);
     jobsToExpand.sort((a, b) => b.insertAfter - a.insertAfter);
@@ -12737,11 +12824,7 @@ function runRetainerSheetAudit_(sheet, alertSheet, targetDay, defaultDays) {
       
       fixesApplied++;
   });
-  
-  // FIXED: Execute the batched API calls once at the very end
-  if (rangesToClear.length > 0) {
-      sheet.getRangeList(rangesToClear).clearContent();
-  }
+
   if (hasVarRetainers && typeof rollVariableRetainerRunways_ === 'function') {
       const varFixes = rollVariableRetainerRunways_(sheet, targetDay, defaultDays, logs);
       if (varFixes > 0) {

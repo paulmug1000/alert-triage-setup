@@ -132,29 +132,40 @@ export async function retFindTrueLastRow(sheets, spreadsheetId, allRows) {
   return trueLastRow;
 }
 
-export function retDetectIntervalMonths(childDates, parentType) {
+export function retDetectIntervalMonths(childDates, parentType, options = {}) {
+  const { monthlyFee = 0, childAmounts = [] } = options || {};
   if (parentType) {
     const pt = String(parentType).toLowerCase();
     if (pt.includes("quarter")) return 3;
+    if (pt.includes("semi-annual") || pt.includes("semiannual") || pt.includes("half")) return 6;
     if (pt.includes("annual") || pt.includes("year")) return 12;
     if (pt.includes("bi-month") || pt.includes("bimonth")) return 2;
-    if (pt.includes("month")) return 1;
+    if (pt.includes("month") && !pt.includes("2 month") && !pt.includes("3 month") && !pt.includes("6 month")) return 1;
   }
   const dates = (childDates || []).filter(Boolean);
+  const fee = Number(monthlyFee) || 0;
+  const amts = (childAmounts || []).map((a) => Number(a) || 0).filter((a) => a > 0);
+  if (fee > 0 && amts.length > 0) {
+    const candidates = [2, 3, 6, 12];
+    const matchedMultiple = candidates.find((m) => amts.every((a) => Math.abs((a / fee) - m) <= 0.15));
+    if (matchedMultiple && (dates.length < 2 || matchedMultiple >= 3)) {
+      return matchedMultiple;
+    }
+  }
   if (dates.length < 2) return 1;
 
+  const sorted = [...dates].sort((a, b) => {
+    const t1 = a instanceof Date ? a.getTime() : new Date(a).getTime();
+    const t2 = b instanceof Date ? b.getTime() : new Date(b).getTime();
+    return (t1 || 0) - (t2 || 0);
+  });
   const diffs = [];
-  for (let k = 0; k < dates.length - 1; k++) {
-    const d1 = dates[k];
-    const d2 = dates[k + 1];
-    if (d1 && d2) {
-      const t1 = d1 instanceof Date ? d1.getTime() : new Date(d1).getTime();
-      const t2 = d2 instanceof Date ? d2.getTime() : new Date(d2).getTime();
-      if (!isNaN(t1) && !isNaN(t2)) {
-        const diffDays = Math.ceil(Math.abs(t2 - t1) / 86400000);
-        const calc = Math.round(diffDays / 30);
-        if (calc > 0) diffs.push(calc);
-      }
+  for (let k = 0; k < sorted.length - 1; k++) {
+    const d1 = sorted[k] instanceof Date ? sorted[k] : new Date(sorted[k]);
+    const d2 = sorted[k + 1] instanceof Date ? sorted[k + 1] : new Date(sorted[k + 1]);
+    if (!isNaN(d1.getTime()) && !isNaN(d2.getTime())) {
+      const calDiff = (d2.getFullYear() * 12 + d2.getMonth()) - (d1.getFullYear() * 12 + d1.getMonth());
+      if (calDiff > 0) diffs.push(calDiff);
     }
   }
 
@@ -991,14 +1002,18 @@ export async function executeChangeRetainerEndDate(sheets, params = {}) {
       } else break;
     }
     const childDates = childRows.map(cr => retParseSheetDate(cr.row[43])).filter(Boolean);
+    const childAmounts = childRows.map(cr => Math.max(0, retParseMoney(cr.row[41]) - retParseMoney(cr.row[46]))).filter(a => a > 0);
 
-    const intervalMonthsForOffset = retDetectIntervalMonths(childDates, parentRow[35]);
+    const intervalMonthsForOffset = retDetectIntervalMonths(childDates, parentRow[35], { monthlyFee: revenue, childAmounts });
     const invoiceTimingOffset = retDetectInvoiceTimingOffset_(childDates, startDate, intervalMonthsForOffset);
     const timingMonthAdjust = invoiceTimingOffset === "before" ? 1 : (invoiceTimingOffset === "after" ? -1 : 0);
 
     const isJobCosting = isJobCostingStyle({ headers: rows[0] || [] });
     const endDateCol = isJobCosting ? "G" : "AM";
-    const isGrowing = !oldEndDate || newEnd > oldEndDate;
+    const isNewFiniteEnd = !isNoEndDateSentinel(newEndDate);
+    const newEndYmCheck = newEnd.getFullYear() * 12 + newEnd.getMonth();
+    const hasChildBeyondNewEnd = isNewFiniteEnd && childDates.some(d => (d.getFullYear() * 12 + d.getMonth() + timingMonthAdjust) > newEndYmCheck);
+    const isGrowing = !hasChildBeyondNewEnd && (!oldEndDate || newEnd > oldEndDate);
 
     if (!isGrowing) {
       const newEndVal = newEnd.getFullYear() * 12 + newEnd.getMonth();
@@ -1221,7 +1236,7 @@ export async function executeChangeRetainerEndDate(sheets, params = {}) {
       return { success: true, trimmed: trimRowNums.length, grown: 0, trimmedRowNums: trimRowNums, addedChildRows: [] };
 
     } else {
-      const intervalMonths = retDetectIntervalMonths(childDates, parentRow[35]) || 1;
+      const intervalMonths = retDetectIntervalMonths(childDates, parentRow[35], { monthlyFee: revenue, childAmounts }) || 1;
       const today = new Date(); today.setHours(0, 0, 0, 0);
       const currentMonthVal = today.getFullYear() * 12 + today.getMonth();
       const pastCount = childDates.filter(d => (d.getFullYear() * 12 + d.getMonth() + timingMonthAdjust) <= currentMonthVal).length;
@@ -1240,7 +1255,19 @@ export async function executeChangeRetainerEndDate(sheets, params = {}) {
         : null;
       const alreadyCoversEnd = lastChildVal !== null && lastChildVal >= effectiveEndVal;
 
-      if (childRows.length >= targetCount && alreadyCoversEnd) {
+      let rowsNeeded = Math.max(0, targetCount - childRows.length);
+      if (isNewFiniteEnd && startDate) {
+        const maxTotalRows = Math.max(1, Math.ceil(durationMonths / intervalMonths));
+        const maxByRowCount = Math.max(0, maxTotalRows - childRows.length);
+        const coveredMonths = childRows.reduce((acc, cr) => {
+          const net = Math.max(0, retParseMoney(cr.row[41]) - retParseMoney(cr.row[46]));
+          return acc + ((net > 0 && revenue > 0) ? Math.max(1, Math.round(net / revenue)) : intervalMonths);
+        }, 0);
+        const maxByCovered = Math.ceil(Math.max(0, durationMonths - coveredMonths) / intervalMonths);
+        rowsNeeded = Math.min(rowsNeeded, maxByRowCount, maxByCovered);
+      }
+
+      if ((childRows.length >= targetCount && alreadyCoversEnd) || rowsNeeded <= 0) {
         await sheets.spreadsheets.values.update({
           spreadsheetId: sheetIdClean, range: `Confirmed!${endDateCol}${parentRowNum}`,
           valueInputOption: "USER_ENTERED", _skipFormulaRecompute: true, requestBody: { values: [[formattedNewEndDate]] },
@@ -1264,7 +1291,6 @@ export async function executeChangeRetainerEndDate(sheets, params = {}) {
         lastDate = new Date(prevMonth.getFullYear(), prevMonth.getMonth(), Math.min(sendDay, maxDayPrev));
       }
 
-      const rowsNeeded = Math.max(0, targetCount - childRows.length);
       const newRowDates = [];
       for (let k = 0; k < rowsNeeded; k++) {
         const monthOffset = (k + 1) * intervalMonths;
@@ -1575,7 +1601,19 @@ export async function executeChangeRetainerStartDate(sheets, params = {}) {
       .map(cr => RET_INV_SLOTS.map(s => retParseSheetDate(cr.row[s.sent])).find(Boolean))
       .filter(Boolean);
 
-    const intervalMonths = retDetectIntervalMonths(realChildDates.length > 0 ? realChildDates : childDates, parentRow[35]) || 1;
+    const realChildAmounts = realChildRows
+      .map(cr => Math.max(0, retParseMoney(cr.row[41]) - retParseMoney(cr.row[46])))
+      .filter(a => a > 0);
+    const allChildAmounts = childRows
+      .map(cr => Math.max(0, retParseMoney(cr.row[41]) - retParseMoney(cr.row[46])))
+      .filter(a => a > 0);
+    const parentFeeForDetect = retParseMoney(parentRow[32]);
+
+    const intervalMonths = retDetectIntervalMonths(
+      realChildDates.length > 0 ? realChildDates : childDates,
+      parentRow[35],
+      { monthlyFee: parentFeeForDetect, childAmounts: realChildAmounts.length > 0 ? realChildAmounts : allChildAmounts }
+    ) || 1;
     const b51TargetDay = parseInt(tolerance?.retainerInvoiceDay, 10) > 0 ? parseInt(tolerance.retainerInvoiceDay, 10) : 28;
     const parsedExplicitDay = parseInt(params?.invoiceSendDay, 10);
     const defaultSendDay = (!isNaN(parsedExplicitDay) && parsedExplicitDay >= 1 && parsedExplicitDay <= 31)
@@ -3231,7 +3269,10 @@ export async function provisionRetainerChildRows_(sheets, params = {}) {
 
     const rawEnd = paramEndDate !== undefined && paramEndDate !== "" ? paramEndDate : parentRow[38];
     const parsedEnd = retParseSheetDate(rawEnd);
-    const wroteFallbackEnd = !parsedEnd || parsedEnd < start || !String(parentRow[38] ?? "").trim();
+    if (parsedEnd && parsedEnd < start && !isNoEndDateSentinel(rawEnd)) {
+      return { success: true, parentRowNum: actualParentRowNum, childRowCount: 0 };
+    }
+    const wroteFallbackEnd = !parsedEnd || !String(parentRow[38] ?? "").trim();
     const end = parsedEnd && parsedEnd >= start ? parsedEnd : new Date(2050, 11, 31);
 
     const parentJobFuzzy = fuzzy(jobName);
@@ -3386,14 +3427,17 @@ export async function provisionRetainerChildRows_(sheets, params = {}) {
     }
 
     const explicitInterval = Number(invoiceIntervalMonths);
+    const provChildAmts = [
+      ...existingChildRows.map((cr) => Math.max(0, retParseMoney(cr.row[41]) - retParseMoney(cr.row[46]))).filter((a) => a > 0),
+      ...realInvoicesToPlace.map((ri) => Math.max(0, (ri.amt || 0) - (ri.rechNum || 0))).filter((a) => a > 0),
+    ];
     const intervalMonths =
       Number.isFinite(explicitInterval) && explicitInterval >= 1
         ? Math.round(explicitInterval)
-        : String(invoiceFrequency || "").toLowerCase() === "quarterly"
-          ? 3
-          : childDates.length >= 2
-            ? retDetectIntervalMonths(childDates)
-            : 1;
+        : retDetectIntervalMonths(childDates, invoiceFrequency || parentRow[35], {
+          monthlyFee,
+          childAmounts: provChildAmts,
+        }) || 1;
     const perInvoiceAmount = monthlyFee * intervalMonths;
 
     const parsedExplicitDay = parseInt(invoiceSendDay, 10);
@@ -3450,7 +3494,27 @@ export async function provisionRetainerChildRows_(sheets, params = {}) {
     const targetCount = pastCount + Math.ceil(18 / intervalMonths);
 
     const newRowDates = [];
-    const maxToAdd = Math.max(0, targetCount - existingChildRows.length);
+    let maxToAdd = Math.max(0, targetCount - existingChildRows.length);
+    if (!isOngoing) {
+      if (endVal < currentMonthVal && existingChildRows.length > 0) {
+        maxToAdd = 0;
+      } else {
+        const maxTotalRows = Math.max(1, Math.ceil(safeDuration / intervalMonths));
+        const maxByRowCount = Math.max(0, maxTotalRows - existingChildRows.length);
+        const existingCovered = existingChildRows.reduce((acc, cr) => {
+          const net = Math.max(0, retParseMoney(cr.row[41]) - retParseMoney(cr.row[46]));
+          return acc + ((net > 0 && monthlyFee > 0) ? Math.max(1, Math.round(net / monthlyFee)) : intervalMonths);
+        }, 0);
+        const initialPlacedCovered = existingChildRows.length === 0
+          ? realInvoicesToPlace.reduce((acc, ri) => {
+            const net = Math.max(0, (ri.amt || 0) - (ri.rechNum || 0));
+            return acc + ((net > 0 && monthlyFee > 0) ? Math.max(1, Math.round(net / monthlyFee)) : intervalMonths);
+          }, 0)
+          : 0;
+        const maxByCovered = Math.ceil(Math.max(0, safeDuration - Math.max(existingCovered, initialPlacedCovered)) / intervalMonths);
+        maxToAdd = Math.min(maxToAdd, maxByRowCount, maxByCovered);
+      }
+    }
     for (let k = 0; k < maxToAdd; k++) {
       const monthOffset = (k + 1) * intervalMonths;
       const targetMonthFirst = new Date(
@@ -3784,10 +3848,23 @@ export function buildRetainerChildRowsWritePlan({
 
   const start = retParseSheetDate(startDate) || new Date();
   const parsedEnd = retParseSheetDate(endDate);
+  if (parsedEnd && parsedEnd < start && !isNoEndDateSentinel(endDate)) {
+    return {
+      rowsToCreate: 0,
+      startWriteRow: parentRowNum + 1,
+      endWriteRow: parentRowNum,
+      writeData: [],
+      childRowNums: [],
+      childRowsForUi: [],
+    };
+  }
   const end = parsedEnd && parsedEnd >= start ? parsedEnd : new Date(2050, 11, 31);
 
+  const initialNetAmts = (Array.isArray(initialInvoices) ? initialInvoices : [])
+    .map((inv) => Math.max(0, retParseMoney(inv?.amount) - retParseMoney(inv?.ofWhichRechgd)))
+    .filter((a) => a > 0);
   const intervalMonths =
-    String(invoiceFrequency || "").toLowerCase() === "quarterly" ? 3 : 1;
+    retDetectIntervalMonths([], invoiceFrequency, { monthlyFee, childAmounts: initialNetAmts }) || 1;
   const perInvoiceAmount = monthlyFee * intervalMonths;
 
   const parsedExplicitDay = parseInt(invoiceSendDay, 10);
@@ -3839,7 +3916,10 @@ export function buildRetainerChildRowsWritePlan({
   const targetCount = pastCount + Math.ceil(18 / intervalMonths);
 
   const newRowDates = [];
-  for (let k = 0; k < targetCount; k++) {
+  const maxCreateCount = !isOngoing
+    ? Math.min(targetCount, Math.max(1, Math.ceil(safeDuration / intervalMonths)))
+    : targetCount;
+  for (let k = 0; k < maxCreateCount; k++) {
     const monthOffset = (k + 1) * intervalMonths;
     const targetMonthFirst = new Date(
       lastDate.getFullYear(),
@@ -5197,7 +5277,13 @@ export async function handleComputeRetainerAlertResolution(req, res, sheets) {
     const allInvoiceDates = (parentInvDate ? [parentInvDate] : []).concat(
       childRows.map(cr => retParseSheetDate(cr.row[43])).filter(Boolean)
     );
-    const intervalMonths = retDetectIntervalMonths(allInvoiceDates);
+    const childAmounts = childRows
+      .map(cr => Math.max(0, retParseMoney(cr.row[41]) - retParseMoney(cr.row[46])))
+      .filter(a => a > 0);
+    const intervalMonths = retDetectIntervalMonths(allInvoiceDates, parentRow[35], {
+      monthlyFee: retParseMoney(parentRow[32]),
+      childAmounts,
+    });
     const invoiceTimingOffset = retDetectInvoiceTimingOffset_(allInvoiceDates, jobStartDate, intervalMonths);
     const timingMonthAdjust = invoiceTimingOffset === "before" ? 1 : (invoiceTimingOffset === "after" ? -1 : 0);
 

@@ -663,7 +663,7 @@ export async function handlePruneAssignedExpenses(req, res, sheets) {
         await sheets.spreadsheets.values.clear({ spreadsheetId: aeAcId, range: `AssignedExpenses!A2:C${rows.length + 1}` });
         if (keptRows.length > 0) {
           await sheets.spreadsheets.values.update({
-            spreadsheetId: aeAcId, range: "AssignedExpenses!A2", valueInputOption: "RAW", requestBody: { values: keptRows },
+            spreadsheetId: aeAcId, range: `AssignedExpenses!A2:C${1 + keptRows.length}`, valueInputOption: "RAW", requestBody: { values: keptRows },
           });
         }
       }

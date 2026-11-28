@@ -410,13 +410,40 @@ export async function checkRetainerInvoices_(clientName, clientSheetId, masterSh
       const currentMonthVal = today.getFullYear() * 12 + today.getMonth();
       const parsedChildDates = childRows.map(cr => parseConfirmedDate_(cr.row[43]));
       const validChildDates = parsedChildDates.filter(Boolean);
+      const childNetAmts = childRows.map(cr => sumInvSlotAmounts_(cr.row).netFeeTotal).filter(a => a > 0);
       let intervalMonths = 1;
-      if (validChildDates.length >= 2) {
-        const d1 = validChildDates[validChildDates.length - 2];
-        const d2 = validChildDates[validChildDates.length - 1];
-        const calcInt = Math.round(Math.ceil(Math.abs(d2.getTime() - d1.getTime()) / 86400000) / 30);
-        if (calcInt > 0) intervalMonths = calcInt;
+      if (jobType.includes("quarter")) {
+        intervalMonths = 3;
+      } else if (jobType.includes("semi-annual") || jobType.includes("semiannual") || jobType.includes("half")) {
+        intervalMonths = 6;
+      } else if (jobType.includes("annual") || jobType.includes("year")) {
+        intervalMonths = 12;
+      } else if (jobType.includes("bi-month") || jobType.includes("bimonth")) {
+        intervalMonths = 2;
+      } else {
+        const matchedMult = (monthlyRevenue > 0 && childNetAmts.length > 0)
+          ? [2, 3, 6, 12].find(m => childNetAmts.every(a => Math.abs((a / monthlyRevenue) - m) <= 0.15))
+          : 0;
+        if (matchedMult && (validChildDates.length < 2 || matchedMult >= 3)) {
+          intervalMonths = matchedMult;
+        } else if (validChildDates.length >= 2) {
+          const sortedDates = [...validChildDates].sort((a, b) => a.getTime() - b.getTime());
+          const cDiffs = [];
+          for (let di = 0; di < sortedDates.length - 1; di++) {
+            const cDiff = (sortedDates[di + 1].getFullYear() * 12 + sortedDates[di + 1].getMonth()) - (sortedDates[di].getFullYear() * 12 + sortedDates[di].getMonth());
+            if (cDiff > 0) cDiffs.push(cDiff);
+          }
+          if (cDiffs.length > 0) {
+            const counts = {};
+            let maxC = 0;
+            for (const v of cDiffs) {
+              counts[v] = (counts[v] || 0) + 1;
+              if (counts[v] > maxC) { maxC = counts[v]; intervalMonths = v; }
+            }
+          }
+        }
       }
+      const expectedPeriodAmount = Math.round(monthlyRevenue * intervalMonths * 100) / 100;
 
       let anchorChildIdx = -1;
       let anchorMonthVal = null;
@@ -501,7 +528,7 @@ export async function checkRetainerInvoices_(clientName, clientSheetId, masterSh
           const match1Status = String(possibleMatch1.status || "").toLowerCase();
           const match1IsReal = (match1Status === "sent" || match1Status === "paid");
           if (match1IsReal) {
-            const match1Differs = Math.abs(possibleMatch1.amount - monthlyRevenue) > 0.01;
+            const match1Differs = Math.abs(possibleMatch1.amount - expectedPeriodAmount) > 0.01;
             possibleMatchCase1 = match1Differs ? "changed" : "matches";
             if (match1Differs) {
               detail1 += `\nPossible match: invoice ${possibleMatch1.invoiceNo} for £${possibleMatch1.amount.toFixed(2)} was sent to ${clientNameRow} on ${possibleMatch1.sentDate} (confidence: ${possibleMatch1.confidence})${possibleMatch1.attachedToRow ? ` - already attached to Confirmed row ${possibleMatch1.attachedToRow}` : " - not yet attached to any job in Confirmed"}. This may mean the retainer value has changed.`;
@@ -586,7 +613,7 @@ export async function checkRetainerInvoices_(clientName, clientSheetId, masterSh
           const match2Status = String(possibleMatch2.status || "").toLowerCase();
           const match2IsReal = (match2Status === "sent" || match2Status === "paid");
           if (match2IsReal) {
-            const match2Differs = Math.abs(possibleMatch2.amount - monthlyRevenue) > 0.01;
+            const match2Differs = Math.abs(possibleMatch2.amount - expectedPeriodAmount) > 0.01;
             possibleMatchCase = match2Differs ? "changed" : "matches";
             if (match2Differs) {
               detail2 += `\nPossible match: invoice ${possibleMatch2.invoiceNo} for £${possibleMatch2.amount.toFixed(2)} was sent to ${clientNameRow} on ${possibleMatch2.sentDate} (confidence: ${possibleMatch2.confidence})${possibleMatch2.attachedToRow ? ` - already attached to Confirmed row ${possibleMatch2.attachedToRow}` : " - not yet attached to any job in Confirmed"}. This may mean the retainer value has changed.`;

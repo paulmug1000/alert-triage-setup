@@ -1763,8 +1763,9 @@ export async function recordBridgeStructuralRequests(clientName, requests = [], 
     });
   }
   if (structuralOps.length > 0) {
+    const memOps = structuralOps.map((op) => ({ ...op, persistedToRedis: false }));
     const prev = _pendingStructuralOpsByClient.get(key) || [];
-    const merged = [...prev, ...structuralOps].slice(-STRUCT_OPS_MAX_QUEUE);
+    const merged = [...prev, ...memOps].slice(-STRUCT_OPS_MAX_QUEUE);
     _pendingStructuralOpsByClient.set(key, merged);
     if (redisClient?.isOpen) {
       try {
@@ -1778,25 +1779,34 @@ export async function recordBridgeStructuralRequests(clientName, requests = [], 
         const combined = [...redisPrev, ...structuralOps.filter((op) => !seenIds.has(op.opId))].slice(
           -STRUCT_OPS_MAX_QUEUE
         );
-        await redisClient
-          .set(`${STRUCT_OPS_REDIS_PREFIX}${key}`, JSON.stringify(combined), { EX: STRUCT_OPS_TTL_SECONDS })
-          .catch(() => { });
+        await redisClient.set(`${STRUCT_OPS_REDIS_PREFIX}${key}`, JSON.stringify(combined), {
+          EX: STRUCT_OPS_TTL_SECONDS,
+        });
+        for (const op of memOps) op.persistedToRedis = true;
       } catch { }
     }
   }
 }
 
-async function loadPendingStructuralOps_(key) {
-  const mem = _pendingStructuralOpsByClient.get(key) || [];
+export async function loadPendingStructuralOps_(key) {
+  let mem = _pendingStructuralOpsByClient.get(key) || [];
   let redisOps = [];
+  let redisReadOk = false;
   if (redisClient?.isOpen) {
     try {
-      const raw = await redisClient.get(`${STRUCT_OPS_REDIS_PREFIX}${key}`).catch(() => null);
+      const raw = await redisClient.get(`${STRUCT_OPS_REDIS_PREFIX}${key}`);
+      redisReadOk = true;
       if (raw) {
         const parsed = JSON.parse(raw);
         if (Array.isArray(parsed)) redisOps = parsed;
       }
     } catch { }
+  }
+  if (redisReadOk) {
+    const redisIds = new Set(redisOps.map((op) => op?.opId).filter(Boolean));
+    mem = mem.filter((op) => !op?.persistedToRedis || (op?.opId && redisIds.has(op.opId)));
+    if (mem.length > 0) _pendingStructuralOpsByClient.set(key, mem);
+    else _pendingStructuralOpsByClient.delete(key);
   }
   const seen = new Set();
   const combined = [];
@@ -1811,7 +1821,7 @@ async function loadPendingStructuralOps_(key) {
   return combined.slice(-STRUCT_OPS_MAX_QUEUE);
 }
 
-async function clearPendingStructuralOpsById_(key, idsToRemove = null) {
+export async function clearPendingStructuralOpsById_(key, idsToRemove = null) {
   if (!idsToRemove) {
     _pendingStructuralOpsByClient.delete(key);
     if (redisClient?.isOpen) {
@@ -2167,6 +2177,85 @@ export async function waitForPendingOutboundSheetBridge(clientName) {
   }
 }
 
+export function applyCoreRowShiftOpsToTabBaseline_(baseTab, opsForTab = []) {
+  const nextVals = Array.isArray(baseTab?.values)
+    ? baseTab.values.map((r) => (Array.isArray(r) ? [...r] : []))
+    : [];
+  let nextNotes = cloneSafeNotes_(baseTab?.notes);
+
+  const remapNotes = (mapRowFn) => {
+    const out = createSafeMap_();
+    for (const [k, v] of Object.entries(nextNotes || {})) {
+      if (k === "__hidden_rows" || k === "__row_groups") {
+        out[k] = v;
+        continue;
+      }
+      const m = k.match(/^(\d+):(\d+)$/);
+      if (!m) {
+        out[k] = v;
+        continue;
+      }
+      const oldR0 = Number(m[1]);
+      const newR0 = mapRowFn(oldR0);
+      if (newR0 === null || newR0 === undefined || newR0 < 0) continue;
+      out[`${newR0}:${m[2]}`] = v;
+    }
+    nextNotes = out;
+  };
+
+  for (const item of opsForTab || []) {
+    const req = item?.req || item;
+    if (!req) continue;
+    if (req.insertDimension?.range?.dimension === "ROWS") {
+      const rng = req.insertDimension.range;
+      const s = Math.max(0, Number(rng.startIndex ?? 0));
+      const e = Math.max(s, Number(rng.endIndex ?? s + 1));
+      const count = e - s;
+      if (count <= 0) continue;
+      while (nextVals.length < s) nextVals.push([]);
+      const blanks = Array.from({ length: count }, () => []);
+      nextVals.splice(s, 0, ...blanks);
+      remapNotes((oldR0) => (oldR0 >= s ? oldR0 + count : oldR0));
+    } else if (req.deleteDimension?.range?.dimension === "ROWS") {
+      const rng = req.deleteDimension.range;
+      const s = Math.max(0, Number(rng.startIndex ?? 0));
+      const e = Math.max(s, Number(rng.endIndex ?? s + 1));
+      const count = e - s;
+      if (count <= 0 || s >= nextVals.length) continue;
+      nextVals.splice(s, count);
+      remapNotes((oldR0) => {
+        if (oldR0 >= s && oldR0 < s + count) return -1;
+        if (oldR0 >= s + count) return oldR0 - count;
+        return oldR0;
+      });
+    } else if (req.moveDimension?.source?.dimension === "ROWS") {
+      const src = req.moveDimension.source;
+      const s = Math.max(0, Number(src.startIndex ?? 0));
+      const e = Math.max(s, Number(src.endIndex ?? s + 1));
+      const count = e - s;
+      const d = Math.max(0, Number(req.moveDimension.destinationIndex ?? 0));
+      const minLen = Math.max(s + count, d);
+      if (count <= 0 || d === s || minLen > 50000) continue;
+      while (nextVals.length < minLen) nextVals.push([]);
+      const movedV = nextVals.splice(s, count);
+      const insertAt = d <= s ? d : Math.max(0, d - count);
+      nextVals.splice(insertAt, 0, ...movedV);
+      remapNotes((oldR0) => {
+        if (oldR0 >= s && oldR0 < s + count) return insertAt + (oldR0 - s);
+        if (s < insertAt && oldR0 >= s + count && oldR0 < insertAt + count) return oldR0 - count;
+        if (insertAt < s && oldR0 >= insertAt && oldR0 < s) return oldR0 + count;
+        return oldR0;
+      });
+    }
+  }
+
+  return {
+    ...(baseTab || {}),
+    values: nextVals,
+    notes: nextNotes,
+  };
+}
+
 /**
  * Main bidirectional synchronization routine for a single client.
  * - `direction`: `"inbound_check"` | `"inbound"` | `"outbound"` | `"both"`
@@ -2272,6 +2361,135 @@ export async function checkAndSyncClientSheetBridge(
       }
 
       const queuedStructOps = await loadPendingStructuralOps_(key);
+      const isCoreRowShift_ = (req) =>
+        Boolean(
+          req?.moveDimension?.source?.dimension === "ROWS" ||
+          req?.insertDimension?.range?.dimension === "ROWS" ||
+          req?.deleteDimension?.range?.dimension === "ROWS"
+        );
+      const coreRowShiftOps = queuedStructOps.filter((op) => isCoreRowShift_(op.req));
+      const cosmeticGroupOps = queuedStructOps.filter((op) => !isCoreRowShift_(op.req));
+      let executedPreDiffCoreCount = 0;
+
+      // Phase 1 FIRST (before reading Google Sheet or computing diffs):
+      // Execute queued structural row shifts on the live Google Sheet AND mirror them onto baseline
+      // so computeThreeWayTabMerge compares identical post-shift row coordinates.
+      if (wantsOutbound && effectiveMode === "live" && coreRowShiftOps.length > 0) {
+        const preShiftMeta = await withRetry(() =>
+          rawSheets.spreadsheets.get({
+            spreadsheetId: ctx.clientSheetId,
+            fields: "sheets(properties(sheetId,title,gridProperties))",
+          })
+        );
+        const preShiftPropsByTitle = createSafeMap_();
+        const preRowCountByTab = createSafeMap_();
+        for (const sh of preShiftMeta?.data?.sheets || []) {
+          const tName = sh.properties?.title;
+          if (!tName || PROTOTYPE_KEYS.has(tName)) continue;
+          const sId = sh.properties?.sheetId;
+          const rCount = Math.max(1, Number(sh.properties?.gridProperties?.rowCount || 0));
+          preShiftPropsByTitle[tName] = { sheetId: sId, rowCount: rCount };
+          preRowCountByTab[tName] = rCount;
+        }
+        const preDiffCoreBatch = [];
+        const executedPreDiffIds = new Set();
+        const opsByTabForBaseline = createSafeMap_();
+
+        for (const op of coreRowShiftOps) {
+          let realGid = preShiftPropsByTitle[op.tabName]?.sheetId;
+          if (realGid === null || realGid === undefined) {
+            realGid = await getSheetGid(rawSheets, ctx.clientSheetId, op.tabName).catch(() => null);
+          }
+          if (realGid === null || realGid === undefined) continue;
+          if (op.opId) executedPreDiffIds.add(op.opId);
+          executedPreDiffCoreCount++;
+          if (op.tabName) {
+            if (!opsByTabForBaseline[op.tabName]) opsByTabForBaseline[op.tabName] = [];
+            opsByTabForBaseline[op.tabName].push(op);
+          }
+
+          const rewritten = rewriteStructuralRequestSheetId_(op.req, realGid);
+          const delRange = op.req?.deleteDimension?.range;
+          const insRange = op.req?.insertDimension?.range;
+          const mov = op.req?.moveDimension;
+          if (mov?.source?.dimension === "ROWS" && op.tabName) {
+            const neededMax = Math.max(Number(mov.source.endIndex || 0), Number(mov.destinationIndex || 0));
+            const curRows = preRowCountByTab[op.tabName] || 0;
+            if (curRows > 0 && neededMax > curRows) {
+              preDiffCoreBatch.push({
+                insertDimension: {
+                  range: {
+                    sheetId: realGid,
+                    dimension: "ROWS",
+                    startIndex: curRows,
+                    endIndex: neededMax + 15,
+                  },
+                  inheritFromBefore: true,
+                },
+              });
+              preRowCountByTab[op.tabName] = neededMax + 15;
+            }
+            if (Number(mov.destinationIndex || 0) > Number(mov.source.endIndex || 0)) {
+              preDiffCoreBatch.push({
+                updateDimensionProperties: {
+                  range: {
+                    sheetId: realGid,
+                    dimension: "ROWS",
+                    startIndex: Number(mov.source.startIndex || 0),
+                    endIndex: Number(mov.source.endIndex || 0),
+                  },
+                  properties: { hiddenByUser: false },
+                  fields: "hiddenByUser",
+                },
+              });
+            }
+          }
+          preDiffCoreBatch.push(rewritten);
+          if (op.tabName) {
+            if (delRange?.dimension === "ROWS") {
+              preRowCountByTab[op.tabName] = Math.max(
+                1,
+                (preRowCountByTab[op.tabName] || 1) -
+                Math.max(0, Number(delRange.endIndex) - Number(delRange.startIndex))
+              );
+            } else if (insRange?.dimension === "ROWS") {
+              preRowCountByTab[op.tabName] =
+                (preRowCountByTab[op.tabName] || 0) +
+                Math.max(0, Number(insRange.endIndex) - Number(insRange.startIndex));
+            }
+          }
+        }
+
+        if (preDiffCoreBatch.length > 0) {
+          await withRetry(() =>
+            rawSheets.spreadsheets.batchUpdate({
+              spreadsheetId: ctx.clientSheetId,
+              requestBody: { requests: preDiffCoreBatch },
+            })
+          );
+          if (executedPreDiffIds.size > 0) {
+            await clearPendingStructuralOpsById_(key, executedPreDiffIds);
+          }
+          for (const [tName, tOps] of Object.entries(opsByTabForBaseline)) {
+            if (PROTOTYPE_KEYS.has(tName)) continue;
+            baseline.tabs[tName] = applyCoreRowShiftOpsToTabBaseline_(
+              baseline.tabs?.[tName] || { values: [], notes: createSafeMap_(), noteBoundsVersion: baseline.noteBoundsVersion || 1 },
+              tOps
+            );
+          }
+          const postShiftDriveMeta = await fetchDriveVersionMeta_(rawDrive, ctx.clientSheetId).catch(() => null);
+          if (postShiftDriveMeta?.version) {
+            driveMeta.version = postShiftDriveMeta.version;
+            driveMeta.modifiedTime = postShiftDriveMeta.modifiedTime || driveMeta.modifiedTime;
+          }
+          await saveBaselineRecord_(supabase, ctx, {
+            driveVersion: driveMeta.version || baseline.driveVersion,
+            tabs: baseline.tabs,
+            noteBoundsVersion: baseline.noteBoundsVersion || 1,
+          });
+        }
+      }
+
       const needRealSheetFetch = canPullInbound || wantsOutbound;
 
       const structDirtyTabs = queuedStructOps.map((op) => op.tabName).filter(Boolean);
@@ -2489,19 +2707,10 @@ export async function checkAndSyncClientSheetBridge(
 
       let finalDriveVersion = driveMeta.version;
       let finalModifiedTime = driveMeta.modifiedTime;
-      const hasOutboundWork = outboundValueRanges.length > 0 || outboundNoteRequests.length > 0 || queuedStructOps.length > 0;
+      const effectiveStructuralCount = executedPreDiffCoreCount + cosmeticGroupOps.length;
+      const hasOutboundWork = outboundValueRanges.length > 0 || outboundNoteRequests.length > 0 || effectiveStructuralCount > 0;
 
       if (wantsOutbound && effectiveMode === "live" && hasOutboundWork) {
-        // Partition row shifts vs cosmetic group/hide ops so a group-range error NEVER blocks data writes or drops row shifts
-        const isCoreRowShift_ = (req) =>
-          Boolean(
-            req?.moveDimension?.source?.dimension === "ROWS" ||
-            req?.insertDimension?.range?.dimension === "ROWS" ||
-            req?.deleteDimension?.range?.dimension === "ROWS"
-          );
-        const coreRowShiftOps = queuedStructOps.filter((op) => isCoreRowShift_(op.req));
-        const cosmeticGroupOps = queuedStructOps.filter((op) => !isCoreRowShift_(op.req));
-
         const resolveRealGid_ = async (tabName) => {
           const cached = sheetBundle?.sheetPropsByTitle?.[tabName]?.sheetId;
           if (cached !== null && cached !== undefined) return cached;
@@ -2514,56 +2723,14 @@ export async function checkAndSyncClientSheetBridge(
           effectiveRowCountByTab[tName] = Math.max(1, Number(props.rowCount || 0));
         }
 
-        // Phase 1: Core row shifts (insertDimension / deleteDimension / moveDimension), expanding grid BEFORE out-of-bounds moveDimension
-        const coreRowShiftBatch = [];
-        const executedCoreIds = new Set();
-        for (const op of coreRowShiftOps) {
-          const realGid = await resolveRealGid_(op.tabName);
-          if (realGid === null || realGid === undefined) continue;
-          if (op.opId) executedCoreIds.add(op.opId);
-          const rewritten = rewriteStructuralRequestSheetId_(op.req, realGid);
-          const delRange = op.req?.deleteDimension?.range;
-          const insRange = op.req?.insertDimension?.range;
-          const mov = op.req?.moveDimension;
-          if (mov?.source?.dimension === "ROWS" && op.tabName) {
-            const neededMax = Math.max(Number(mov.source.endIndex || 0), Number(mov.destinationIndex || 0));
-            const curRows = effectiveRowCountByTab[op.tabName] || 0;
-            if (curRows > 0 && neededMax > curRows) {
-              coreRowShiftBatch.push({
-                insertDimension: {
-                  range: {
-                    sheetId: realGid,
-                    dimension: "ROWS",
-                    startIndex: curRows,
-                    endIndex: neededMax + 15,
-                  },
-                  inheritFromBefore: true,
-                },
-              });
-              effectiveRowCountByTab[op.tabName] = neededMax + 15;
-            }
-          }
-          coreRowShiftBatch.push(rewritten);
-          if (op.tabName) {
-            if (delRange?.dimension === "ROWS") {
-              effectiveRowCountByTab[op.tabName] = Math.max(
-                1,
-                (effectiveRowCountByTab[op.tabName] || 1) -
-                Math.max(0, Number(delRange.endIndex) - Number(delRange.startIndex))
-              );
-            } else if (insRange?.dimension === "ROWS") {
-              effectiveRowCountByTab[op.tabName] =
-                (effectiveRowCountByTab[op.tabName] || 0) +
-                Math.max(0, Number(insRange.endIndex) - Number(insRange.startIndex));
-            }
-          }
-        }
+        // Expand sheet height if Supabase grew beyond live Google Sheet rowCount during post-shift writes
+        const postShiftExpandBatch = [];
         for (const [tName, props] of Object.entries(sheetBundle?.sheetPropsByTitle || {})) {
           if (PROTOTYPE_KEYS.has(tName)) continue;
           const postRows = effectiveRowCountByTab[tName] || Math.max(1, Number(props.rowCount || 0));
           const reqMaxRow = maxTargetRowByTab[tName] || 0;
           if (reqMaxRow > postRows) {
-            coreRowShiftBatch.push({
+            postShiftExpandBatch.push({
               insertDimension: {
                 range: {
                   sheetId: props.sheetId,
@@ -2577,16 +2744,13 @@ export async function checkAndSyncClientSheetBridge(
             effectiveRowCountByTab[tName] = reqMaxRow + 15;
           }
         }
-        if (coreRowShiftBatch.length > 0) {
+        if (postShiftExpandBatch.length > 0) {
           await withRetry(() =>
             rawSheets.spreadsheets.batchUpdate({
               spreadsheetId: ctx.clientSheetId,
-              requestBody: { requests: coreRowShiftBatch },
+              requestBody: { requests: postShiftExpandBatch },
             })
           );
-          if (executedCoreIds.size > 0) {
-            await clearPendingStructuralOpsById_(key, executedCoreIds);
-          }
         }
 
         // Filter out any trailing blank clear ranges/notes beyond post-delete sheet bounds
@@ -2761,10 +2925,10 @@ export async function checkAndSyncClientSheetBridge(
           `${shouldApplyInboundNow ? "Pulled" : "Would pull"} ${allInboundDiffs.length} field(s) across ${inReadable.totalRowsChanged} row(s) (${inboundAppliedTabs.join(", ")})`
         );
       }
-      if (allOutboundDiffs.length > 0 || queuedStructOps.length > 0) {
+      if (allOutboundDiffs.length > 0 || effectiveStructuralCount > 0) {
         summaryParts.push(
           `${effectiveMode === "live" && wantsOutbound ? "Pushed" : "Would push"} ${allOutboundDiffs.length} field(s) across ${outReadable.totalRowsChanged} row(s)${outboundTabsChanged.length > 0 ? ` (${outboundTabsChanged.join(", ")})` : ""
-          }${queuedStructOps.length > 0 ? ` + ${queuedStructOps.length} row layout change(s)` : ""}`
+          }${effectiveStructuralCount > 0 ? ` + ${effectiveStructuralCount} row layout change(s)` : ""}`
         );
       }
       if (allConflicts.length > 0) {
@@ -2781,7 +2945,7 @@ export async function checkAndSyncClientSheetBridge(
         allInboundDiffs.length > 0 ||
         allOutboundDiffs.length > 0 ||
         allConflicts.length > 0 ||
-        queuedStructOps.length > 0;
+        effectiveStructuralCount > 0;
 
       const logEntry = shouldLog
         ? {
@@ -2792,7 +2956,7 @@ export async function checkAndSyncClientSheetBridge(
           inboundCount: allInboundDiffs.length,
           outboundCount: allOutboundDiffs.length,
           rangeCount: outboundValueRanges.length,
-          structuralCount: queuedStructOps.length,
+          structuralCount: effectiveStructuralCount,
           conflictCount: allConflicts.length,
           formulaProtectedCount: totalFormulaProtected,
           summary: summaryText,
@@ -2825,10 +2989,10 @@ export async function checkAndSyncClientSheetBridge(
         driveVersion: finalDriveVersion,
         inboundChanged: allInboundDiffs.length > 0,
         inboundCount: allInboundDiffs.length,
-        outboundChanged: allOutboundDiffs.length > 0 || queuedStructOps.length > 0,
+        outboundChanged: allOutboundDiffs.length > 0 || effectiveStructuralCount > 0,
         outboundCount: allOutboundDiffs.length,
         outboundRangesCount: outboundValueRanges.length,
-        structuralCount: queuedStructOps.length,
+        structuralCount: effectiveStructuralCount,
         conflictCount: allConflicts.length,
         formulaCellsProtectedCount: totalFormulaProtected,
         summary: summaryText,

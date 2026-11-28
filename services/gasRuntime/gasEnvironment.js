@@ -1229,9 +1229,18 @@ export class VirtualSheet {
   _afterWriteValues(startRow1, startCol1, remoteRows) {
     this.dirty = true;
     this.maxRows = Math.max(this.maxRows, this.valuesGrid.length);
+    const rowCount = Array.isArray(remoteRows) && remoteRows.length > 0 ? remoteRows.length : 1;
+    const colCount = Math.max(1, ...(remoteRows || []).map((r) => (Array.isArray(r) ? r.length : 1)));
+    const startColLetter = colIdx0ToLetter(startCol1 - 1);
+    const endRow1 = startRow1 + rowCount - 1;
+    const endColLetter = colIdx0ToLetter(startCol1 - 1 + colCount - 1);
+    const rangeStr =
+      rowCount > 1 || colCount > 1
+        ? `'${this.name}'!${startColLetter}${startRow1}:${endColLetter}${endRow1}`
+        : `'${this.name}'!${startColLetter}${startRow1}`;
     this.spreadsheet._onSheetMutated(this.name, {
       type: "values",
-      range: `'${this.name}'!${colIdx0ToLetter(startCol1 - 1)}${startRow1}`,
+      range: rangeStr,
       values: remoteRows,
     });
   }
@@ -1262,7 +1271,7 @@ export class VirtualSheet {
               startRowIndex: startRow1 - 1,
               endRowIndex: startRow1 - 1 + rows.length,
               startColumnIndex: startCol1 - 1,
-              endColumnIndex: startCol1 - 1 + (rows[0]?.length || 1),
+              endColumnIndex: startCol1 - 1 + Math.max(1, ...rows.map((r) => (Array.isArray(r) ? r.length : 1))),
             },
             rows: rows.map((values) => ({ values })),
             fields: "note",
@@ -1761,12 +1770,18 @@ export class VirtualSpreadsheet {
         (FORMULA_INPUT_MASTER_TABS.has(tabName) || tabName === "OutgNotes" || tabName === "Year0PLFromApp")) ||
       (this.sheetRole === "recon" && tabName === "PLAdds")
     ) {
-      // Ignore lock/timestamp status writes in DataChgAlert rows 1..50 (only rows >= 50 hold ignore flags used by CRMComp)
+      // Ignore lock/timestamp status writes confined strictly to DataChgAlert rows 1..49 (rows >= 50 hold ignore flags used by CRMComp)
       let isIgnoredLockWrite = false;
       if (tabName === "DataChgAlert" && mutation?.range) {
-        const mRow = String(mutation.range).match(/![A-Z]+(\d+)/i);
-        if (mRow && parseInt(mRow[1], 10) < 50) {
-          isIgnoredLockWrite = true;
+        const mRow = String(mutation.range).match(/![A-Z]+(\d+)(?::[A-Z]*(\d+))?/i);
+        if (mRow) {
+          const startR1 = parseInt(mRow[1], 10);
+          const explicitEndR1 = mRow[2] ? parseInt(mRow[2], 10) : startR1;
+          const valLen = Array.isArray(mutation.values) ? mutation.values.length : 1;
+          const effectiveEndR1 = Math.max(explicitEndR1, startR1 + valLen - 1);
+          if (effectiveEndR1 < 50) {
+            isIgnoredLockWrite = true;
+          }
         }
       }
       if (!isIgnoredLockWrite) {

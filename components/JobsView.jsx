@@ -1118,17 +1118,31 @@ const uiRetainerRowHasRealData = (row) => {
   return false;
 };
 
-const detectRetainerIntervalMonthsUi = (childDates) => {
+const detectRetainerIntervalMonthsUi = (childDates, parentType = "", monthlyFee = 0, childAmounts = []) => {
+  if (parentType) {
+    const pt = String(parentType).toLowerCase();
+    if (pt.includes("quarter")) return 3;
+    if (pt.includes("semi-annual") || pt.includes("semiannual") || pt.includes("half")) return 6;
+    if (pt.includes("annual") || pt.includes("year")) return 12;
+    if (pt.includes("bi-month") || pt.includes("bimonth")) return 2;
+    if (pt.includes("month")) return 1;
+  }
   const dates = (childDates || []).filter(Boolean);
+  const fee = Number(monthlyFee) || 0;
+  const amts = (childAmounts || []).map((a) => Number(a) || 0).filter((a) => a > 0);
+  if (fee > 0 && amts.length > 0) {
+    const matched = [2, 3, 6, 12].find((m) => amts.every((a) => Math.abs((a / fee) - m) <= 0.15));
+    if (matched && (dates.length < 2 || matched >= 3)) return matched;
+  }
   if (dates.length < 2) return 1;
+  const sorted = [...dates].sort((a, b) => a.getTime() - b.getTime());
   const diffs = [];
-  for (let k = 0; k < dates.length - 1; k++) {
-    const d1 = dates[k];
-    const d2 = dates[k + 1];
+  for (let k = 0; k < sorted.length - 1; k++) {
+    const d1 = sorted[k];
+    const d2 = sorted[k + 1];
     if (d1 && d2) {
-      const diffDays = Math.ceil(Math.abs(d2.getTime() - d1.getTime()) / 86400000);
-      const calc = Math.round(diffDays / 30);
-      if (calc > 0) diffs.push(calc);
+      const calDiff = (d2.getFullYear() * 12 + d2.getMonth()) - (d1.getFullYear() * 12 + d1.getMonth());
+      if (calDiff > 0) diffs.push(calDiff);
     }
   }
   if (diffs.length === 0) return 1;
@@ -1188,13 +1202,21 @@ export const projectRetainerRowsForEndDate = (job, targetEndDateVal, overrideRev
   const newEnd = isNoEndDateSentinel(targetEndDateVal) ? new Date(2050, 11, 31) : parseSheetDate(targetEndDateVal);
   if (!newEnd) return job.rows;
 
+  const parseMoney = (v) => parseFloat(String(v ?? "").replace(/[£$€,\s]/g, "")) || 0;
+  const revenue = overrideRevenueVal !== undefined ? parseMoney(overrideRevenueVal) : parseMoney(parentRow.revenue);
   const startDate = overrideStartDateVal !== undefined ? parseSheetDate(overrideStartDateVal) : parseSheetDate(parentRow.startDate);
   const childDates = childRows.map((cr) => parseSheetDate(cr.invoiceSlots?.[0]?.sentDate)).filter(Boolean);
-  const intervalMonths = detectRetainerIntervalMonthsUi(childDates);
+  const childAmounts = childRows
+    .map((cr) => Math.max(0, parseMoney(cr.invoiceSlots?.[0]?.amount) - parseMoney(cr.invoiceSlots?.[0]?.ofWhichRechgd)))
+    .filter((a) => a > 0);
+  const intervalMonths = detectRetainerIntervalMonthsUi(childDates, parentRow.projectRetainer, revenue, childAmounts);
   const invoiceTimingOffset = detectRetainerTimingOffsetUi(childDates, startDate, intervalMonths);
   const timingMonthAdjust = invoiceTimingOffset === "before" ? 1 : (invoiceTimingOffset === "after" ? -1 : 0);
 
-  const isGrowing = !oldEndDate || newEnd > oldEndDate;
+  const newEndValCheck = newEnd.getFullYear() * 12 + newEnd.getMonth();
+  const isNewFiniteEnd = !isNoEndDateSentinel(targetEndDateVal);
+  const hasChildBeyondNewEnd = isNewFiniteEnd && childDates.some((d) => (d.getFullYear() * 12 + d.getMonth() + timingMonthAdjust) > newEndValCheck);
+  const isGrowing = !hasChildBeyondNewEnd && (!oldEndDate || newEnd > oldEndDate);
 
   if (!isGrowing) {
     const newEndVal = newEnd.getFullYear() * 12 + newEnd.getMonth();
@@ -1257,8 +1279,6 @@ export const projectRetainerRowsForEndDate = (job, targetEndDateVal, overrideRev
   const maxFuturePeriods = Math.ceil(18 / intervalMonths);
   const targetCount = pastCount + maxFuturePeriods;
 
-  const parseMoney = (v) => parseFloat(String(v ?? "").replace(/[£$€,\s]/g, "")) || 0;
-  const revenue = overrideRevenueVal !== undefined ? parseMoney(overrideRevenueVal) : parseMoney(parentRow.revenue);
   const perInvoiceAmount = Math.round(revenue * intervalMonths * 100) / 100;
 
   const sendDay = childDates.length > 0 ? childDates[childDates.length - 1].getDate() : 28;
@@ -1277,7 +1297,18 @@ export const projectRetainerRowsForEndDate = (job, targetEndDateVal, overrideRev
     : startDate
       ? (startDate.getFullYear() * 12 + startDate.getMonth() + computeInclusiveRetainerMonths(startDate, newEnd) - 1)
       : (newEnd.getFullYear() * 12 + newEnd.getMonth());
-  const rowsNeeded = Math.max(0, targetCount - childRows.length);
+  let rowsNeeded = Math.max(0, targetCount - childRows.length);
+  if (isNewFiniteEnd && startDate) {
+    const durMonths = computeInclusiveRetainerMonths(startDate, newEnd);
+    const maxTotalRows = Math.max(1, Math.ceil(durMonths / intervalMonths));
+    const maxByRowCount = Math.max(0, maxTotalRows - childRows.length);
+    const coveredMonths = childRows.reduce((acc, cr) => {
+      const net = Math.max(0, parseMoney(cr.invoiceSlots?.[0]?.amount) - parseMoney(cr.invoiceSlots?.[0]?.ofWhichRechgd));
+      return acc + ((net > 0 && revenue > 0) ? Math.max(1, Math.round(net / revenue)) : intervalMonths);
+    }, 0);
+    const maxByCovered = Math.ceil(Math.max(0, durMonths - coveredMonths) / intervalMonths);
+    rowsNeeded = Math.min(rowsNeeded, maxByRowCount, maxByCovered);
+  }
   const newRowDates = [];
   for (let k = 0; k < rowsNeeded; k++) {
     const monthOffset = (k + 1) * intervalMonths;

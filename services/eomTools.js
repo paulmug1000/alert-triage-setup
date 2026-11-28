@@ -1,5 +1,5 @@
 import { waitUntil } from "@vercel/functions";
-import { getSheetsClient, getDriveClient, withRetry, extractSheetIdFromUrl } from "./sheetsClient.js";
+import { getSheetsClient, getDriveClient, withRetry, extractSheetIdFromUrl, colIndexToLetter } from "./sheetsClient.js";
 import { redisClient } from "./redisClient.js";
 import {
   getSupabaseAdmin,
@@ -1906,8 +1906,11 @@ export async function handleEomLoadBankAccounts(req, res, sheets) {
         });
       }
       if (combinedRows.length > 0) {
+        const acctCols = Math.max(3, ...combinedRows.map((r) => (Array.isArray(r) ? r.length : 1)));
         await sheets.spreadsheets.values.update({
-          spreadsheetId: automationCommanderSheetId, range: "EomBankAccounts!A2", valueInputOption: "RAW",
+          spreadsheetId: automationCommanderSheetId,
+          range: `EomBankAccounts!A2:${colIndexToLetter(acctCols)}${1 + combinedRows.length}`,
+          valueInputOption: "RAW",
           requestBody: { values: combinedRows },
         });
       }
@@ -2221,8 +2224,9 @@ export async function handleEomCreateDashboardBackup(req, res, sheets) {
       if (!isVirtualClient) {
         await withRetry(() => sheets.spreadsheets.values.clear({ spreadsheetId: backupSheetId, range: `'${tabName}'!A1:ZZ` }));
       }
+      const bkpCols = Math.max(1, ...sourceData.map((r) => (Array.isArray(r) ? r.length : 1)));
       await withRetry(() => sheets.spreadsheets.values.update({
-        spreadsheetId: backupSheetId, range: `'${tabName}'!A1`, valueInputOption: "RAW", requestBody: { values: sourceData }
+        spreadsheetId: backupSheetId, range: `'${tabName}'!A1:${colIndexToLetter(bkpCols)}${sourceData.length}`, valueInputOption: "RAW", requestBody: { values: sourceData }
       }));
     }
 
